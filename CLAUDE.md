@@ -71,6 +71,7 @@ These are non-negotiable and come from the spec:
 
 1. **Result pattern, not exceptions.** Any API operation that can fail returns `Result<T, E>` from `@bungohan/result` (construct with `ok()` / `err()`, narrow with `isOk()` / `isErr()`). Framework code does not throw.
    - Exception: **user lifecycle hooks** (`onCreate`, `onAuth`, `onJoin`, `onLeave`, `onTick`, `onDispose`) are user code and may throw. The framework catches and logs; it does not propagate.
+   - Exception: **definition-time programmer errors** — malformed message or schema declarations, detected once when the declaring module loads — may throw. Crashing at startup beats silently desyncing every client. Never throw on a per-message, per-tick, or per-connection path.
 2. **Interface-first.** `ITransport`, `ISerializer`, `IStore`, `IBackplane` are the only extension points core depends on. Never hardcode a concrete implementation into core logic.
 3. **No decorators, no reflection metadata.** State schema uses plain class fields holding factory-created wrappers (`createNumber()`, `createString()`, …).
 4. **Type safety is compile-time only.** Message contracts (§4.1) give authoring-time checking and autocomplete. Do **not** add per-message runtime validation to the hot path.
