@@ -1,0 +1,4 @@
+[test]
+# `reference/` is the frozen alpha-1 snapshot. Its test files target the old
+# `gungohan-*` packages and must not run as part of this project's suite.
+pathIgnorePatterns = ["reference/**"]
