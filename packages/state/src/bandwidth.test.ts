@@ -7,6 +7,7 @@
 import { describe, expect, test } from "bun:test"
 import type { WireOp } from "@bungohan/types"
 import { encode } from "@msgpack/msgpack"
+import { applyDelta } from "./decoder"
 import { clearChangeTrees, encodeSnapshot, generateDeltas } from "./encoder"
 import {
   createBoolean,
@@ -101,5 +102,54 @@ describe("bandwidth (MessagePack, Phase 1)", () => {
     // receivers start instances at type zero values (spec §5.7.9).
     const size = bytes(encodeSnapshot(w).unwrap())
     expect(size).toBeLessThanOrEqual(4400)
+  })
+  /**
+   * Long-running churn: refIds are reused (spec §5.7.9), so they stay small
+   * and a tick's size never grows with room age. Without reuse the refIds
+   * here would climb to ~90,000, and every refId occurrence in a spawn (its
+   * placement plus one per content SET) would widen from 1 to 3–5 bytes.
+   */
+  test("30,000 ticks of churn: flat at 138 bytes per tick", () => {
+    const SPAWN = 3
+    const LIFETIME = 30
+    const TICKS = 30_000
+    // Fixed-width keys (all encode as uint16), so only refIds could drift.
+    const keyOf = (serial: number): number => 1000 + (serial % 1000)
+    const spawn = (): Entity => {
+      const e = new Entity()
+      e.x.set(1.5)
+      e.y.set(2.5)
+      return e
+    }
+
+    const w = new World()
+    const client = new World()
+    expect(applyDelta(client, encodeSnapshot(w).unwrap()).isOk()).toBe(true)
+
+    const sizes: number[] = []
+    for (let t = 0; t < TICKS; t++) {
+      for (let j = 0; j < SPAWN; j++) {
+        w.entities.set(keyOf(t * SPAWN + j), spawn())
+        if (t >= LIFETIME) w.entities.delete(keyOf((t - LIFETIME) * SPAWN + j))
+      }
+      const ops = generateDeltas(w)
+      sizes.push(bytes(ops))
+      const applied = applyDelta(client, ops)
+      if (applied.isErr()) throw applied.error
+      clearChangeTrees(w)
+    }
+
+    // Steady state begins once the first entities start dying.
+    const early = sizes.slice(LIFETIME, LIFETIME + 100)
+    const late = sizes.slice(-100)
+    const steady = 138
+    expect(sizes[LIFETIME]).toBe(steady)
+    expect(new Set(early)).toEqual(new Set([steady]))
+    expect(late).toEqual(early)
+    expect(Math.max(...sizes.slice(LIFETIME))).toBe(steady)
+
+    // The receiver kept up and holds only the live entities.
+    expect(client.entities.size).toBe(SPAWN * LIFETIME)
+    expect(w.entities.size).toBe(SPAWN * LIFETIME)
   })
 })

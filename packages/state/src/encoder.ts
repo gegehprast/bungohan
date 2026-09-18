@@ -33,12 +33,43 @@ interface Guard {
 
 /** Per-room encoding state, keyed by the root schema. */
 class EncodeContext {
+  public readonly root: Schema
   public nextRef = 0
   public gen = 0
   public readonly classIds = new Map<ClassInfo, number>()
   public readonly table: SchemaClassEntry[] = []
   /** Filtered fields of every instance currently known to clients. */
   public readonly filtered = new Set<State>()
+  /**
+   * Freed refId blocks per class (base refIds; LIFO). A block is freed by
+   * `clearChangeTrees`, i.e. only after the removal has been generated and
+   * sent, so it is first reused in the next tick's frame (spec §5.7.9).
+   * Blocks are only reused by the same class, so a block always has exactly
+   * the `1 + k` ids that class needs.
+   */
+  public readonly free = new Map<ClassInfo, number[]>()
+
+  public constructor(root: Schema) {
+    this.root = root
+  }
+
+  /** A block of `1 + collections` consecutive refIds for `info`. */
+  public allocate(info: ClassInfo): number {
+    const reused = this.free.get(info)?.pop()
+    if (reused !== undefined) return reused
+    const base = this.nextRef
+    this.nextRef += 1 + info.collectionCount
+    return base
+  }
+
+  public release(info: ClassInfo, base: number): void {
+    let blocks = this.free.get(info)
+    if (blocks === undefined) {
+      blocks = []
+      this.free.set(info, blocks)
+    }
+    blocks.push(base)
+  }
 }
 
 const contexts = new WeakMap<Schema, EncodeContext>()
@@ -205,12 +236,14 @@ class Emitter {
     const classId = this.classId(info)
     if (instance._wireRef !== -1) return [[classId, instance._wireRef], false]
     const ctx = this._ctx
-    instance._wireRef = ctx.nextRef++
+    const base = ctx.allocate(info)
+    instance._wireRef = base
     instance._visitedGen = ctx.gen
+    let next = base + 1
     for (const field of info.fields) {
       const value = fieldValue(instance, field.name)
       if (field.isCollection) {
-        const ref = ctx.nextRef++
+        const ref = next++
         if (value instanceof CollectionState) value._wireRef = ref
       }
       if (value instanceof PrimitiveState || value instanceof CollectionState) {
@@ -509,7 +542,7 @@ export function encodeSnapshot(
     )
   }
   if (ctx === undefined) {
-    ctx = new EncodeContext()
+    ctx = new EncodeContext(root)
     contexts.set(root, ctx)
   }
   ctx.gen++
@@ -625,8 +658,14 @@ function clearTree(instance: Schema, ctx: EncodeContext | undefined): void {
 }
 
 function forget(instance: Schema, ctx: EncodeContext | undefined): void {
-  instance._wireRef = -1
+  // Never sent (e.g. added to an instance removed in the same tick): it
+  // holds no block, and neither does anything under it.
+  if (instance._wireRef === -1) return
   const info = instance._info
+  if (info !== undefined && ctx !== undefined && instance !== ctx.root) {
+    ctx.release(info, instance._wireRef)
+  }
+  instance._wireRef = -1
   if (info !== undefined) {
     for (const field of info.fields) {
       const value = fieldValue(instance, field.name)

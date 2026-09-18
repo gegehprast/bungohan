@@ -23,6 +23,8 @@ export interface ClassInfo {
   readonly name: string
   readonly fields: readonly FieldInfo[]
   readonly byName: ReadonlyMap<string, FieldInfo>
+  /** Collection fields; an instance's refId block is `1 + collectionCount`. */
+  readonly collectionCount: number
 }
 
 const classInfos = new WeakMap<SchemaConstructor, ClassInfo>()
@@ -62,6 +64,7 @@ function buildClassInfo(instance: Schema): ClassInfo {
     name,
     fields,
     byName: new Map(fields.map((field) => [field.name, field])),
+    collectionCount: fields.filter((field) => field.isCollection).length,
   }
 }
 

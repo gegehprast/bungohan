@@ -326,12 +326,12 @@ describe("deltas", () => {
     expect(peer.client.players.get("b")?.items.at(0)).toBe(clientSword)
   })
 
-  test("a removed instance re-added later is resent under a new refId", () => {
+  test("a removed instance re-added later is resent in full", () => {
     const peer = joined()
     const a = player("a", 1)
+    a.items.push(item("sword"))
     peer.server.players.set("a", a)
     peer.sync()
-    const oldRef = a._wireRef
 
     peer.server.players.delete("a")
     peer.sync()
@@ -339,9 +339,44 @@ describe("deltas", () => {
     a.x.set(2) // mutated while detached: not tracked, not needed
 
     peer.server.players.set("again", a)
-    peer.sync()
-    expect(a._wireRef).toBeGreaterThan(oldRef)
+    const ops = peer.sync()
+    // Full content again (placement + name + x + pos + item...), not a ref.
+    expect(ops.length).toBeGreaterThan(3)
     peer.expectInSync()
+  })
+
+  test("freed refIds are reused by the same class, from the next tick", () => {
+    const peer = joined()
+    const a = player("a")
+    a.items.push(item("sword"))
+    peer.server.players.set("a", a)
+    peer.sync()
+    const playerRef = a._wireRef
+    const itemRef = a.items.at(0)?._wireRef
+
+    // Removal tick: nothing new may take the freed blocks in this frame.
+    peer.server.players.delete("a")
+    const b = player("b")
+    peer.server.players.set("b", b)
+    peer.sync()
+    expect(b._wireRef).not.toBe(playerRef)
+
+    // Next tick: the freed Player block (ref R, items at R+1) and Item block
+    // are handed out again, to instances of the same class.
+    const c = player("c")
+    c.items.push(item("shield"))
+    peer.server.players.set("c", c)
+    peer.sync()
+    expect(c._wireRef).toBe(playerRef)
+    expect(c.items._wireRef).toBe(playerRef + 1)
+    expect(c.items.at(0)?._wireRef).toBe(itemRef)
+    peer.expectInSync()
+
+    // The client built a fresh object for the reused refId.
+    peer.server.players.get("c")?.name.set("carol")
+    peer.sync()
+    expect(peer.client.players.get("c")?.name.get()).toBe("carol")
+    expect(peer.client.players.get("b")?.name.get()).toBe("b")
   })
 
   test("the receiver drops removed instances (and their subtree)", () => {
@@ -509,6 +544,26 @@ describe("receiver robustness", () => {
     ])
     expect(result.isOk()).toBe(true)
     expect(client.others.size).toBe(0)
+  })
+
+  test("a reused refId that was ignored before is honored", () => {
+    const client = ghostPeer()
+    // A known class (Vec), first placed in the unknown "extraMap" (ref 2):
+    // ref 20 gets marked ignored along with its ignored parent.
+    const first = applyDelta(client, [
+      [4, 2, "T.Vec", ["x", "y"], ["float64", "float64"]],
+      [1, 2, "k", [2, 20]],
+      [0, 20, 0, 1],
+    ])
+    expect(first.isOk()).toBe(true)
+    // Later the server frees ref 20 and reuses it for a Vec in a known map.
+    const reused = applyDelta(client, [
+      [2, 2, "k"],
+      [1, 1, "v", [2, 20]],
+      [0, 20, 0, 5],
+    ])
+    expect(reused.isOk()).toBe(true)
+    expect(client.others.get("v")?.x.get()).toBe(5)
   })
 
   test("type disagreements are reported, not guessed", () => {

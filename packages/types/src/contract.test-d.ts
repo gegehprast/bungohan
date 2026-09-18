@@ -115,6 +115,12 @@ expectType<
 expectType<Equal<typeof PlayerMove.name, "playerMove">>()
 export const layout: readonly string[] = PlayerMove.fieldNames
 
+// Integer-like field names would be reordered by JS: compile error.
+// @ts-expect-error — "0" is not a valid field name
+defineMessage("numeric", { 0: f.int8, name: f.string })
+// @ts-expect-error — numeric-looking string keys too
+defineMessage("numeric2", { "12": f.int8 })
+
 // --- defineContract -----------------------------------------------------------
 
 export const mismatched = defineContract({

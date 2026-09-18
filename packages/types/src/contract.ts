@@ -192,19 +192,48 @@ export const f = {
 } as const
 
 /**
+ * True for keys JS orders numerically before all others (canonical array
+ * indices: "0", "7", "42", but not "07", "-1" or "1.5"). Such a key would
+ * silently change the positional wire order of a message's fields.
+ */
+export function isIntegerLikeKey(key: string): boolean {
+  return /^(?:0|[1-9]\d*)$/.test(key) && Number(key) < 4294967295
+}
+
+/** Compile-time counterpart: numeric-looking field names become `never`. */
+type NoNumericKeys<S> = {
+  // `{ 0: … }` has key type 0 (a number); `{ "0": … }` has "0".
+  [K in keyof S]: K extends number | `${number}` ? never : S[K]
+}
+
+/**
  * Declares a message. Field names should be identifiers (codegen emits them
  * as C#/GDScript members) and must not be integer-like, since JS would
- * reorder those keys.
+ * reorder those keys and break the positional wire order.
+ *
+ * Integer-like names are rejected at compile time and, once, at definition
+ * time: this throws a `TypeError` while the module defining the message
+ * loads. That is a deliberate exception to the framework's no-throw rule; it
+ * is a static programming error, never a runtime condition (spec §4.1.1).
  */
 export function defineMessage<const N extends string, S extends FieldShape>(
   name: N,
-  fields: S,
+  fields: S & NoNumericKeys<S>,
 ): MessageDef<N, S> {
+  const fieldNames = Object.keys(fields)
+  const bad = fieldNames.filter(isIntegerLikeKey)
+  if (bad.length > 0) {
+    throw new TypeError(
+      `defineMessage("${name}"): integer-like field names ` +
+        `${bad.map((key) => `"${key}"`).join(", ")} are not allowed ` +
+        "(JS reorders them, which would change the wire order)",
+    )
+  }
   return Object.freeze({
     kind: "message",
     name,
     fields: Object.freeze(fields),
-    fieldNames: Object.freeze(Object.keys(fields)),
+    fieldNames: Object.freeze(fieldNames),
   })
 }
 

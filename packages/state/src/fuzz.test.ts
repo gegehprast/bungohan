@@ -1,11 +1,15 @@
 /**
  * Seeded randomized round-trip: random mutations across many ticks, with a
  * fresh late joiner now and then. After every sync, every replica must equal
- * the server. Deterministic (fixed seeds), so failures reproduce.
+ * the server, and the server's live refIds must be unique (reuse never hands
+ * out a block that is still in use). Each seed must actually reuse refIds.
+ * Deterministic (fixed seeds), so failures reproduce.
  */
 import { describe, expect, test } from "bun:test"
+import { CollectionState } from "./collections"
 import { applyDelta } from "./decoder"
 import { clearChangeTrees, encodeSnapshot, generateDeltas } from "./encoder"
+import { fieldValue, Schema } from "./schema"
 import {
   GameRoom,
   type Item,
@@ -27,7 +31,39 @@ function rng(seed: number): () => number {
   }
 }
 
-function run(seed: number, ticks: number): void {
+/**
+ * Every refId held by a known instance or collection reachable from `root`,
+ * as refId → holder. Fails on any duplicate.
+ */
+function liveRefs(root: Schema): Map<number, object> {
+  const refs = new Map<number, object>()
+  const claim = (ref: number, holder: object): void => {
+    const other = refs.get(ref)
+    if (other !== undefined && other !== holder) {
+      throw new Error(`refId ${ref} is held by two live objects`)
+    }
+    refs.set(ref, holder)
+  }
+  const walk = (instance: Schema): void => {
+    if (instance._wireRef === -1) throw new Error("unsent instance in tree")
+    claim(instance._wireRef, instance)
+    for (const field of instance._ensureInit().fields) {
+      const value = fieldValue(instance, field.name)
+      if (value instanceof Schema) walk(value)
+      else if (value instanceof CollectionState) {
+        claim(value._wireRef, value)
+        for (const element of value._elements()) {
+          if (element instanceof Schema) walk(element)
+        }
+      }
+    }
+  }
+  walk(root)
+  return refs
+}
+
+/** Returns how many times a refId passed to a different object. */
+function run(seed: number, ticks: number): number {
   const random = rng(seed)
   const int = (n: number): number => Math.floor(random() * n)
   const pick = <T>(xs: readonly T[]): T | undefined => xs[int(xs.length)]
@@ -47,6 +83,9 @@ function run(seed: number, ticks: number): void {
   join()
 
   const players = (): Player[] => [...server.players.values()]
+  /** Last holder seen for each refId, to detect reuse. */
+  const lastHolder = new Map<number, object>()
+  let reuses = 0
 
   const mutations: Array<() => void> = [
     () => server.tick.set(int(1000)),
@@ -150,12 +189,21 @@ function run(seed: number, ticks: number): void {
         state: expected,
       })
     }
+    for (const [ref, holder] of liveRefs(server)) {
+      const previous = lastHolder.get(ref)
+      if (previous !== undefined && previous !== holder) reuses++
+      lastHolder.set(ref, holder)
+    }
+
     if (t % 25 === 24) join()
   }
+  return reuses
 }
 
 describe("randomized round-trip", () => {
   for (const seed of [1, 2, 3, 42, 1337, 9001]) {
-    test(`seed ${seed}`, () => run(seed, 200))
+    test(`seed ${seed}`, () => {
+      expect(run(seed, 200)).toBeGreaterThan(0)
+    })
   }
 })

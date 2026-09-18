@@ -350,8 +350,10 @@ class Decoder {
     const existing = this._ctx.refs.get(ref)
     if (existing instanceof Schema) return ok(existing)
     if (existing !== undefined) return malformed("ref is a collection", op)
-    if (this._ctx.ignored.has(ref)) return ok(IGNORED)
 
+    // An ignored ref is only IGNORED if its class is unknown here. Server
+    // refIds are reused (spec §5.7.9), so a block last used by, say, a known
+    // class inside an ignored subtree may now name a visible instance.
     const binding = this._ctx.classes.get(classId)
     if (binding === undefined) return this._unknownClass(classId, op)
     if (binding.ctor === undefined) {
@@ -378,6 +380,7 @@ class Decoder {
     if (local.isErr()) return local
 
     const ctx = this._ctx
+    ctx.ignored.delete(ref) // stale mark from a previous use of this block
     ctx.refs.set(ref, instance)
     ctx.refOf.set(instance, ref)
     ctx.bindingOf.set(instance, binding)
@@ -397,8 +400,13 @@ class Decoder {
       const collectionRef = next++
       const name = local.value[index]
       const value = name === undefined ? undefined : fieldValue(instance, name)
-      if (value instanceof CollectionState) ctx.refs.set(collectionRef, value)
-      else ctx.ignored.add(collectionRef)
+      if (value instanceof CollectionState) {
+        ctx.refs.set(collectionRef, value)
+        ctx.ignored.delete(collectionRef)
+      } else {
+        ctx.refs.delete(collectionRef)
+        ctx.ignored.add(collectionRef)
+      }
     })
     return ok(undefined)
   }
