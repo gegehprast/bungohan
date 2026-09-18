@@ -100,6 +100,8 @@ function tryCatchAsync<T, E extends Error = Error>(fn: () => Promise<T>, errorHa
 
 Construct with `ok(value)` / `err(error)` — not static factory methods on a `Result` namespace. Access via `.value` / `.error` directly after narrowing with `isOk()`/`isErr()`, not via method calls.
 
+**[DECIDED]** Both classes also carry a `readonly ok: true | false` discriminant, which is what makes the `this is Err<never>` / `this is Ok<never>` predicates narrow `Result` correctly in both branches. `Err.unwrap()` throws the contained error itself, not a wrapper. In `tryCatch`/`tryCatchAsync` without a handler, a thrown non-`Error` is wrapped in `Error`.
+
 ## 4. `@bungohan/types` — Wire Protocol
 
 **[KEEP]** — shared message/enum definitions used by both `core` and all client implementations so client and server agree on the protocol without a dependency cycle.
@@ -209,6 +211,46 @@ abstract class Room<TState extends Schema = Schema, TContract extends Contract =
 
 Both parameters default, so `Room<MyState>` still compiles for untyped usage. An untyped escape hatch (`sendRaw`/`broadcastRaw`/`onMessageRaw`, taking `string` + `unknown` over MessagePack) stays available for prototyping and genuinely dynamic payloads.
 
+#### 4.1.1 Contract type definitions — **[DECIDED]** (implemented in `packages/types/src/contract.ts`)
+
+The types referenced above are defined as follows. Build against these; don't redesign them.
+
+```typescript
+// Field descriptors: plain frozen runtime objects whose TS type also carries the payload type.
+interface ScalarField<K extends ScalarKind> { kind: K }   // int8…uint32, float32, float64, string, bool
+interface FixedField<D extends FixedDecimals> { kind: "fixed"; decimals: D }
+interface EnumField<V extends string | number> { kind: "enum"; values: readonly V[] }
+interface ArrayField<E extends Field>    { kind: "array"; of: E }
+interface MapField<E extends Field>      { kind: "map"; of: E }        // string keys
+interface OptionalField<E extends Field> { kind: "optional"; of: E }
+interface NestedField<M extends MessageDef> { kind: "nested"; message: M }
+type Field = ScalarField | FixedField | EnumField | ArrayField | MapField | OptionalField | NestedField
+type FieldShape = { readonly [name: string]: Field }
+
+interface MessageDef<N extends string = string, S extends FieldShape = FieldShape> {
+  kind: "message"; name: N; fields: S;
+  fieldNames: readonly string[];   // Object.keys(fields) — the positional wire order
+}
+
+type MessageMap = { readonly [name: string]: MessageDef }
+interface Contract      { readonly client: MessageMap; readonly server: MessageMap }
+interface EmptyContract { readonly client: Record<never, never>; readonly server: Record<never, never> }
+type SendMap<C extends Contract> = C["server"]   // server → client
+type RecvMap<C extends Contract> = C["client"]   // client → server
+
+type Infer<M> = M extends MessageDef<string, infer S> ? InferShape<S> : never
+```
+
+`Infer` maps each field recursively (`InferField`): integer/float/fixed kinds → `number`, `string` → `string`, `bool` → `boolean`, `f.enum("a","b")` → `"a" | "b"`, `f.array(X)` → `X[]`, `f.map(X)` → `{ [key: string]: X }`, `f.nested(M)` → `Infer<M>`, and `f.optional(X)` → an **optional property** (`key?: X`) at message level, or `X | undefined` inside an array/map. The result is flattened into one plain object type, so `Infer<typeof PlayerMove>` is exactly `{ x: number; y: number }`.
+
+Rules that fall out of the design:
+
+- **`defineContract` requires each key to equal its message's `name`** (compile error otherwise), so the name at a call site is always the name on the wire. Message names must therefore be string literals.
+- **`EmptyContract` has no keys**, so a room without a contract cannot call typed `send`/`broadcast`/`onMessage` at all. It uses the `*Raw` variants.
+- **Field order is `Object.keys(fields)`**, i.e. declaration order. Field names must be identifiers (codegen emits them as members) and must not be integer-like (JS would reorder them).
+- **`f.enum` values encode as their index** in `values`.
+- The guarantee is enforced by `packages/types/src/contract.test-d.ts`: `@ts-expect-error` assertions for unknown message names, wrong/missing/excess payload fields, wrong direction, and `EmptyContract` rooms, all run by `tsc --noEmit`. `Room`/`IRoom` must keep the exact generic signatures above for that test to remain representative.
+
 TypeScript clients import the same contract and get the mirrored view, with the direction inverted:
 
 ```typescript
@@ -276,6 +318,8 @@ const state = new RoomState(); // no _init() call needed — see lazy init below
   Instead, initialize lazily via an internal `_ensureInit()` guarded by a boolean, called at the few entry points that actually need the field table: the first property mutation (`_notifyChange`), the first delta generation, and the first serialization. By then all field initializers have run. Cost is one boolean check on paths that already do real work; developers call nothing, and `new RoomState()` just works.
 
   If an eager variant is ever wanted (e.g. to surface schema errors at startup rather than first tick), expose a static factory — `Schema.create(RoomState)` — which constructs and then initializes. Never the base constructor.
+
+  **[DECIDED] Where `_ensureInit()` actually runs:** when an instance is attached to an initialized parent (collection insert, or the parent's own init walking its fields), at the first `encodeSnapshot`/`generateDeltas` on a root, and at the first `applyDelta` on a receiver root. A field wrapper cannot trigger it on mutation: until init, the wrapper has no link to its owner. That's fine, and it's by design. **Mutations are only recorded once an instance is *known* to clients (has a wire refId).** Before that, nothing has observed the instance, and it is serialized in full the first time it is sent, so there is nothing to diff against. It also means detached instances never accumulate change logs. Field names starting with `_` are reserved and never synchronized. `schemaName` must be the class's *own* static (an inherited one is ignored); if it's missing, the JS class name is used with a console error, since minification breaks it.
 - Every instance gets a `_id` (nanoid) and `_tree: ChangeTree`.
 
 ### 5.2 Primitive wrappers
@@ -313,6 +357,14 @@ onChange(listener: (newValue, oldValue) => void): () => void;
 ```
 
 Note the tuple/argument order is **value first, then key/index** — consistent across map/array/set.
+
+**[DECIDED] API details:**
+- Primitives expose `get()`/`set(v)` as the canonical API, plus a `value` accessor alias (`score.value += 1`). `onChange(newValue, oldValue)`.
+- Collections expose a read-only `value` view. Collection `onChange` fires on an in-place replace (map key re-set, array index assigned) with `(newValue, oldValue, key)`. Sets have no `onChange`, because they have no replace. `clear()` fires `onRemove` per element.
+- Arrays: `set(index, v)` replaces within range (returns `false` otherwise), and `splice` follows native semantics (negative start, omitted `deleteCount`). `sort`/`reverse`/`fill` are recorded as one replace per changed index. A Schema instance must not appear twice in one array.
+- Element types are constrained: primitive collections hold `string | number | boolean`, map keys are `string | number`, and `Schema*` collections hold Schema instances.
+- State is a **tree**: an instance has one parent at a time. Moving it (remove here, add there) is supported; sharing it between two parents is not.
+- On the server, listeners fire synchronously on mutation. On a receiver, see §5.7.9.
 
 ### 5.4 Change tracking
 
@@ -360,6 +412,15 @@ class RoomState extends Schema {
 
 During delta generation, when a field is `createFiltered`-wrapped, the generator must produce a **per-client** patch set instead of one shared patch: run the filter function once per connected client for that room, and only include the field in the patches destined for clients where the filter returns `true`. This means `generateDeltas` needs to become client-aware when any filtered field exists in the tree (plain, non-filtered fields keep the current shared-patch behavior for efficiency — only pay the per-client cost where filtering is actually used).
 
+**[DECIDED] Filtering semantics** (implemented in `packages/state/src/encoder.ts`):
+
+- `createFiltered(wrapped, fn)` returns **the same wrapper** (typed as the wrapped type, not bare `State<T>`), so its API is unchanged. It is generic in `this` and in the client type: `function (this: RoomState, client) {…}` or an arrow capturing the instance (`(client) => this.ownerId.get() === client.id`). The default client type is `{ readonly id: string }`, which core's `Client` must satisfy.
+- Signatures: `generateDeltas(root): WireOp[]` omits every filtered field. `generateDeltas(root, clients): Map<Client, WireOp[]>` returns per-client ops, and **clients with identical visibility share one array instance**, so core encodes once per distinct array. With no filtered fields, all clients share one array. `encodeSnapshot(root, client?)` includes filtered content only if `client` passes.
+- A filter covers the whole subtree under the field: ops for nested instances inside a filtered collection are filtered too. Nested filters compose (all must pass).
+- **Filters are evaluated every sync tick** for every registered filtered field × client, so visibility can depend on any state. When a field becomes visible to a client, that client receives its full current value/contents. When it becomes hidden, the client receives the zero value (primitive) or `CLEAR` (collection). Filters must be pure. A filter that throws counts as hidden (logged).
+- Core must pass **every connected client on every call**: per-client visibility memory is updated by each call.
+- Don't move an instance across a filter boundary (from inside a filtered subtree to outside or back). Clients that never saw it would receive only a reference.
+
 ### 5.7 Bandwidth Optimization — **[NEW — beyond the old code entirely]**
 
 The old implementation's wire format was never optimized: it re-serialized whole changed values (never diffed inside a collection), used nanoid strings as `refId`, used property name strings as patch keys, and re-sent the schema's class name on every reconstructed instance. None of this was wrong, but all of it was wasteful. This is a ground-up wire-format redesign — nothing here can be copied from the old code.
@@ -371,6 +432,12 @@ A schema instance's `_id` stays an internal nanoid (useful for logging/debugging
 #### 5.7.2 Class handshake instead of repeated class-name strings
 
 On join, the server sends a one-time **schema handshake**: `{ classes: [{ classId: number, name: string, fields: string[] }] }`, listing every `Schema` subclass reachable from the room's state tree, its assigned numeric `classId`, and its field names **in declaration order** (captured automatically from `Object.keys()` when a class is first initialized — no manual indices, keeping the "no decorators" principle). After the handshake, every wire reference to a class or field uses its numeric id, never its name.
+
+**[DECIDED] Amendments** (types in `packages/types/src/wire.ts`):
+
+- Each class entry also carries **`types: SchemaFieldType[]`**, parallel to `fields`. Receivers need it to dequantize fixed-point fields, to allocate collection refIds (§5.7.9) for fields they don't have locally, and to detect type disagreements. `SchemaFieldType = "float64" | "float32" | "fixed:N" | "string" | "bool" | "schema" | "map" | "set" | "array" | "schemaMap" | "schemaSet" | "schemaArray"` (`"schema"` = a directly nested Schema field).
+- **The table is delivered in-band, as `DEFINE` ops**, and grows incrementally. "Reachable from the state tree" can't be computed at join time: the classes inside an empty `createSchemaMap<string, Player>()` are erased types. So class ids are assigned the first time an instance of that class is serialized. A snapshot starts with `DEFINE` ops for the room's entire table so far, and a patch carries an inline `DEFINE` right before the first use of a class new to the room. `DEFINE`s are never filtered. `getSchemaTable(root)` returns the table (as `SchemaTable`) for core/codegen/debugging, but receivers need nothing beyond the op stream.
+- Receivers resolve classes **by name** (`SchemaRegistry`) and fields **by name** (server field index → local field of the same name). A server field the client lacks is skipped. A class the client lacks is ignored along with everything under it. A shared field whose type differs is a hard `SCHEMA_MISMATCH` error. Receivers that never construct a class locally (e.g. `Player` only arrives inside a map) must `SchemaRegistry.register(Player)`, because auto-registration happens on first `new`.
 
 #### 5.7.3 Positional (array-based), not keyed, patch encoding
 
@@ -385,6 +452,24 @@ type WireOp =
 
 type WireValue = number | string | boolean | [classId: number, refId: number]; // last form = reference to a (possibly newly created) nested Schema instance
 ```
+
+**[DECIDED] Final `WireOp` definition** (supersedes the block above; `packages/types/src/wire.ts`):
+
+```typescript
+type WireKey = string | number | boolean
+type WireRef = [classId: number, refId: number]
+type WireValue = number | string | boolean | WireRef
+
+type WireOp =
+  | [0, refId, fieldOrIndex: number, value: WireValue]  // SET: schema field; on an array: replace at index
+  | [1, refId, key: WireKey, value: WireValue]          // ADD: map upsert; array insert-at-index
+  | [1, refId, value: WireValue]                        // ADD: sets (3-element form; no redundant key)
+  | [2, refId, key: WireKey]                            // REMOVE: map key; array index; set element (schema sets: element refId)
+  | [3, refId]                                          // CLEAR
+  | [4, classId, name: string, fields: string[], types: SchemaFieldType[]]  // DEFINE (§5.7.2)
+```
+
+Array `ADD`/`REMOVE` shift later indices, so array ops replay in recorded order. Map and set ops are **coalesced per key**: only each touched key's final state is sent, since keyed ops commute. A `[classId, refId]` value with an unknown `refId` creates the instance, and its content follows immediately in the same frame.
 
 A full sync tick's payload is `WireOp[]` — one array, one frame. `WireOp[]` is the stable interface between the state layer and the serialization layer: §8.1.2 defines a schema-aware codec that encodes this same structure far more compactly than MessagePack can, precisely because the handshake makes per-value type tags redundant.
 
@@ -405,6 +490,22 @@ function createFixedPoint(decimalPlaces: number, initial?: number): FixedPointSt
 
 `createNumber()` remains full float64 precision and is the default. `createFloat32` and `createFixedPoint` are opt-in for fields like position/rotation/velocity where the range and required precision are known and bounded — a fixed-point position with 2 decimal places encodes as a 1–3 byte MessagePack integer instead of a 9-byte float64, a >60% reduction on exactly the kind of field that changes every tick in a fast-paced game. Document clearly in the field's JSDoc that these are lossy.
 
+##### 5.7.6.1 Fixed-point rules — **[DECIDED]** (`packages/types/src/fixed.ts`, shared by `f.fixed(n)` and `createFixedPoint(n)`)
+
+Every implementation (TS, C#, GDScript, …) must reproduce these rules bit for bit. They belong in `PROTOCOL.md` and the conformance vectors (`004-fixed-point-precision`).
+
+| Aspect | Rule |
+|---|---|
+| Decimal places | Integer `0..9` (`type FixedDecimals = 0 \| … \| 9`, enforced at compile time). Beyond 9, the range would fall below ±2.1. |
+| Wire integer | **Signed 32-bit** `[-2147483648, 2147483647]`. Zigzag varint in `SchemaCodec`. Fits C# `int`, GDScript `int`, and JS bitwise ops. At 2 dp the range is ±21,474,836.47. |
+| Encode | `scaled = value * 10^n` in IEEE-754 binary64, with `10^n` as the exact double. Then **round half away from zero** (C#: `Math.Round(x, MidpointRounding.AwayFromZero)`; GDScript: `round()`; JS: `sign(x) * Math.round(abs(x))`, **not** bare `Math.round`, which rounds -2.5 to -2). Never emit -0. |
+| Overflow | **Saturate** to the int32 bounds (±Infinity too). Wrapping would teleport entities; erroring isn't available on a `void` setter. |
+| NaN | Encodes as `0`. |
+| Decode | `scaled / 10^n` (**divide**, never multiply by `0.1^n`: `14551 * 0.01` ≠ `145.51`). |
+| Server-side storage | **The server keeps full precision.** `get()` returns what was set, so `x += vx * dt` with sub-resolution steps still accumulates. The field is marked dirty only when its **encoded** value changes, and the wire carries the value encoded at sync time. Receivers store the decoded (quantized) value. `createFloat32` follows the same model with `Math.fround`. |
+
+For messages, `f.fixed(n)` applies the identical encoding when the payload is written.
+
 #### 5.7.7 Transport-level compression
 
 `WebSocketTransportOptions.compression` (already present in `ServerOptions.transport.config.compression`, default `true`) enables Bun's native WebSocket `perMessageDeflate`. **Decision**: implement this as a boolean option on `WebSocketTransport` itself, not a separate `WebSocketDeflateTransport` class — it's a single toggle on Bun's native WebSocket config, not a different transport mechanism, so a second class would just duplicate the whole implementation for one flag. Because payloads are already tightly packed MessagePack (not verbose JSON), compression yields the most benefit on larger frames (initial join snapshot, big broadcasts) and negligible-to-negative benefit on tiny per-tick deltas — Bun's deflate handles this adaptively per-frame, so leave it on by default and let it self-regulate rather than hand-tuning a size threshold.
@@ -412,6 +513,27 @@ function createFixedPoint(decimalPlaces: number, initial?: number): FixedPointSt
 #### 5.7.8 Metrics
 
 Extend `RoomMetrics` (§6.6) with `avgStateDeltaBytes` (already specified) plus **[NEW]** `avgStateSnapshotBytes` and, when `transport.config.compression` is enabled, `avgCompressionRatio` — so bandwidth wins from this section are actually observable in production, not just assumed.
+
+#### 5.7.9 Sync semantics — **[DECIDED]** (`packages/state/src/{encoder,decoder}.ts`)
+
+Both peers follow these rules on the same op stream, which is what keeps them in agreement. Conformance vectors should cover each one.
+
+- **refIds.** Allocated per room, monotonically, starting at 0, when an instance is first serialized. The root is always `0`. An instance with refId `R` implicitly owns refIds **`R+1 … R+k` for its `k` collection fields, in field (declaration) order**. Collections therefore cost zero bytes to announce, and receivers compute the same numbers from the class table's `types`. refIds are never reused.
+- **Full content.** A new instance is sent as the op that places it (with `[classId, refId]`), immediately followed by its content: a `SET` for every primitive field whose wire value is **non-zero** (`0`, `""`, `false` are omitted), a `SET` with the child's ref for each directly nested Schema field, and `ADD`s for every collection element. **Receivers reset every instance they create to type zero values** (including the root on first bind), whatever the local initializers say, because a C#/GDScript client cannot know TypeScript initializer values.
+- **Known instances** are referenced by ref only. Their own changes are emitted as ops targeting their refId (§5.7.5).
+- **Removal and re-attach.** An instance removed during a tick and not re-attached by the end of that tick is **forgotten** by the server at `clearChangeTrees` (its subtree's refIds are reset) and dropped by receivers at the end of the frame. If it's attached again later, it is sent in full under new refIds. Receivers use **holder counts** (how many fields and collection slots reference an instance), so a move within one frame (remove here, add there, in either order) keeps the same client object.
+- **Receiver listeners are deferred** until the whole frame is applied, then fire in op order (an instance's primitive fields precede its collections). An instance **created in this frame fires none of its own listeners**. Its parent collection's `onAdd` sees it fully populated. The root's listeners always fire, including during the snapshot.
+- **Errors.** `applyDelta(root, ops): Result<void, StateError>` validates op shapes and value types. It reports `MALFORMED_OP`, `UNKNOWN_REF`, `UNKNOWN_CLASS` or `SCHEMA_MISMATCH`, stopping at the first bad op (earlier ops stay applied). Core/client-js should treat any error as a desync and rejoin. A throwing listener is caught and logged.
+
+#### 5.7.10 Join/sync ordering — **[DECIDED]**
+
+`encodeSnapshot(root, client?)` returns `err(SNAPSHOT_DIRTY)` while changes are pending. Snapshotting assigns refIds, which would make pending new instances look already-sent to existing clients. **Core therefore admits joiners at a sync boundary:** `generateDeltas` → send to existing clients → `clearChangeTrees` → `encodeSnapshot` for each joiner. `generateDeltas` returns `[]` before the first snapshot and on idle ticks; send nothing then. Each `generateDeltas` output must be delivered and followed by `clearChangeTrees` (they form a commit pair).
+
+#### 5.7.11 Known gaps (for the serializer/codegen sessions)
+
+- **Collection element types are erased.** `createMap<string, number>()` / `createSchemaMap<string, Player>()` carry no runtime element type, so the class table can say "map" but not "map of float32" or "map of Player". Phase 1 (MessagePack) doesn't need it because values are self-describing. Phase 2 `SchemaCodec` (tag-free collection values) and codegen (typed C#/GDScript collections) will. The likely fix is an optional runtime element descriptor on the collection factories (e.g. reusing the §4.1 `f.*` builders), added to the class table. Resolve this before Phase 2.
+- `IStateCodec.encodeOps(ops, table)` should maintain its table from the `DEFINE` ops in the stream rather than receive it separately, since the table grows mid-session.
+- Bandwidth baselines are recorded in `packages/state/src/bandwidth.test.ts` (100-entity room, MessagePack: one position update 8 B, all moving 1,396 B, 10+10 churn 433 B, snapshot 4,006 B, idle 0 B).
 
 ## 6. `@bungohan/core` — Server, Room, MatchMaker
 
