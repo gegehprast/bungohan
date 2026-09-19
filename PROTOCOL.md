@@ -823,9 +823,10 @@ is always **new** (a refId the receiver doesn't know), even if it was
 attached elsewhere before: a receiver keeps its own nested object and can't
 adopt another one. The replaced instance leaves the tree like a removed one
 (§11.6): its block is freed after the frame and may be reused (§11.4). A
-server therefore only places an instance in a nested field once it is
-attached nowhere else (it may have been removed earlier in the same frame);
-this is a server-side rule, with nothing for receivers to check.
+server therefore gives a nested field an instance that nothing else holds,
+and never puts an instance a nested field holds into a collection.
+Collections may share an instance (§11.6 counts its holders). These are
+server-side rules, with nothing for receivers to check.
 
 A receiver that rebinds its existing nested object to the new refId MUST
 first **forget the old binding**. The old refId and its collections' refIds

@@ -11,6 +11,7 @@ import {
   createInt,
   createSchemaArray,
   createSchemaMap,
+  createSchemaSet,
   createString,
 } from "./factories"
 import { Schema } from "./schema"
@@ -260,14 +261,22 @@ class Slot extends Schema {
   public nested = new Unit()
 }
 
+class Box extends Schema {
+  public static override schemaName = "N.Box"
+  public units = createSchemaArray(Unit)
+}
+
 class Owner extends Schema {
   public static override schemaName = "N.Owner"
   public nested = new Unit()
   public items = createSchemaMap(f.string, Unit)
   public slots = createSchemaMap(f.string, Slot)
+  public pool = createSchemaSet(Unit)
+  public list = createSchemaArray(Unit)
+  public boxes = createSchemaMap(f.string, Box)
 }
 
-SchemaRegistry.register(Unit, Slot, Owner)
+SchemaRegistry.register(Unit, Slot, Box, Owner)
 
 function unit(v: number): Unit {
   const u = new Unit()
@@ -340,7 +349,7 @@ describe("a nested field only takes an unattached instance", () => {
       ;(loose as unknown as { nested: Schema }).nested = loose
     })
     expect(logged.length).toBe(3)
-    expect(logged[0]).toContain("a nested field of Slot")
+    expect(logged[0]).toContain("held by Slot.nested")
     expect(logged[1]).toContain("room's state")
     expect(logged[2]).toContain("hold itself")
     expect(peer.server.nested).toBe(before)
@@ -375,6 +384,264 @@ describe("a nested field only takes an unattached instance", () => {
     peer.sync()
     expect(peer.client.nested.v.get()).toBe(7)
     expect(peer.client.items.get("k2")?.v.get()).toBe(8)
+    peer.expectInSync()
+  })
+})
+
+function owner(): Peer<Owner> {
+  const peer = new Peer(new Owner(), new Owner())
+  peer.join()
+  return peer
+}
+
+describe("a nested field owns its instance exclusively", () => {
+  test("a collection can't take the nested instance (would orphan it)", () => {
+    const peer = owner()
+    const a = peer.server.nested
+    a.v.set(1)
+    peer.sync()
+    const logged = capturingErrors(() => {
+      peer.server.items.set("k", a)
+    })
+    expect(logged.length).toBe(1)
+    peer.sync()
+    peer.server.nested = unit(2)
+    peer.sync()
+    for (const key of ["x", "y", "z"]) peer.server.items.set(key, unit(3))
+    peer.sync()
+    a.v.set(9)
+    peer.sync()
+    expect(peer.server.items.has("k")).toBe(false)
+    expect(peer.client.items.has("k")).toBe(false)
+    peer.expectInSync()
+  })
+
+  const refusals: [
+    string,
+    (o: Owner, u: Unit) => void,
+    (o: Owner) => unknown,
+  ][] = [
+    ["map set", (o, u) => o.items.set("k", u), (o) => [...o.items.keys()]],
+    ["set add", (o, u) => o.pool.add(u), (o) => [...o.pool]],
+    ["array push", (o, u) => o.list.push(unit(1), u), (o) => [...o.list]],
+    ["array unshift", (o, u) => o.list.unshift(u), (o) => [...o.list]],
+    ["array splice", (o, u) => o.list.splice(0, 1, u), (o) => [...o.list]],
+    ["array set-at-index", (o, u) => o.list.set(0, u), (o) => [...o.list]],
+  ]
+  for (const [kind, add, contents] of refusals) {
+    test(`${kind} refuses it and leaves the collection unchanged`, () => {
+      const peer = owner()
+      peer.server.list.push(unit(4))
+      peer.sync()
+      const before = contents(peer.server)
+      const nested = peer.server.nested
+      const logged = capturingErrors(() => add(peer.server, nested))
+      expect(contents(peer.server)).toEqual(before)
+      expect(nested._parent).toBe(peer.server)
+      expect(nested._parentField).toBeUndefined()
+      expect(logged.length).toBe(1)
+      expect(logged[0]).toMatch(/Owner\.(items|pool|list)/)
+      expect(logged[0]).toContain("held by the nested field Owner.nested")
+      expect(logged[0]).toContain("first assign something else")
+      expect(peer.sync()).toEqual([])
+      peer.expectInSync()
+    })
+  }
+
+  test("a collection can't hold its own owner (a cycle)", () => {
+    const peer = owner()
+    const box = new Box()
+    peer.server.boxes.set("b", box)
+    peer.sync()
+    const units = box.units as unknown as { push(...items: Schema[]): number }
+    const logged = capturingErrors(() => {
+      units.push(box)
+      units.push(peer.server)
+    })
+    expect(logged.length).toBe(2)
+    expect(logged[0]).toContain("hold itself")
+    expect(box.units.length).toBe(0)
+    expect(peer.sync()).toEqual([])
+  })
+
+  test("clearing the field first, then adding it, moves it in one tick", () => {
+    const peer = owner()
+    const a = peer.server.nested
+    a.v.set(1)
+    peer.sync()
+    const logged = capturingErrors(() => {
+      peer.server.nested = unit(2)
+      peer.server.items.set("k", a)
+    })
+    expect(logged).toEqual([])
+    peer.sync()
+    for (const key of ["x", "y", "z"]) peer.server.items.set(key, unit(3))
+    peer.sync()
+    a.v.set(9)
+    peer.sync()
+    expect(peer.client.items.get("k")?.v.get()).toBe(9)
+    expect(peer.client.nested.v.get()).toBe(2)
+    peer.expectInSync()
+  })
+
+  test("an element added before its collection was initialized is reported", () => {
+    const peer = owner()
+    const box = new Box() // not initialized: its array can't check anything
+    const gem = unit(3)
+    box.units.push(gem)
+    const logged = capturingErrors(() => {
+      peer.server.nested = gem // allowed: gem has no parent yet
+      peer.server.boxes.set("b", box)
+    })
+    expect(peer.server.nested).toBe(gem)
+    expect(logged.length).toBe(1)
+    expect(logged[0]).toContain("Box.units")
+    expect(logged[0]).toContain("nested field Owner.nested")
+  })
+
+  test("a nested value assigned before init, held elsewhere, is reported", () => {
+    const peer = owner()
+    const shared = unit(3)
+    peer.server.items.set("k", shared)
+    peer.sync()
+    const slot = new Slot() // not initialized: plain field, no setter yet
+    slot.nested = shared
+    const logged = capturingErrors(() => {
+      peer.server.slots.set("s", slot)
+    })
+    expect(logged.length).toBe(1)
+    expect(logged[0]).toContain("Slot.nested")
+    expect(logged[0]).toContain("held by Owner.items")
+  })
+})
+
+describe("collections may share an instance", () => {
+  // Removing it from the collection that attached it last used to drop it
+  // from the tree: its refId was freed while the other still held it.
+  for (const removeFrom of ["items", "list"] as const) {
+    test(`removing it from ${removeFrom} keeps it live in the other`, () => {
+      const peer = owner()
+      const shared = unit(1)
+      peer.server.items.set("k", shared)
+      peer.server.list.push(shared)
+      peer.sync()
+      expect(peer.client.items.get("k")).toBe(peer.client.list.at(0))
+      const ref = shared._wireRef
+
+      if (removeFrom === "items") peer.server.items.delete("k")
+      else peer.server.list.pop()
+      peer.sync()
+      expect(shared._wireRef).toBe(ref)
+      for (const key of ["x", "y", "z"]) peer.server.items.set(key, unit(2))
+      peer.sync()
+      shared.v.set(9)
+      peer.sync()
+      const held =
+        removeFrom === "items"
+          ? peer.client.list.at(0)
+          : peer.client.items.get("k")
+      expect(held?.v.get()).toBe(9)
+      peer.expectInSync()
+    })
+  }
+
+  test("a shared instance leaves the wire only when its last holder goes", () => {
+    const peer = owner()
+    const shared = unit(1)
+    peer.server.items.set("k", shared)
+    peer.server.pool.add(shared)
+    peer.server.list.push(shared)
+    peer.sync()
+    peer.server.list.clear()
+    peer.server.items.delete("k")
+    peer.sync()
+    expect(shared._wireRef).not.toBe(-1)
+    peer.server.pool.delete(shared)
+    peer.sync()
+    expect(shared._wireRef).toBe(-1)
+    peer.server.items.set("back", shared)
+    peer.sync()
+    peer.expectInSync()
+  })
+
+  test("a holder removed from the tree doesn't take a shared element along", () => {
+    const peer = owner()
+    const box = new Box()
+    const shared = unit(1)
+    peer.server.items.set("k", shared)
+    peer.server.boxes.set("b", box)
+    box.units.push(shared) // attached last: the box is its parent
+    peer.sync()
+    peer.server.boxes.delete("b")
+    peer.sync()
+    shared.v.set(5)
+    for (const key of ["x", "y"]) peer.server.items.set(key, unit(2))
+    peer.sync()
+    expect(peer.client.items.get("k")?.v.get()).toBe(5)
+    peer.expectInSync()
+  })
+})
+
+describe("a nested field's SET always introduces a new instance", () => {
+  // Receivers rebind their own nested object to the ref and reset it, so
+  // the full content must follow even if the value has a refId already.
+  test("placed by an earlier op in the same frame (array push, then pop)", () => {
+    const peer = owner()
+    const slot = new Slot()
+    peer.server.slots.set("s", slot)
+    peer.sync()
+    const x = unit(7)
+    // The root's array ops are emitted before the slot is visited.
+    peer.server.list.push(x)
+    peer.server.list.pop()
+    slot.nested = x
+    peer.sync()
+    expect(peer.client.slots.get("s")?.nested.v.get()).toBe(7)
+    peer.expectInSync()
+    x.v.set(8)
+    peer.sync()
+    expect(peer.client.slots.get("s")?.nested.v.get()).toBe(8)
+    peer.expectInSync()
+  })
+
+  // Out of a collection, through a nested field (which sends it anew), and
+  // back to the same set / map key, all in one tick: coalescing must still
+  // replace the old identity receivers hold there.
+  for (const kind of ["set", "map"] as const) {
+    test(`back into the same ${kind} after passing through a nested field`, () => {
+      const peer = owner()
+      const x = unit(7)
+      if (kind === "set") peer.server.pool.add(x)
+      else peer.server.items.set("k", x)
+      peer.sync()
+      if (kind === "set") peer.server.pool.delete(x)
+      else peer.server.items.delete("k")
+      peer.server.nested = x
+      peer.server.nested = unit(1)
+      if (kind === "set") peer.server.pool.add(x)
+      else peer.server.items.set("k", x)
+      peer.sync()
+      peer.expectInSync()
+      x.v.set(9)
+      peer.sync()
+      const held =
+        kind === "set" ? [...peer.client.pool][0] : peer.client.items.get("k")
+      expect(held?.v.get()).toBe(9)
+      peer.expectInSync()
+    })
+  }
+
+  test("known, removed, put in a detached holder that is attached", () => {
+    const peer = owner()
+    const x = unit(7)
+    peer.server.list.push(x)
+    peer.sync()
+    const slot = Schema.create(Slot) // initialized, but not on the wire
+    peer.server.list.pop()
+    slot.nested = x
+    peer.server.slots.set("s", slot)
+    peer.sync()
+    expect(peer.client.slots.get("s")?.nested.v.get()).toBe(7)
     peer.expectInSync()
   })
 })

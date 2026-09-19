@@ -18,6 +18,7 @@ import {
   type ClassInfo,
   emptyUnsent,
   fieldValue,
+  isOnWire,
   Schema,
   type Unsent,
   unsend,
@@ -55,6 +56,8 @@ class EncodeContext {
    * the `1 + k` ids that class needs.
    */
   public readonly free = new Map<ClassInfo, number[]>()
+  /** Identities the emitter dropped this frame, freed by the commit. */
+  public dropped: Unsent = emptyUnsent()
 
   public constructor(root: Schema) {
     this.root = root
@@ -288,6 +291,24 @@ class Emitter {
   }
 
   /**
+   * Emits a nested field's `SET`. Receivers rebind their own nested object
+   * to the ref and reset it, so outside a full resend (`deep`) the value
+   * must be new to them. If it already has a refId (an earlier op in this
+   * frame placed it, e.g. an array insert it was removed from again, or it
+   * left a collection this tick), that identity is dropped, to be freed by
+   * the commit, and it is sent anew under a fresh block.
+   */
+  public nested(
+    makeOp: (wire: WireValue) => WireOp,
+    value: Schema,
+    guard: Guard | undefined,
+    deep: boolean,
+  ): void {
+    if (!deep && value._wireRef !== -1) unsend(value, this._ctx.dropped)
+    this.attach(makeOp, value, guard, deep)
+  }
+
+  /**
    * Full content of an instance: every non-zero primitive and every
    * collection entry. Receivers start instances at zero values.
    */
@@ -298,7 +319,7 @@ class Emitter {
       const value = fieldValue(instance, field.name)
       if (value instanceof Schema) {
         const index = field.index
-        this.attach((wire) => [0, ref, index, wire], value, guard, deep)
+        this.nested((wire) => [0, ref, index, wire], value, guard, deep)
       } else if (value instanceof PrimitiveState) {
         const wire = value._toWire()
         if (!isZeroWire(wire)) {
@@ -323,7 +344,12 @@ class Emitter {
     deep: boolean,
   ): void {
     const ref = collection._wireRef
-    const wire = (value: unknown): unknown => collection._toWire(value)
+    const wire = (value: unknown): unknown => {
+      // The collection's owner is on the wire now; a shared element whose
+      // parent isn't follows this holder, so its changes reach the room.
+      if (value instanceof Schema) value._preferHolder(collection)
+      return collection._toWire(value)
+    }
     if (collection instanceof MapBase) {
       for (const [key, value] of collection) {
         this.attach((w) => [1, ref, key, w], wire(value), guard, deep)
@@ -355,7 +381,7 @@ class Emitter {
       if (value instanceof Schema) {
         // A replaced nested field: the new instance is always sent anew.
         const index = field.index
-        this.attach((wire) => [0, ref, index, wire], value, guard, false)
+        this.nested((wire) => [0, ref, index, wire], value, guard, false)
       } else if (value instanceof PrimitiveState) {
         this.emit(
           [0, ref, field.index, value._toWire()],
@@ -378,13 +404,13 @@ class Emitter {
     if (tree._dirtyChildren !== undefined) {
       for (const childTree of tree._dirtyChildren) {
         const child = childTree.owner
-        if (child === undefined || child._parent !== instance) continue
-        const holder = child._parentField
+        // A shared child is dirty under each holder; visited once, through
+        // whichever is reached first.
+        const holder = child?._heldBy(instance)
+        if (child === undefined || holder === undefined) continue
         this.visit(
           child,
-          holder === undefined
-            ? guard
-            : this.fieldGuard(holder, "normal", guard),
+          holder === null ? guard : this.fieldGuard(holder, "normal", guard),
         )
       }
     }
@@ -411,8 +437,14 @@ class Emitter {
         }
         const value = collection.get(key)
         // Coalesced: send the key's final value, unless receivers already
-        // have it (same element, or same quantized wire value).
-        if (!record.had || !collection._sameWire(record.prev, value)) {
+        // have it (same element, or same quantized wire value). The same
+        // element under another refId (it passed through a nested field
+        // this tick, which sends it anew) is new to them.
+        if (
+          !record.had ||
+          !collection._sameWire(record.prev, value) ||
+          (value instanceof Schema && value._wireRef !== record.prevRef)
+        ) {
           this.attach((w) => [1, ref, key, w], wire(value), guard, false)
         }
       }
@@ -424,13 +456,22 @@ class Emitter {
       }
       if (collection._touched === undefined) return
       for (const [value, had] of collection._touched) {
+        // The refId receivers know it by, even if it was sent anew this
+        // tick (it passed through a nested field).
+        const sent =
+          value instanceof Schema
+            ? (collection._touchedRef?.get(value) ?? value._wireRef)
+            : -1
         if (collection.has(value)) {
-          if (!had) this.attach((w) => [1, ref, w], wire(value), guard, false)
+          if (had && value instanceof Schema && value._wireRef !== sent) {
+            // Still here, but under a new identity: replace the old one.
+            if (sent !== -1) this.emit([2, ref, sent], guard)
+            this.attach((w) => [1, ref, w], wire(value), guard, false)
+          } else if (!had) {
+            this.attach((w) => [1, ref, w], wire(value), guard, false)
+          }
         } else if (had) {
           if (value instanceof Schema) {
-            // The refId receivers know it by, even if it was sent anew
-            // this tick (moved into a nested field).
-            const sent = collection._touchedRef?.get(value) ?? value._wireRef
             if (sent !== -1) this.emit([2, ref, sent], guard)
           } else if (
             typeof value === "number" ||
@@ -650,7 +691,12 @@ export function generateDeltas<C extends object>(
  * in full, under new refIds, if it is ever attached again.
  */
 export function clearChangeTrees(root: Schema): void {
-  clearTree(root, contexts.get(root))
+  const ctx = contexts.get(root)
+  clearTree(root, ctx)
+  if (ctx !== undefined) {
+    release(ctx.dropped, ctx)
+    ctx.dropped = emptyUnsent()
+  }
 }
 
 function clearTree(instance: Schema, ctx: EncodeContext | undefined): void {
@@ -664,9 +710,11 @@ function clearTree(instance: Schema, ctx: EncodeContext | undefined): void {
       if (!(collection instanceof CollectionState)) continue
       if (collection._removed !== undefined) {
         for (const removed of collection._removed) {
-          if (removed._parent === undefined && removed._wireRef !== -1) {
-            forget(removed, ctx)
-          }
+          if (removed._wireRef === -1) continue
+          // Forgotten only if no holder left is on the wire: it may still
+          // be shared by another collection, or have moved.
+          removed._relink()
+          if (!isOnWire(removed._parent)) forget(removed, ctx)
         }
       }
       collection._clearChanges()

@@ -7,7 +7,10 @@ import type { State } from "./state-base"
  * live on each collection (§5.7.4).
  *
  * Dirtiness propagates upward as a chain of `dirtyChildren` sets, so delta
- * generation walks only the dirty paths instead of the whole tree.
+ * generation walks only the dirty paths instead of the whole tree. An
+ * instance shared by several collections has one parent per holder, and
+ * propagates to all of them: whichever is still in the room carries the
+ * change, even if another holder left the tree this tick.
  */
 export class ChangeTree {
   /** The Schema instance this tree belongs to. */
@@ -21,15 +24,16 @@ export class ChangeTree {
    * replaced nested field); their blocks are freed by the commit.
    */
   public _unsent: Unsent | undefined
-  private _parent: ChangeTree | undefined
+  private _parents: readonly ChangeTree[] = []
   private _changes: Map<string, unknown> | undefined
 
   public constructor(owner?: Schema) {
     this.owner = owner
   }
 
+  /** The first parent (the only one unless the instance is shared). */
   public get parent(): ChangeTree | undefined {
-    return this._parent
+    return this._parents[0]
   }
 
   /** Records a changed field (last write wins) and dirties ancestors. */
@@ -75,21 +79,27 @@ export class ChangeTree {
 
   /** Re-links this tree; carries pending dirtiness to the new parent. */
   public setParent(parent: ChangeTree | undefined): void {
-    if (this._parent === parent) return
-    this._parent?._dirtyChildren?.delete(this)
-    this._parent = parent
-    if (parent !== undefined && this.isDirty()) this._propagate()
+    this.setParents(parent === undefined ? [] : [parent])
+  }
+
+  /** @internal Re-links to every holder; carries pending dirtiness. */
+  public setParents(parents: readonly ChangeTree[]): void {
+    const old = this._parents
+    if (old.length === parents.length && old.every((p, i) => p === parents[i]))
+      return
+    for (const parent of old) {
+      if (!parents.includes(parent)) parent._dirtyChildren?.delete(this)
+    }
+    this._parents = parents
+    if (parents.length > 0 && this.isDirty()) this._propagate()
   }
 
   private _propagate(): void {
-    let child: ChangeTree = this
-    let parent = this._parent
-    while (parent !== undefined) {
+    for (const parent of this._parents) {
       if (parent._dirtyChildren === undefined) parent._dirtyChildren = new Set()
-      else if (parent._dirtyChildren.has(child)) return
-      parent._dirtyChildren.add(child)
-      child = parent
-      parent = parent._parent
+      else if (parent._dirtyChildren.has(this)) continue
+      parent._dirtyChildren.add(this)
+      parent._propagate()
     }
   }
 }

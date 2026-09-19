@@ -7,7 +7,7 @@ import {
   valueCodec,
 } from "./elements"
 import type { PrimitiveWire } from "./primitives"
-import { Schema } from "./schema"
+import { collectionRefusal, reportSharedElement, Schema } from "./schema"
 import { type SchemaConstructor, schemaNameOf } from "./schema-registry"
 import { type EventQueue, enqueue, notify, State } from "./state-base"
 
@@ -103,6 +103,33 @@ export abstract class CollectionState<V, K, T> extends State<T> {
   /** Links a newly inserted element (schema variants only). */
   protected _attach(_value: V): void {}
 
+  /**
+   * False (and logged) if this collection must refuse `value`: a Schema
+   * held by a nested field, or its own owner or an ancestor (spec §5.7.9).
+   * A refused add leaves the collection unchanged. Never throws: adds run
+   * on per-tick paths.
+   */
+  protected _accepts(value: V): boolean {
+    if (!(value instanceof Schema)) return true
+    const problem = collectionRefusal(value, this._owner)
+    if (problem === undefined) return true
+    const where =
+      this._owner === undefined
+        ? `a ${this._type} not yet initialized`
+        : `${this._owner.constructor.name}.${this._fieldName}`
+    console.error(
+      `[bungohan/state] ${where}: refusing to add a ` +
+        `${value.constructor.name} that ${problem}. The collection is ` +
+        "unchanged.",
+    )
+    return false
+  }
+
+  /** `_accepts` for every value, stopping at the first refused one. */
+  protected _acceptsAll(values: readonly V[]): boolean {
+    return values.every((value) => this._accepts(value))
+  }
+
   /** Unlinks a removed element (schema variants only). */
   protected _detach(_value: V): void {}
 
@@ -168,6 +195,20 @@ function linkSchema(
   if (owner !== undefined) value._attachTo(owner, collection)
 }
 
+/**
+ * Links the elements a collection got before it was bound. Nothing could be
+ * checked when they were added, so an element a nested field holds is only
+ * reported here (spec §5.7.9).
+ */
+function linkAll(collection: State, values: Iterable<Schema>): void {
+  const owner = collection._owner
+  if (owner === undefined) return
+  for (const value of values) {
+    reportSharedElement(collection, value)
+    value._attachTo(owner, collection)
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Maps
 // ---------------------------------------------------------------------------
@@ -176,6 +217,8 @@ function linkSchema(
 export interface KeyRecord<V> {
   readonly had: boolean
   readonly prev: V | undefined
+  /** `prev`'s refId then, if it was a Schema (-1 otherwise). */
+  readonly prevRef: number
 }
 
 /**
@@ -225,6 +268,7 @@ export abstract class MapBase<
     const had = this._map.has(key)
     const old = this._map.get(key)
     if (had && Object.is(old, value)) return this
+    if (!this._accepts(value)) return this
     this._record(key)
     this._map.set(key, value)
     if (had && old !== undefined) this._detach(old)
@@ -330,9 +374,11 @@ export abstract class MapBase<
     if (this._cleared || !this._isTracking()) return
     if (this._touched === undefined) this._touched = new Map()
     if (!this._touched.has(key)) {
+      const prev = this._map.get(key)
       this._touched.set(key, {
         had: this._map.has(key),
-        prev: this._map.get(key),
+        prev,
+        prevRef: prev instanceof Schema ? prev._wireRef : -1,
       })
     }
   }
@@ -387,7 +433,7 @@ export class SchemaMapState<
   }
 
   public override _onBound(): void {
-    for (const value of this._map.values()) this._attach(value)
+    linkAll(this, this._map.values())
   }
 
   protected override _attach(value: V): void {
@@ -439,6 +485,7 @@ export abstract class SetBase<T> extends CollectionState<T, T, ReadonlySet<T>> {
 
   public add(value: T): this {
     if (this._set.has(value)) return this
+    if (!this._accepts(value)) return this
     this._record(value)
     this._set.add(value)
     this._attach(value)
@@ -570,7 +617,7 @@ export class SchemaSetState<T extends Schema = Schema> extends SetBase<T> {
   }
 
   public override _onBound(): void {
-    for (const value of this._set) this._attach(value)
+    linkAll(this, this._set)
   }
 
   protected override _attach(value: T): void {
@@ -631,12 +678,16 @@ export abstract class ArrayBase<T> extends ReplaceableCollection<
     return this._items[index]
   }
 
-  /** Replaces the element at an existing index; false if out of range. */
+  /**
+   * Replaces the element at an existing index; false if out of range or
+   * refused (a Schema a nested field holds, spec §5.7.9).
+   */
   public set(index: number, value: T): boolean {
     if (!Number.isInteger(index) || index < 0 || index >= this._items.length)
       return false
     const old = this._items[index]
     if (old === undefined || Object.is(old, value)) return true
+    if (!this._accepts(value)) return false
     this._items[index] = value
     this._detach(old)
     this._attach(value)
@@ -646,12 +697,15 @@ export abstract class ArrayBase<T> extends ReplaceableCollection<
     return true
   }
 
+  /** Refused (unchanged) if any item is refused, as `set` explains. */
   public push(...items: T[]): number {
+    if (!this._acceptsAll(items)) return this._items.length
     for (const item of items) this._insert(this._items.length, item)
     return this._items.length
   }
 
   public unshift(...items: T[]): number {
+    if (!this._acceptsAll(items)) return this._items.length
     items.forEach((item, offset) => {
       this._insert(offset, item)
     })
@@ -668,8 +722,12 @@ export abstract class ArrayBase<T> extends ReplaceableCollection<
     return this._items.length === 0 ? undefined : this._removeAt(0)
   }
 
-  /** Native `splice` semantics (negative start, omitted deleteCount). */
+  /**
+   * Native `splice` semantics (negative start, omitted deleteCount). If any
+   * item is refused (see `set`), nothing is removed or inserted.
+   */
   public splice(start: number, deleteCount?: number, ...items: T[]): T[] {
+    if (!this._acceptsAll(items)) return []
     const length = this._items.length
     const from =
       start < 0 ? Math.max(length + start, 0) : Math.min(start, length)
@@ -892,7 +950,7 @@ export class SchemaArrayState<T extends Schema = Schema> extends ArrayBase<T> {
   }
 
   public override _onBound(): void {
-    for (const value of this._items) this._attach(value)
+    linkAll(this, this._items)
   }
 
   protected override _attach(value: T): void {

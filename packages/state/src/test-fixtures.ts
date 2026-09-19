@@ -110,6 +110,42 @@ export function plain(value: unknown): unknown {
   return value
 }
 
+/**
+ * Every refId held by a known instance or collection reachable from `root`,
+ * as refId → holder. Fails on any duplicate.
+ */
+export function liveRefs(root: Schema): Map<number, object> {
+  const refs = new Map<number, object>()
+  const claim = (ref: number, holder: object, path: string): void => {
+    const other = refs.get(ref)
+    if (other !== undefined && other !== holder) {
+      throw new Error(`refId ${ref} is held by two live objects (at ${path})`)
+    }
+    refs.set(ref, holder)
+  }
+  const walk = (instance: Schema, path: string): void => {
+    if (instance._wireRef === -1) {
+      throw new Error(`unsent instance in tree (at ${path})`)
+    }
+    claim(instance._wireRef, instance, path)
+    for (const field of instance._ensureInit().fields) {
+      const value = fieldValue(instance, field.name)
+      const at = `${path}.${field.name}`
+      if (value instanceof Schema) walk(value, at)
+      else if (value instanceof CollectionState) {
+        claim(value._wireRef, value, at)
+        let index = 0
+        for (const element of value._elements()) {
+          if (element instanceof Schema) walk(element, `${at}[${index}]`)
+          index++
+        }
+      }
+    }
+  }
+  walk(root, "root")
+  return refs
+}
+
 /** A server root and one client replica, synced like core would. */
 export class Peer<T extends Schema> {
   public readonly server: T
@@ -137,7 +173,9 @@ export class Peer<T extends Schema> {
     return ops
   }
 
+  /** Same values, and every live server refId held by one object. */
   public expectInSync(): void {
     expect(plain(this.client)).toEqual(plain(this.server))
+    liveRefs(this.server)
   }
 }
