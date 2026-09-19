@@ -1,3 +1,7 @@
+export {
+  LoopbackClientTransport,
+  type LoopbackClientTransportOptions,
+} from "./client-transport"
 export { type Clock, ManualClock, type TimerId } from "./clock"
 export {
   type DriverOptions,
@@ -10,8 +14,13 @@ export {
 } from "./driver"
 export {
   createServerHarness,
+  createTestHarness,
+  type RoomTypes,
   ServerHarness,
   type ServerHarnessOptions,
+  type TestClientOptions,
+  TestHarness,
+  type TestHarnessOptions,
 } from "./harness"
 export {
   type LoopbackConnectOptions,

@@ -8,7 +8,11 @@ export interface ConnectionContext {
   headers: Headers
   /** From `?token=` or an `Authorization: Bearer` header, if present. */
   token?: string
-  /** The negotiated protocol version (WebSocket subprotocol), if any. */
+  /**
+   * The negotiated protocol version (WebSocket subprotocol). Every
+   * transport must set it (see `ITransport.acceptProtocols`); core closes
+   * a connection without an accepted one with 1002.
+   */
   protocol?: string
   /** Transport-specific extras. */
   [key: string]: unknown
@@ -52,9 +56,13 @@ export interface ITransport {
    * subprotocol, spec §6.7.7), checked when the connection opens, before
    * any frame. A connection that doesn't is opened only to be closed at
    * once with 1002 and a reason naming the expected versions; it never
-   * reaches `onConnection`. Accepted connections expose the chosen version
-   * as `context.protocol`. Core calls this before `listen`.
+   * reaches `onConnection`. Core calls this before `listen`.
+   *
+   * Required, not optional: the transport **must** set
+   * `ConnectionContext.protocol` to the negotiated version on every
+   * connection it accepts, because core rejects (closes with 1002) any
+   * connection without one. `negotiateProtocol` does the choosing.
    */
-  acceptProtocols?(protocols: readonly string[]): void
+  acceptProtocols(protocols: readonly string[]): void
   getName(): string
 }

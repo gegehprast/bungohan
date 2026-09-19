@@ -85,6 +85,7 @@ import { test, expect } from "bun:test"
 ```
 
 - Core's end-to-end suites live in `packages/testing/src/core/` (testing depends on core, so this avoids a cycle). They run a real server via `createServerHarness` and speak the wire protocol through the `TestClient` driver.
+- client-js end-to-end suites live in `packages/testing/src/client-js/` and use `createTestHarness`, whose `connect()` returns a real `BungohanClient` on the harness's loopback and clock (spec §11.2).
 - Use `@bungohan/testing`'s loopback transport + manual clock for integration tests — advance time with `await harness.tick(16)`, never `setTimeout`/sleep. Tests must be deterministic.
 - Bandwidth assertions (spec §11.1) and protocol conformance vectors (§11.3) are real test suites, not documentation.
 

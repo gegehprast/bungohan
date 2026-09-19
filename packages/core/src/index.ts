@@ -1,5 +1,6 @@
+// Defined in @bungohan/types (shared with client-js); re-exported here.
+export { type Clock, SystemClock, type TimerId } from "@bungohan/types"
 export { Client, type ClientStatus, Connection } from "./client"
-export { type Clock, SystemClock, type TimerId } from "./clock"
 export { BungohanError, type ErrorCode } from "./errors"
 export { HttpServer, type HttpServerOptions } from "./http"
 export { Logger, type LoggerOptions, type LogLevel } from "./logger"

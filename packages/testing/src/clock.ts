@@ -1,4 +1,4 @@
-import type { Clock, TimerId } from "@bungohan/core"
+import type { Clock, TimerId } from "@bungohan/types"
 import { settle } from "./settle"
 
 export type { Clock, TimerId }

@@ -21,6 +21,7 @@ import {
 import type { IStore } from "@bungohan/store"
 import type { ConnectionContext } from "@bungohan/transport"
 import {
+  type Clock,
   type Contract,
   type EmptyContract,
   type Infer,
@@ -30,10 +31,11 @@ import {
   type Reservation,
   type SendMap,
   ServerFrameType,
+  SystemClock,
+  type TimerId,
 } from "@bungohan/types"
 import { nanoid } from "nanoid"
 import { Client, type Connection } from "./client"
-import { type Clock, SystemClock, type TimerId } from "./clock"
 import { BungohanError, type ErrorCode } from "./errors"
 import { Logger } from "./logger"
 import { IntervalLoop, SimulationLoop } from "./loop"

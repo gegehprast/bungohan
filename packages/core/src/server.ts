@@ -12,16 +12,18 @@ import { type ITransport, WebSocketTransport } from "@bungohan/transport"
 import {
   CLIENT_FRAME_HEADERS,
   ClientFrameType,
+  type Clock,
   CloseCode,
   JoinMode,
   type JoinRequest,
   LeaveCode,
   PROTOCOL_VERSION,
   ServerFrameType,
+  SystemClock,
+  type TimerId,
 } from "@bungohan/types"
 import { nanoid } from "nanoid"
 import { Client, Connection } from "./client"
-import { type Clock, SystemClock, type TimerId } from "./clock"
 import { BungohanError, type ErrorCode } from "./errors"
 import { HttpServer } from "./http"
 import { Logger } from "./logger"
@@ -188,7 +190,7 @@ export class BungohanServer {
       )
     }
     const transport = this._transport
-    transport.acceptProtocols?.([PROTOCOL_VERSION])
+    transport.acceptProtocols([PROTOCOL_VERSION])
     transport.onConnection?.((id, context) =>
       this._handleConnection(id, context),
     )

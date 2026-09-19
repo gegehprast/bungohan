@@ -219,6 +219,7 @@ export class LoopbackTransport implements ITransport {
     )
     if (!negotiated.ok) {
       // Opened only to be closed: the server never sees it (spec §6.7.7).
+      socket.protocol = negotiated.echo ?? ""
       socket._closing()
       socket._droppedByServer = true
       this._queue.push({
@@ -231,6 +232,7 @@ export class LoopbackTransport implements ITransport {
       return ok(socket)
     }
     this._sockets.set(clientId, socket)
+    socket.protocol = negotiated.protocol ?? ""
     const context: ConnectionContext = {
       ip: options.ip ?? "127.0.0.1",
       searchParams: new URLSearchParams(options.searchParams),
@@ -373,6 +375,12 @@ export type LoopbackReadyState = "open" | "closing" | "closed"
  */
 export class LoopbackSocket {
   public readonly clientId: string
+  /**
+   * The subprotocol the server answered with, like `WebSocket.protocol`:
+   * the negotiated version, or (for a rejected version, closed at once
+   * with 1002) the client's own first offer. `""` if none.
+   */
+  public protocol = ""
   /** @internal Set when the server disconnects this client. */
   public _droppedByServer = false
   private readonly _transport: LoopbackTransport

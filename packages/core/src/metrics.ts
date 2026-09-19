@@ -4,7 +4,7 @@
  * site is an optional call on `undefined`: nothing is counted, nothing is
  * allocated.
  */
-import type { Clock } from "./clock"
+import type { Clock } from "@bungohan/types"
 
 export interface ServerMetrics {
   processId: string

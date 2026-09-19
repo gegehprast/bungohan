@@ -1,8 +1,7 @@
 import { describe, expect, spyOn, test } from "bun:test"
 import { createNumber, Schema } from "@bungohan/state"
-import { defineContract, defineMessage, f } from "@bungohan/types"
+import { defineContract, defineMessage, f, SystemClock } from "@bungohan/types"
 import { Client } from "./client"
-import { SystemClock } from "./clock"
 import { Room } from "./room"
 
 class S extends Schema {

@@ -1,4 +1,4 @@
-import type { Clock, TimerId } from "./clock"
+import type { Clock, TimerId } from "@bungohan/types"
 
 /** Timers fire late by float error; this much short of a step still counts. */
 const EPSILON = 1e-6

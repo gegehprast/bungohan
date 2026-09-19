@@ -1,6 +1,5 @@
 import { err, ok, type Result } from "@bungohan/result"
-import type { Reservation } from "@bungohan/types"
-import type { Clock, TimerId } from "./clock"
+import type { Clock, Reservation, TimerId } from "@bungohan/types"
 import { BungohanError, type ErrorCode } from "./errors"
 import type { Room } from "./room"
 import type { RoomManager } from "./room-manager"

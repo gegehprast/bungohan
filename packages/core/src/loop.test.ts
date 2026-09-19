@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { Clock, TimerId } from "./clock"
+import type { Clock, TimerId } from "@bungohan/types"
 import { IntervalLoop, SimulationLoop } from "./loop"
 
 /**

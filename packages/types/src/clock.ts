@@ -1,10 +1,11 @@
 export type TimerId = number
 
 /**
- * Time source and timers. Every loop, timeout and timestamp in core goes
- * through an injected `Clock` (`ServerOptions.clock`), so tests drive time
- * with `ManualClock` from `@bungohan/testing`. Nothing else in core reads
- * wall-clock time.
+ * Time source and timers. Every loop, timeout and timestamp in core
+ * (`ServerOptions.clock`) and in client-js (`ClientOptions.clock`: PING,
+ * reconnection backoff) goes through an injected `Clock`, so tests drive
+ * time with `ManualClock` from `@bungohan/testing`. It lives here, in the
+ * package both sides share, because client-js must never import core.
  */
 export interface Clock {
   /** Milliseconds; only differences are meaningful. */
@@ -19,7 +20,8 @@ export interface Clock {
  * The real clock: epoch milliseconds with sub-millisecond precision
  * (`performance.timeOrigin + performance.now()`, so tick durations in
  * metrics mean something) and the platform timers. Timer handles are
- * mapped to numbers, since Bun's are objects.
+ * mapped to numbers, since Bun's are objects. Browser-safe: only
+ * `performance` and the standard timer functions.
  */
 export class SystemClock implements Clock {
   private readonly _timers = new Map<TimerId, ReturnType<typeof setTimeout>>()
