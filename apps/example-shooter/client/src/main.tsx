@@ -1,23 +1,10 @@
 import { createBungohanClient } from "@bungohan/client-js"
 import { BungohanProvider } from "@bungohan/client-js/react"
-import {
-  Bullet,
-  DEFAULT_SERVER_PORT,
-  Enemy,
-  Loot,
-  Player,
-  RoomInfo,
-} from "@bungohan/example-shooter-shared"
-import { SchemaRegistry } from "@bungohan/state"
+import { DEFAULT_SERVER_PORT } from "@bungohan/example-shooter-shared"
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
 import { App } from "./App"
 import "./index.css"
-
-// The client only ever receives these classes (inside the rooms' maps) and
-// never constructs one, so they don't auto-register. Unregistered, their
-// instances would be dropped from the replica without an error.
-SchemaRegistry.register(Player, Enemy, Bullet, Loot, RoomInfo)
 
 const url =
   import.meta.env.VITE_SERVER_URL ??

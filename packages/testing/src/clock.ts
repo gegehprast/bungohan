@@ -68,6 +68,15 @@ export class ManualClock implements Clock {
     return this._timers.size
   }
 
+  /** When the next timer falls due, or undefined if none is scheduled. */
+  public nextDue(): number | undefined {
+    let due: number | undefined
+    for (const timer of this._timers.values()) {
+      if (due === undefined || timer.due < due) due = timer.due
+    }
+    return due
+  }
+
   /**
    * Moves time forward by `ms`, firing everything that falls due. Calls
    * made while an advance is running (including from a timer) run after

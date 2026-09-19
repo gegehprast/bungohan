@@ -48,7 +48,8 @@ export function useBungohan(): IBungohanClient {
   return client
 }
 
-export type RoomJoinMode = "join" | "create" | "joinOrCreate"
+/** How `useRoom` joins; with `"joinById"` its first argument is a room id. */
+export type RoomJoinMode = "join" | "create" | "joinOrCreate" | "joinById"
 
 export interface UseRoomResult<S extends Schema, C extends Contract> {
   /** Set once the join completed; undefined again after the room is left. */
@@ -66,7 +67,9 @@ export interface UseRoomResult<S extends Schema, C extends Contract> {
 
 /**
  * Joins a room for the component's lifetime: joins on mount, leaves on
- * unmount (and when `roomType` or `mode` change, then joins again).
+ * unmount (and when `roomType` or `mode` change, then joins again). With
+ * mode `"joinById"`, `roomType` is the id of the room to join (e.g. one
+ * picked from a room list).
  * `options` and `join` are read when the join starts; changing them later
  * doesn't rejoin. Pass `join` (`{ state, contract }`) to type the room and
  * get a replica.
@@ -99,7 +102,9 @@ export function useRoom<
         ? client.join(roomType, joinOptions, joinWith)
         : mode === "create"
           ? client.create(roomType, joinOptions, joinWith)
-          : client.joinOrCreate(roomType, joinOptions, joinWith)
+          : mode === "joinById"
+            ? client.joinById(roomType, joinOptions, joinWith)
+            : client.joinOrCreate(roomType, joinOptions, joinWith)
     void joining.then((joined) => {
       if (joined.isErr()) {
         if (active) {
@@ -167,10 +172,11 @@ const unsubscribed = () => {}
  *   applied state frame (the replica is mutated in place, so its identity
  *   alone wouldn't signal a change).
  * - With a selector: returns `selector(room.state)` and re-renders only
- *   when that value changes, compared shallowly ({@link shallowEqual}). So
- *   select plain values (`s => s.score.get()`,
+ *   when that value changes, compared with `isEqual` (default
+ *   {@link shallowEqual}). So select plain values (`s => s.score.get()`,
  *   `s => [...s.players.keys()]`), not live wrappers, whose identity never
- *   changes.
+ *   changes. For a selection deeper than one level (a list of row
+ *   objects), pass an `isEqual` that compares it.
  *
  * Undefined while `room` is.
  */
@@ -180,13 +186,17 @@ export function useRoomState<S extends Schema>(
 export function useRoomState<S extends Schema, R>(
   room: IRoom<S, Contract> | undefined,
   selector: (state: Readonly<S>) => R,
+  isEqual?: (previous: R, next: R) => boolean,
 ): R | undefined
 export function useRoomState<S extends Schema, R>(
   room: IRoom<S, Contract> | undefined,
   selector?: (state: Readonly<S>) => R,
+  isEqual: (previous: R, next: R) => boolean = shallowEqual,
 ): Readonly<S> | R | undefined {
   const selectorRef = useRef(selector)
   selectorRef.current = selector
+  const isEqualRef = useRef(isEqual)
+  isEqualRef.current = isEqual
   const version = useRef(0)
   const cache = useRef<{ room: unknown; value: R } | undefined>(undefined)
 
@@ -210,7 +220,7 @@ export function useRoomState<S extends Schema, R>(
     if (
       cached !== undefined &&
       cached.room === room &&
-      shallowEqual(cached.value, next)
+      isEqualRef.current(cached.value, next)
     ) {
       return cached.value
     }

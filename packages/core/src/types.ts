@@ -178,6 +178,8 @@ export type ErrorSource =
   | "onTick"
   | "onBeforeSync"
   | "onDispose"
+  | "onDisconnect"
+  | "onReconnect"
   | "onPause"
   | "onResume"
   | "onMessage"

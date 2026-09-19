@@ -1,8 +1,12 @@
 import {
   type FixedDecimals,
   fromFixed,
+  type IntKind,
+  isIntKind,
+  isIntOf,
   type SchemaFieldType,
   toFixed,
+  toInt,
 } from "@bungohan/types"
 import { type EventQueue, enqueue, notify, State } from "./state-base"
 
@@ -158,6 +162,54 @@ export class FixedPointState extends PrimitiveState<number> {
     return typeof wire === "number" && Number.isInteger(wire)
       ? fromFixed(wire, this.decimals)
       : undefined
+  }
+}
+
+/**
+ * An integer of one kind (`createInt(f.int32)`), sent as that integer:
+ * truncated toward zero and saturated at the kind's range, NaN → 0, the
+ * same rule as integer message fields (spec §8.1.1). Like fixed-point, the
+ * server keeps what was set and marks the field dirty only when the wire
+ * integer changes; receivers hold the integer, and reject a wire value
+ * that isn't an integer of the kind.
+ */
+export class IntState extends PrimitiveState<number> {
+  public readonly _type: SchemaFieldType
+  public readonly kind: IntKind
+  /** The descriptor's kind, when it isn't an integer kind (a bad cast). */
+  private readonly _badKind: string | undefined
+
+  public constructor(of: unknown, initial: number) {
+    super(initial)
+    const kind: unknown =
+      typeof of === "object" && of !== null ? Reflect.get(of, "kind") : of
+    if (typeof kind === "string" && isIntKind(kind)) {
+      this.kind = kind
+      this._badKind = undefined
+    } else {
+      this.kind = "int32"
+      this._badKind = String(kind)
+    }
+    this._type = this.kind
+  }
+
+  public override _declarationError(): string | undefined {
+    return this._badKind === undefined
+      ? undefined
+      : "createInt() needs an integer kind (f.int8 … f.uint32), " +
+          `got ${this._badKind}`
+  }
+
+  public _zeroWire(): number {
+    return 0
+  }
+
+  protected _encode(value: number): number {
+    return toInt(value, this.kind)
+  }
+
+  protected _decode(wire: unknown): number | undefined {
+    return isIntOf(wire, this.kind) ? wire : undefined
   }
 }
 

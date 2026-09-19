@@ -10,7 +10,13 @@ import {
   packUnknownMessage,
   unpackMessage,
 } from "@bungohan/serializer"
-import { applyDelta, Schema, type SchemaConstructor } from "@bungohan/state"
+import {
+  applyDelta,
+  reachableSchemaClasses,
+  Schema,
+  type SchemaConstructor,
+  SchemaRegistry,
+} from "@bungohan/state"
 import {
   ClientFrameType,
   type Contract,
@@ -178,6 +184,24 @@ type Unclaimed =
       readonly payload: unknown
     }
   | { readonly kind: "clientJoin" | "clientLeave"; readonly sessionId: string }
+  | { readonly kind: "error"; readonly code: string; readonly message: string }
+
+/** Classes reachable from each state class, walked once per class. */
+const reachable = new WeakMap<SchemaConstructor, SchemaConstructor[]>()
+
+/**
+ * Registers every Schema class reachable from `stateClass` (nested fields,
+ * collection element classes), so classes the client only ever receives
+ * resolve by name without a manual `SchemaRegistry.register`.
+ */
+function registerReachable(stateClass: SchemaConstructor): void {
+  let classes = reachable.get(stateClass)
+  if (classes === undefined) {
+    classes = reachableSchemaClasses(stateClass)
+    reachable.set(stateClass, classes)
+  }
+  SchemaRegistry.register(...classes)
+}
 
 /** At most this many unclaimed pre-join events are kept (oldest dropped). */
 const MAX_UNCLAIMED = 64
@@ -345,7 +369,9 @@ export class Room<S extends Schema = Schema, C extends Contract = EmptyContract>
   }
 
   public onError(cb: (code: string, message: string) => void): () => void {
-    return add(this._error, cb)
+    const off = add(this._error, cb)
+    this._claim((event) => event.kind === "error")
+    return off
   }
 
   public onClientJoin(cb: (client: { sessionId: string }) => void) {
@@ -503,6 +529,10 @@ export class Room<S extends Schema = Schema, C extends Contract = EmptyContract>
         this._emit(set, { sessionId: event.sessionId })
         return true
       }
+      case "error":
+        if (this._error.size === 0) return false
+        this._emit(this._error, event.code, event.message)
+        return true
     }
   }
 
@@ -625,9 +655,9 @@ export class Room<S extends Schema = Schema, C extends Contract = EmptyContract>
   }
 
   private _newReplica(): Schema {
-    return this._stateClass === undefined
-      ? new NoState()
-      : new this._stateClass()
+    if (this._stateClass === undefined) return new NoState()
+    registerReachable(this._stateClass)
+    return new this._stateClass()
   }
 
   /** Every snapshot starts a fresh stream: new session, new replica. */
@@ -662,7 +692,9 @@ export class Room<S extends Schema = Schema, C extends Contract = EmptyContract>
       return
     }
     if (this._stateClass !== undefined) {
-      const applied = applyDelta(this._state, ops.value)
+      const applied = applyDelta(this._state, ops.value, {
+        onUnknownClass: (name) => this._unknownClass(name),
+      })
       if (applied.isErr()) {
         this._desync(
           new ClientError("DESYNC", applied.error.message, applied.error),
@@ -671,6 +703,25 @@ export class Room<S extends Schema = Schema, C extends Contract = EmptyContract>
       }
     }
     this._emit(this._stateChange, this._state as S)
+  }
+
+  /**
+   * An instance of a class with no registered local class was left out of
+   * the replica (spec §5.7.2). Loud, since the replica now lacks data:
+   * logged, and reported through `onError`, kept for the first handler if
+   * it happened while joining (before the caller had the room).
+   */
+  private _unknownClass(name: string): void {
+    const message =
+      `the server sent "${name}", a Schema class this client has not ` +
+      "registered; its instances are missing from room.state. Declare it " +
+      "reachably from the join's state class, or SchemaRegistry.register() it"
+    this._host.error(`room ${this.roomType}: ${message}`)
+    const event: Unclaimed = { kind: "error", code: "UNKNOWN_CLASS", message }
+    if (this._dispatch(event)) return
+    if (this._held !== undefined || this._releasing) {
+      if (this._unclaimed.push(event) > MAX_UNCLAIMED) this._unclaimed.shift()
+    }
   }
 
   private _desync(error: ClientError): void {

@@ -4,6 +4,7 @@
  */
 import type { IntKind } from "./contract"
 import type { FixedDecimals } from "./fixed"
+import { isIntKind } from "./ints"
 
 /** Op codes, as the first element of every {@link WireOp}. */
 export const WireOpCode = {
@@ -45,6 +46,7 @@ export type KeyFieldType = "string" | "float64" | IntKind
  * |------------------------------------------|------------------------------|
  * | `createNumber()`                         | `float64`                    |
  * | `createFixedPoint(2)`                    | `fixed:2`                    |
+ * | `createInt(f.uint16)`                    | `uint16`                     |
  * | `new Vec()` (nested schema field)        | `schema<Vec>`                |
  * | `createMap(f.string, f.float32)`         | `map<string,float32>`        |
  * | `createSet(f.uint16)`                    | `set<uint16>`                |
@@ -58,6 +60,7 @@ export type KeyFieldType = "string" | "float64" | IntKind
  */
 export type SchemaFieldType =
   | PrimitiveFieldType
+  | IntKind
   | `schema<${string}>`
   | `map<${KeyFieldType},${PrimitiveFieldType}>`
   | `set<${KeyFieldType}>`
@@ -69,6 +72,8 @@ export type SchemaFieldType =
 /** A {@link SchemaFieldType} broken into its parts. */
 export type ParsedFieldType =
   | { readonly kind: "primitive"; readonly type: PrimitiveFieldType }
+  /** An integer field (`createInt`). Fields only, never collection values. */
+  | { readonly kind: "int"; readonly type: IntKind }
   | { readonly kind: "schema"; readonly schema: string }
   | {
       readonly kind: "map"
@@ -116,6 +121,7 @@ export function isKeyFieldType(type: string): type is KeyFieldType {
  */
 export function parseFieldType(type: string): ParsedFieldType | undefined {
   if (isPrimitiveFieldType(type)) return { kind: "primitive", type }
+  if (isIntKind(type)) return { kind: "int", type }
   const open = type.indexOf("<")
   if (open <= 0 || !type.endsWith(">")) return undefined
   const head = type.slice(0, open)
@@ -152,7 +158,11 @@ export function parseFieldType(type: string): ParsedFieldType | undefined {
  * collection refId (spec §5.7.9).
  */
 export function isCollectionField(parsed: ParsedFieldType): boolean {
-  return parsed.kind !== "primitive" && parsed.kind !== "schema"
+  return (
+    parsed.kind !== "primitive" &&
+    parsed.kind !== "int" &&
+    parsed.kind !== "schema"
+  )
 }
 
 /**

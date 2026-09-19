@@ -101,7 +101,23 @@ function buildClassInfo(instance: Schema): ClassInfo {
  * point are not recorded, which is correct: nothing has observed the
  * instance yet, and it is serialized in full the first time it is sent.
  *
- * Field names starting with `_` are reserved and never synchronized.
+ * Only wrapper fields (from the `create*` factories) and nested Schema
+ * instances are synchronized. A plain field (`public vx = 0`, an array, a
+ * Map, any non-wrapper value) is local to the object it lives on: never
+ * sent, never in the class table, never touched by a receiver. That makes
+ * plain fields the place for server-only data (velocities, cooldowns) on
+ * a class both sides share:
+ *
+ * ```ts
+ * class Bullet extends Schema {
+ *   public static override schemaName = "Bullet"
+ *   public x = createFixedPoint(1) // synchronized
+ *   public vx = 0                   // server-only, never sent
+ * }
+ * ```
+ *
+ * Field names starting with `_` are reserved for the framework and never
+ * synchronized; don't use them for your own fields.
  */
 export class Schema {
   /** Required on every concrete subclass; identifies the class on the wire. */

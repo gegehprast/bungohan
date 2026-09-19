@@ -3,14 +3,12 @@ import {
   DEFAULT_SERVER_PORT,
   ROOM_TYPE,
 } from "@bungohan/example-shooter-shared"
-import { setupShooterServer, TICK_RATES } from "./app"
+import { setupShooterServer } from "./app"
 
 const port = Number(process.env["PORT"] ?? DEFAULT_SERVER_PORT)
 
-const server = createBungohanServer({
-  transport: { config: { port } },
-  ...TICK_RATES,
-})
+// Each room type sets its own tick rates in onCreate.
+const server = createBungohanServer({ transport: { config: { port } } })
 setupShooterServer(server)
 
 // SIGINT/SIGTERM stop the server gracefully (gracefulShutdown defaults).

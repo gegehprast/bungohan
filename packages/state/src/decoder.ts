@@ -40,6 +40,18 @@ class DecodeContext {
   /** Number of places (fields, collection slots) holding each instance. */
   public readonly holders = new Map<Schema, number>()
   public rootBound = false
+  /** Unknown class names already reported (once per stream). */
+  public readonly unknownReported = new Set<string>()
+}
+
+export interface ApplyDeltaOptions {
+  /**
+   * An instance of a class this receiver has no local class for (none is
+   * registered under its name) was dropped, with everything under it.
+   * Called once per class name per stream (per replica root). Skipping is
+   * the protocol rule (spec §5.7.2); this makes it visible.
+   */
+  onUnknownClass?: (name: string) => void
 }
 
 /** Per-`applyDelta` call state. */
@@ -91,11 +103,18 @@ class Decoder {
   private readonly _ctx: DecodeContext
   private readonly _root: Schema
   private readonly _frame: Frame
+  private readonly _options: ApplyDeltaOptions
 
-  public constructor(ctx: DecodeContext, root: Schema, frame: Frame) {
+  public constructor(
+    ctx: DecodeContext,
+    root: Schema,
+    frame: Frame,
+    options: ApplyDeltaOptions,
+  ) {
     this._ctx = ctx
     this._root = root
     this._frame = frame
+    this._options = options
   }
 
   public apply(op: unknown): Result<void, StateError> {
@@ -352,6 +371,7 @@ class Decoder {
     if (binding === undefined) return this._unknownClass(classId, op)
     if (binding.ctor === undefined) {
       this._ignore(binding, ref)
+      this._reportUnknown(binding.entry.name)
       return ok(IGNORED)
     }
     const instance = new binding.ctor()
@@ -429,6 +449,17 @@ class Decoder {
     }
     binding.local = local
     return ok(local)
+  }
+
+  private _reportUnknown(name: string): void {
+    const reported = this._ctx.unknownReported
+    if (reported.has(name)) return
+    reported.add(name)
+    const report = this._options.onUnknownClass
+    if (report === undefined) return
+    // The report is about data, not an op: queued like a listener, so the
+    // frame is fully applied first.
+    this._frame.queue.push(() => report(name))
   }
 
   /** Marks an unknown-class instance's refs as ignored. */
@@ -532,10 +563,14 @@ class Decoder {
  *
  * On error, ops before the failing one stay applied; the caller should treat
  * the connection as desynchronized.
+ *
+ * Instances of a class with no local counterpart are skipped, with their
+ * subtree; pass `onUnknownClass` to hear about it.
  */
 export function applyDelta(
   root: Schema,
   ops: readonly WireOp[],
+  options: ApplyDeltaOptions = {},
 ): Result<void, StateError> {
   root._ensureInit()
   let ctx = contexts.get(root)
@@ -544,7 +579,7 @@ export function applyDelta(
     contexts.set(root, ctx)
   }
   const frame: Frame = { queue: [], created: new Set(), released: [] }
-  const decoder = new Decoder(ctx, root, frame)
+  const decoder = new Decoder(ctx, root, frame, options)
 
   let result: Result<void, StateError> = ok(undefined)
   for (const op of ops) {

@@ -55,6 +55,21 @@ describe("parseFieldType", () => {
     })
   })
 
+  test("integer kinds are field types (createInt), never collection values", () => {
+    const kinds = [
+      "int8",
+      "int16",
+      "int32",
+      "uint8",
+      "uint16",
+      "uint32",
+    ] as const
+    for (const type of kinds) {
+      expect(parseFieldType(type)).toEqual({ kind: "int", type })
+    }
+    // Still rejected below: "map<string,uint8>", "array<int32>".
+  })
+
   test("rejects anything else", () => {
     for (const type of [
       "",
@@ -62,7 +77,6 @@ describe("parseFieldType", () => {
       "schema",
       "fixed:10",
       "fixed:-1",
-      "int8", // not a field type (keys only)
       "map<string>",
       "map<bool,string>",
       "map<string,uint8>",

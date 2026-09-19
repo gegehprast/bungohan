@@ -222,9 +222,84 @@ describe("reconnection", () => {
       await h.connect().reconnect(a.reconnectionToken ?? "", opts)
     ).unwrap()
     expect(server.isPaused).toBe(false)
-    expect(calls.at(-1)).toBe("onResume")
+    // Resumed before the seat is handed back (spec §6.7.5).
+    expect(calls.slice(-2)).toEqual(["onResume", `onReconnect ${a.sessionId}`])
     await h.tick(50)
     expect(again.snapshots).toBe(1)
+    await h.stop()
+  })
+
+  test("a new client joining a paused room resumes it and gets its snapshot", async () => {
+    const { h, join } = await setup()
+    const ac = h.connect()
+    const a = await join(ac)
+    await h.tick(50)
+    const server = serverRoom(h, a)
+    await ac.close(4999)
+    expect(server.isPaused).toBe(true)
+
+    const b = await join()
+    expect(server.isPaused).toBe(false)
+    expect(calls.at(-1)).toBe("onResume")
+    await h.tick(50)
+    expect(b.snapshots).toBe(1)
+    expect(b.state?.players.has(b.sessionId)).toBe(true)
+    // The loops run again: a change reaches b at the next boundary.
+    server.game.turn.set(7)
+    await h.tick(50)
+    expect(b.state?.turn.get()).toBe(7)
+    await h.stop()
+  })
+
+  test("onDisconnect and onReconnect bracket a held seat", async () => {
+    const { h, join } = await setup()
+    const ac = h.connect()
+    const a = await join(ac)
+    const b = await join()
+    await h.tick(50)
+    calls.length = 0
+
+    await ac.close(4999)
+    expect(calls).toEqual([`onDisconnect ${a.sessionId}`])
+    const again = (
+      await h.connect().reconnect(a.reconnectionToken ?? "", opts)
+    ).unwrap()
+    expect(again.sessionId).toBe(a.sessionId)
+    expect(calls).toEqual([
+      `onDisconnect ${a.sessionId}`,
+      `onReconnect ${a.sessionId}`,
+    ])
+    // What onReconnect sent arrived after the handshake, on the new seat.
+    expect(again.received("welcome")).toEqual([
+      { sessionId: a.sessionId, players: 2 },
+    ])
+    expect(b.left).toEqual([])
+    await h.stop()
+  })
+
+  test("a seat that isn't held gets onLeave, not onDisconnect", async () => {
+    const { h, join } = await setup({ allowReconnection: false })
+    const ac = h.connect()
+    const a = await join(ac)
+    await join()
+    calls.length = 0
+    await ac.close(4999)
+    expect(calls).toEqual([`onLeave ${a.sessionId} false`])
+    await h.stop()
+  })
+
+  test("a held seat that expires gets onLeave, and no onReconnect", async () => {
+    const { h, join } = await setup({ reconnectionTimeout: 5 })
+    const ac = h.connect()
+    const a = await join(ac)
+    await join()
+    calls.length = 0
+    await ac.close(4999)
+    await h.tick(5_000)
+    expect(calls).toEqual([
+      `onDisconnect ${a.sessionId}`,
+      `onLeave ${a.sessionId} false`,
+    ])
     await h.stop()
   })
 

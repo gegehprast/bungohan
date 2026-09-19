@@ -51,10 +51,14 @@ client/   Vite + React + Tailwind, on @bungohan/client-js/react
   `{ state, contract }` at join, so the payloads are packed positionally and
   a stale client fails with `CONTRACT_MISMATCH`.
 - **Bandwidth-minded state.** Positions are fixed-point (`createFixedPoint(1)`,
-  0.1 px), entities are keyed by small integers rather than string ids,
+  0.1 px), integers use `createInt` with the narrowest kind (`f.uint8`
+  health), entities are keyed by small integers rather than string ids,
   server-only data (velocities, cooldowns) lives in plain fields that are never
   synced, the clock only syncs whole seconds, and the lobby updates its room
   list in place so an idle lobby sends nothing.
+- **Room hooks.** Each room type sets its own tick rates in `onCreate`,
+  and `onDisconnect` drops a dropped player's last input while their seat
+  is held for reconnection.
 - **Server callbacks.** `server.onJoin`/`onLeave` log and prompt every lobby
   to relist the shooter rooms at once.
 - **Room metadata for cross-room reads.** A room's state is private to it, so

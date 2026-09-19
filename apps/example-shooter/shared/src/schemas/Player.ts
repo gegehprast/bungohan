@@ -1,9 +1,11 @@
 import {
   createBoolean,
   createFixedPoint,
+  createInt,
   createString,
   Schema,
 } from "@bungohan/state"
+import { f } from "@bungohan/types"
 
 /**
  * A player, keyed by `sessionId` in `GameState.players`.
@@ -21,9 +23,9 @@ export class Player extends Schema {
   public y = createFixedPoint(1)
   /** Radians, 0.01 on the wire. */
   public rotation = createFixedPoint(2)
-  // Integers: fixed-point with 0 decimals is the only integer field type.
-  public score = createFixedPoint(0)
-  public health = createFixedPoint(0)
+  public score = createInt(f.int32)
+  /** 0 to PLAYER_MAX_HEALTH. */
+  public health = createInt(f.uint8)
   public isDead = createBoolean(false)
   public isReady = createBoolean(false)
 

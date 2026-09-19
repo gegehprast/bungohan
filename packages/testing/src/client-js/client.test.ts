@@ -10,7 +10,15 @@ import {
   Room as ClientRoom,
   type IRoom,
 } from "@bungohan/client-js"
+import { Room } from "@bungohan/core"
 import { encodeFrame, MessagePackSerializer } from "@bungohan/serializer"
+import {
+  createNumber,
+  createSchemaMap,
+  createString,
+  Schema,
+  SchemaRegistry,
+} from "@bungohan/state"
 import {
   type Contract,
   defineContract,
@@ -513,6 +521,82 @@ describe("forward compatibility (§6.7.7)", () => {
     h.transport.send(h.socketOf(client).clientId, frame)
     await h.flush()
     expect(warnings).toContain("dropped message: unknown message id 99")
+    expect(room.status).toBe("joined")
+  })
+})
+
+describe("schema classes (§7.5)", () => {
+  class RegVec extends Schema {
+    public static override schemaName = "Reg.Vec"
+    public x = createNumber()
+  }
+  class RegItem extends Schema {
+    public static override schemaName = "Reg.Item"
+    public label = createString()
+    public pos = new RegVec()
+  }
+  /** A subclass: no declaration names it, so nothing can reach it. */
+  class RegExtra extends RegItem {
+    public static override schemaName = "Reg.Extra"
+    public bonus = createNumber()
+  }
+  class RegState extends Schema {
+    public static override schemaName = "Reg.State"
+    public items = createSchemaMap(f.string, RegItem)
+  }
+  const ours = new Set(["Reg.State", "Reg.Item", "Reg.Vec", "Reg.Extra"])
+  const options = { extra: false }
+
+  class RegRoom extends Room<RegState> {
+    public override state = new RegState()
+    protected override async onJoin(): Promise<void> {
+      const item = new RegItem()
+      item.label.set("a")
+      item.pos.x.set(2)
+      this.state.items.set("a", item)
+      if (options.extra) this.state.items.set("b", new RegExtra())
+      // Stand in for a client process that never constructed these
+      // classes (the server just did, in this same process).
+      const others = SchemaRegistry.getNames()
+        .filter((name) => !ours.has(name))
+        .map((name) => SchemaRegistry.get(name))
+      SchemaRegistry.clear()
+      for (const ctor of others)
+        if (ctor !== undefined) SchemaRegistry.register(ctor)
+    }
+  }
+
+  test("classes reachable from the join's state class are registered", async () => {
+    options.extra = false
+    h.server.defineRoomType("reg", RegRoom)
+    const room = (
+      await (await h.connect()).joinOrCreate("reg", {}, { state: RegState })
+    ).unwrap()
+    expect(room.state.items.get("a")?.label.get()).toBe("a")
+    expect(room.state.items.get("a")?.pos.x.get()).toBe(2)
+    expect(warnings.filter((w) => w.startsWith("error:"))).toEqual([])
+  })
+
+  test("an unknown class is logged and reported through onError", async () => {
+    options.extra = true
+    h.server.defineRoomType("reg", RegRoom)
+    const room = (
+      await (await h.connect()).joinOrCreate("reg", {}, { state: RegState })
+    ).unwrap()
+    // Reported during the join's snapshot; a handler registered after the
+    // join still receives it.
+    const errors: [string, string][] = []
+    room.onError((code, message) => errors.push([code, message]))
+    await h.flush()
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.[0]).toBe("UNKNOWN_CLASS")
+    expect(errors[0]?.[1]).toContain("Reg.Extra")
+    expect(
+      warnings.some((w) => w.startsWith("error:") && w.includes("Reg.Extra")),
+    ).toBe(true)
+    // The rest of the state still arrived; only the unknown instance is left out.
+    expect(room.state.items.get("a")?.label.get()).toBe("a")
+    expect(room.state.items.has("b")).toBe(false)
     expect(room.status).toBe("joined")
   })
 })

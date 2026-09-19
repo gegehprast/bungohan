@@ -1,4 +1,4 @@
-import type { FixedDecimals } from "@bungohan/types"
+import type { FixedDecimals, IntKind, ScalarField } from "@bungohan/types"
 import {
   ArrayState,
   MapState,
@@ -12,6 +12,7 @@ import {
   BooleanState,
   FixedPointState,
   Float32State,
+  IntState,
   NumberState,
   StringState,
 } from "./primitives"
@@ -37,6 +38,18 @@ export function createFixedPoint(
   initial = 0,
 ): FixedPointState {
   return new FixedPointState(decimalPlaces, initial)
+}
+
+/**
+ * Integer of one kind: `createInt(f.int32)`, `createInt(f.uint8, 1)`. The
+ * wire carries the value truncated toward zero and saturated at the
+ * kind's range (spec §8.1.1). See {@link IntState}.
+ */
+export function createInt<K extends IntKind>(
+  of: ScalarField<K>,
+  initial = 0,
+): IntState {
+  return new IntState(of, initial)
 }
 
 /**

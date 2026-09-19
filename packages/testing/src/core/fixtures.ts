@@ -126,6 +126,19 @@ export class GameRoom extends Room<GameState, typeof gameContract> {
     if (faults.onTick) throw new Error("onTick failed")
   }
 
+  protected override onDisconnect(client: Client): void {
+    calls.push(`onDisconnect ${client.sessionId}`)
+  }
+
+  protected override onReconnect(client: Client): void {
+    calls.push(`onReconnect ${client.sessionId}`)
+    // Sent from the hook: must reach the client after JOIN_SUCCESS.
+    this.send(client, "welcome", {
+      sessionId: client.sessionId,
+      players: this.state.players.size,
+    })
+  }
+
   protected override onPause(): void {
     calls.push("onPause")
   }

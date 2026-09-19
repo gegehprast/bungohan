@@ -6,22 +6,21 @@ import {
   ROOM_TYPE,
   RoomInfo,
 } from "@bungohan/example-shooter-shared"
-import type { TimerId } from "@bungohan/types"
 import { parseListing } from "../utils/options"
 
 /**
  * Lists the public shooter rooms and resolves room codes. The list is
- * rebuilt from the matchmaker every second, and at once when someone joins
- * or leaves a shooter room (see `index.ts`). It is updated in place, so an
+ * rebuilt from the matchmaker on every (1 Hz) simulation tick, and at once
+ * when someone joins or leaves a shooter room (see `app.ts`). It is updated in place, so an
  * unchanged list costs nothing on the wire.
  */
 export class LobbyRoom extends Room<LobbyState, typeof lobbyContract> {
   public static override contract = lobbyContract
   public override state = new LobbyState()
 
-  private refreshTimer: TimerId | undefined
-
   protected override async onCreate(): Promise<void> {
+    // No game loop: a tick is just the periodic refresh.
+    this.setSimulationTickRate(1000 / GAME_CONFIG.LOBBY_REFRESH_MS)
     this.onMessage("refreshRooms", () => this.refreshRoomList())
 
     this.onMessage("joinByCode", async (client, { roomCode }) => {
@@ -41,17 +40,11 @@ export class LobbyRoom extends Room<LobbyState, typeof lobbyContract> {
       }
     })
 
-    this.refreshTimer = this.clock.setInterval(
-      () => this.refreshRoomList(),
-      GAME_CONFIG.LOBBY_REFRESH_MS,
-    )
     this.refreshRoomList()
   }
 
-  protected override async onDispose(): Promise<void> {
-    if (this.refreshTimer !== undefined) {
-      this.clock.clearInterval(this.refreshTimer)
-    }
+  protected override onTick(): void {
+    this.refreshRoomList()
   }
 
   public refreshRoomList(): void {

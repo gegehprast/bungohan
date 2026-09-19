@@ -1,4 +1,5 @@
-import { createFixedPoint, Schema } from "@bungohan/state"
+import { createFixedPoint, createInt, Schema } from "@bungohan/state"
+import { f } from "@bungohan/types"
 
 /** An enemy, keyed by a numeric id in `GameState.enemies`. */
 export class Enemy extends Schema {
@@ -6,7 +7,7 @@ export class Enemy extends Schema {
 
   public x = createFixedPoint(1)
   public y = createFixedPoint(1)
-  public health = createFixedPoint(0)
+  public health = createInt(f.uint8)
 
   /** Server-only: plain fields are never synchronized. */
   public lastShotAt = 0

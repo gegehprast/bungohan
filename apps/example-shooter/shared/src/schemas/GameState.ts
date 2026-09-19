@@ -1,6 +1,6 @@
 import {
   createBoolean,
-  createFixedPoint,
+  createInt,
   createSchemaMap,
   createString,
   Schema,
@@ -27,9 +27,9 @@ export class GameState extends Schema {
   public roomName = createString("")
   public hostId = createString("")
   /** Whole seconds elapsed, so it goes out once a second, not every tick. */
-  public gameTime = createFixedPoint(0)
+  public gameTime = createInt(f.uint16)
   public gameStatus = createString<GameStatus>("waiting")
-  public maxPlayers = createFixedPoint(0, 8)
+  public maxPlayers = createInt(f.uint8, 8)
   /** The host may start: enough players, all ready. */
   public canStart = createBoolean(false)
 }

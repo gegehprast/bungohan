@@ -14,7 +14,7 @@ import {
   shooterContract,
 } from "@bungohan/example-shooter-shared"
 import { createTestHarness, type TestHarness } from "@bungohan/testing"
-import { setupShooterServer, TICK_RATES } from "../app"
+import { setupShooterServer } from "../app"
 
 type ShooterView = IRoom<GameState, typeof shooterContract>
 
@@ -35,7 +35,6 @@ let h: TestHarness
 beforeEach(async () => {
   h = await createTestHarness({
     define: (server) => setupShooterServer(server, { log: false }),
-    server: TICK_RATES,
     client: { pingInterval: 0, logger: { warn() {}, error() {} } },
   })
 })
@@ -43,16 +42,6 @@ beforeEach(async () => {
 afterEach(async () => {
   await h.stop()
 })
-
-/**
- * Delivers what clients sent, then advances time. (`tick` alone advances
- * first and delivers after, so a message sent right before it would only
- * take effect at the next tick's sync.)
- */
-async function step(ms: number): Promise<void> {
-  await h.flush()
-  await h.tick(ms)
-}
 
 async function player(): Promise<BungohanClient> {
   return h.connect()
@@ -77,7 +66,7 @@ describe("shooter room", () => {
     const bob = (
       await (await player()).joinById(alice.id, { playerName: "Bob" }, shooter)
     ).unwrap()
-    await step(50)
+    await h.tick(50)
 
     expect(names(alice)).toEqual(["Alice", "Bob"])
     expect(names(bob)).toEqual(["Alice", "Bob"])
@@ -86,23 +75,23 @@ describe("shooter room", () => {
 
     // Nobody ready: the host can't start yet.
     alice.send("startGame", {})
-    await step(50)
+    await h.tick(50)
     expect(alice.state.gameStatus.get()).toBe("waiting")
 
     alice.send("ready", { isReady: true })
     bob.send("ready", { isReady: true })
-    await step(50)
+    await h.tick(50)
     expect(alice.state.canStart.get()).toBe(true)
 
     // Only the host may start.
     bob.send("startGame", {})
-    await step(50)
+    await h.tick(50)
     expect(bob.state.gameStatus.get()).toBe("waiting")
 
     let started = 0
     bob.onMessage("gameStarted", () => started++)
     alice.send("startGame", {})
-    await step(50)
+    await h.tick(50)
     expect(bob.state.gameStatus.get()).toBe("playing")
     expect(started).toBe(1)
 
@@ -112,7 +101,7 @@ describe("shooter room", () => {
     const x0 = seen.x.get()
     const toRight = x0 < GAME_CONFIG.ARENA_WIDTH / 2
     alice.send("input", { ...idle, right: toRight, left: !toRight })
-    await step(500)
+    await h.tick(500)
 
     const moved = seen.x.get() - x0
     const expected = (GAME_CONFIG.PLAYER_SPEED * 500) / 1000
@@ -132,11 +121,37 @@ describe("shooter room", () => {
     const left: string[] = []
     bob.onMessage("playerLeft", ({ playerId }) => left.push(playerId))
     await alice.leave()
-    await step(50)
+    await h.tick(50)
 
     expect(left).toEqual([alice.sessionId])
     expect(names(bob)).toEqual(["Bob"])
     expect(bob.state.hostId.get()).toBe(bob.sessionId)
+  })
+
+  test("a dropped player stops moving while their seat is held", async () => {
+    const aliceClient = await h.connect({ reconnection: { enabled: false } })
+    const alice = await createGame(aliceClient, "Alice")
+    const bob = (
+      await (await player()).joinById(alice.id, { playerName: "Bob" }, shooter)
+    ).unwrap()
+    alice.send("ready", { isReady: true })
+    bob.send("ready", { isReady: true })
+    await h.tick(50)
+    alice.send("startGame", {})
+    await h.tick(50)
+
+    const seen = bob.state.players.get(alice.sessionId)
+    if (seen === undefined) throw new Error("Bob can't see Alice")
+    const toRight = seen.x.get() < GAME_CONFIG.ARENA_WIDTH / 2
+    alice.send("input", { ...idle, right: toRight, left: !toRight })
+    await h.tick(100)
+    await h.dropConnection(aliceClient)
+    await h.tick(50)
+    const x = seen.x.get()
+    await h.tick(500)
+    // Still in the room (the seat is held), but no longer running.
+    expect(bob.state.players.has(alice.sessionId)).toBe(true)
+    expect(seen.x.get()).toBe(x)
   })
 
   test("a round ends on time, reports results, then reopens", async () => {
@@ -144,12 +159,12 @@ describe("shooter room", () => {
     const results: unknown[] = []
     room.onMessage("gameEnded", (message) => results.push(message.results))
     room.send("ready", { isReady: true })
-    await step(50)
+    await h.tick(50)
     room.send("startGame", {})
-    await step(50)
+    await h.tick(50)
     expect(room.state.gameStatus.get()).toBe("playing")
 
-    await step(GAME_CONFIG.GAME_DURATION_S * 1000)
+    await h.tick(GAME_CONFIG.GAME_DURATION_S * 1000)
     expect(room.state.gameStatus.get()).toBe("finished")
     expect(room.state.gameTime.get()).toBe(GAME_CONFIG.GAME_DURATION_S)
     expect(results).toEqual([
@@ -164,7 +179,7 @@ describe("shooter room", () => {
       ],
     ])
 
-    await step(GAME_CONFIG.RESULTS_DURATION_MS)
+    await h.tick(GAME_CONFIG.RESULTS_DURATION_MS)
     expect(room.state.gameStatus.get()).toBe("waiting")
     expect(room.state.players.get(room.sessionId)?.isReady.get()).toBe(false)
     expect(room.state.enemies.size).toBe(0)
@@ -175,9 +190,9 @@ describe("shooter room", () => {
     const room = (
       await (await player()).create(ROOM_TYPE.SHOOTER, options, shooter)
     ).unwrap()
-    await step(GAME_CONFIG.AUTO_START_DELAY_MS - 100)
+    await h.tick(GAME_CONFIG.AUTO_START_DELAY_MS - 100)
     expect(room.state.gameStatus.get()).toBe("waiting")
-    await step(200)
+    await h.tick(200)
     expect(room.state.gameStatus.get()).toBe("playing")
   })
 })
@@ -189,7 +204,7 @@ describe("lobby", () => {
     ).unwrap()
     const open = await createGame(await player(), "Alice")
     const hidden = await createGame(await player(), "Dave", true)
-    await step(50)
+    await h.tick(50)
 
     const listed = watcher.state.rooms.get(open.id)
     expect([...watcher.state.rooms.keys()]).toEqual([open.id])
@@ -205,13 +220,13 @@ describe("lobby", () => {
     const code = hidden.state.roomCode.get().toLowerCase()
     watcher.send("joinByCode", { roomCode: code })
     watcher.send("joinByCode", { roomCode: "NOPE22" })
-    await step(50)
+    await h.tick(50)
     expect(found).toEqual([hidden.id])
     expect(errors).toEqual(["No room with code NOPE22"])
 
     // The emptied room disappears from the list.
     await open.leave()
-    await step(GAME_CONFIG.LOBBY_REFRESH_MS)
+    await h.tick(GAME_CONFIG.LOBBY_REFRESH_MS)
     expect(watcher.state.rooms.size).toBe(0)
   })
 })

@@ -25,7 +25,32 @@ function isSchemaClass(value: unknown): value is SchemaConstructor {
  * A constructor that throws is reported, not propagated.
  */
 export function validateSchemaClass(root: SchemaConstructor): string[] {
+  return walkSchemaClasses(root).problems
+}
+
+/**
+ * `root` and every Schema class reachable from it (directly nested fields,
+ * declared collection element classes, and the classes of any initial
+ * elements), each once, in breadth-first order from `root`. The same walk
+ * as {@link validateSchemaClass}, which is what a receiver needs to know
+ * which classes the wire can name (spec §7.5): client-js registers these
+ * for the `state` class of a join.
+ *
+ * Instantiates each class once. A class whose constructor throws is listed
+ * but not walked; nothing is thrown.
+ */
+export function reachableSchemaClasses(
+  root: SchemaConstructor,
+): SchemaConstructor[] {
+  return walkSchemaClasses(root).classes
+}
+
+function walkSchemaClasses(root: SchemaConstructor): {
+  classes: SchemaConstructor[]
+  problems: string[]
+} {
   const problems: string[] = []
+  const classes: SchemaConstructor[] = []
   const byName = new Map<string, SchemaConstructor>()
   const visited = new Set<SchemaConstructor>()
   const queue: SchemaConstructor[] = [root]
@@ -41,6 +66,7 @@ export function validateSchemaClass(root: SchemaConstructor): string[] {
   for (let ctor = queue.shift(); ctor !== undefined; ctor = queue.shift()) {
     if (visited.has(ctor)) continue
     visited.add(ctor)
+    classes.push(ctor)
     const className = ctor.name || "<anonymous>"
     const name = schemaNameOf(ctor)
     if (name === undefined) {
@@ -96,5 +122,5 @@ export function validateSchemaClass(root: SchemaConstructor): string[] {
       }
     }
   }
-  return problems
+  return { classes, problems }
 }

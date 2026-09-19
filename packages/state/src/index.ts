@@ -16,7 +16,7 @@ export {
   SetBase,
   SetState,
 } from "./collections"
-export { applyDelta } from "./decoder"
+export { type ApplyDeltaOptions, applyDelta } from "./decoder"
 export type { KeyField, KeyOf, ValueField, ValueOf } from "./elements"
 export {
   clearChangeTrees,
@@ -31,6 +31,7 @@ export {
   createFiltered,
   createFixedPoint,
   createFloat32,
+  createInt,
   createMap,
   createNumber,
   createSchemaArray,
@@ -46,6 +47,7 @@ export {
   type ChangeListener,
   FixedPointState,
   Float32State,
+  IntState,
   NumberState,
   PrimitiveState,
   type PrimitiveWire,
@@ -54,4 +56,4 @@ export {
 export { type ClassInfo, type FieldInfo, Schema } from "./schema"
 export { type SchemaConstructor, SchemaRegistry } from "./schema-registry"
 export { State } from "./state-base"
-export { validateSchemaClass } from "./validate"
+export { reachableSchemaClasses, validateSchemaClass } from "./validate"

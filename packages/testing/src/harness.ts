@@ -1,7 +1,9 @@
 /**
  * The §11.2 harness: a real `BungohanServer` on a `LoopbackTransport`,
  * driven by a `ManualClock`. Deterministic: time moves only through
- * `tick()`, frames only through `flush()`.
+ * `tick()`, `flushSync()` and automatic join delivery, frames only through
+ * `flush()` (which those call). The server runs exactly as deployed: its
+ * rooms sync only from their own loops, on the shared clock.
  *
  * - `ServerHarness` pairs it with the wire-level `TestClient` driver.
  * - `TestHarness` pairs it with real client-js clients.
@@ -18,7 +20,14 @@ import {
   type RoomClass,
   type ServerOptions,
 } from "@bungohan/core"
-import { ClientFrameType, PROTOCOL_VERSION } from "@bungohan/types"
+import { decodeFrame } from "@bungohan/serializer"
+import {
+  CLIENT_FRAME_HEADERS,
+  ClientFrameType,
+  PROTOCOL_VERSION,
+  SERVER_FRAME_HEADERS,
+  ServerFrameType,
+} from "@bungohan/types"
 import {
   LoopbackClientTransport,
   type LoopbackClientTransportOptions,
@@ -82,18 +91,28 @@ abstract class HarnessBase {
     ;(await this.transport.flush()).unwrap()
   }
 
-  /** Advances the clock by `ms` (running due ticks), then flushes. */
+  /**
+   * Delivers what clients sent, advances the clock by `ms` (the rooms'
+   * loops run whatever falls due), then flushes again.
+   */
   public async tick(ms: number): Promise<void> {
+    await this.flush()
     await this.clock.advance(ms)
     await this.flush()
   }
 
-  /** Runs one sync boundary in every room now, then flushes. */
+  /**
+   * Lets every room reach a sync boundary through its own sync loop:
+   * delivers what clients sent, then advances the clock by the longest
+   * sync period among the rooms whose loop is running (time moves), then
+   * flushes. A paused room doesn't sync, exactly as on a real server.
+   */
   public async flushSync(): Promise<void> {
+    let period = 0
     for (const room of this.server.getRoomManager().getRooms()) {
-      room._syncNow()
+      period = Math.max(period, room._syncPeriodMs ?? 0)
     }
-    await this.flush()
+    await this.tick(period)
   }
 
   /** Bytes the server sent to clients since the last reset. */
@@ -154,11 +173,13 @@ export interface TestHarnessOptions<
   /** Defaults for every `harness.connect()` (overridable per call). */
   client?: TestClientOptions
   /**
-   * Deliver a client's `JOIN` automatically (default true): flush, run one
-   * sync boundary, flush again. That is what lets
-   * `await client.joinOrCreate(…)` resolve with no manual pumping, since a
-   * join completes only with its first `STATE_SNAPSHOT`. Nothing else a
-   * client sends is delivered until the test flushes or ticks.
+   * Deliver a client's `JOIN` automatically (default true): flush, then
+   * advance the clock timer by timer until the join is through (its first
+   * `STATE_SNAPSHOT`, sent at the room's next sync boundary, or an error).
+   * That is what lets `await client.joinOrCreate(…)` resolve with no
+   * manual pumping. Time moves as it would on a real server, typically up
+   * to one sync period. Nothing else a client sends is delivered until the
+   * test flushes or ticks.
    */
   autoJoin?: boolean
 }
@@ -167,7 +188,10 @@ export interface TestHarnessOptions<
 export type TestClientOptions = Partial<
   Omit<ClientOptions, "transport" | "clock">
 > &
-  Omit<LoopbackClientTransportOptions, "offline" | "onSend">
+  Omit<
+    LoopbackClientTransportOptions,
+    "offline" | "onSend" | "onReceive" | "onClose"
+  >
 
 /**
  * The full §11.2 harness: a real server and real client-js clients over
@@ -185,6 +209,7 @@ export class TestHarness extends HarnessBase {
     LoopbackClientTransport
   >()
   private readonly _clients: BungohanClient[] = []
+  private readonly _joins = new Set<JoinTracker>()
   /** Serializes automatic join delivery. */
   private _pumping: Promise<void> = Promise.resolve()
 
@@ -211,16 +236,18 @@ export class TestHarness extends HarnessBase {
   ): Promise<BungohanClient> {
     const merged = { ...this._clientDefaults, ...options }
     const { ip, headers, searchParams, ...clientOptions } = merged
+    const joins = new JoinTracker()
+    this._joins.add(joins)
     const transport = new LoopbackClientTransport(this.transport, {
       ...(ip === undefined ? {} : { ip }),
       ...(headers === undefined ? {} : { headers }),
       ...(searchParams === undefined ? {} : { searchParams }),
       offline: () => this.offline,
       onSend: (data) => {
-        if (this._autoJoin && data[0] === ClientFrameType.JOIN) {
-          this._pumpJoin()
-        }
+        if (joins.sent(data) && this._autoJoin) this._pumpJoins()
       },
+      onReceive: (data) => joins.received(data),
+      onClose: () => joins.reset(),
     })
     const client = new BungohanClient({
       url: "ws://loopback.test/",
@@ -272,9 +299,10 @@ export class TestHarness extends HarnessBase {
    */
   public override async flush(): Promise<void> {
     await super.flush()
-    await this._pumping
+    await this._settlePumps()
     await this.clock.advance(0)
     await super.flush()
+    await this._settlePumps()
   }
 
   /** Disconnects every harness client, then stops the server. */
@@ -283,14 +311,92 @@ export class TestHarness extends HarnessBase {
     await super.stop()
   }
 
-  private _pumpJoin(): void {
+  /**
+   * Automatic join delivery. A join completes with its first snapshot,
+   * which a room sends at its next sync boundary, so this moves the clock
+   * timer by timer (every loop and timeout runs as it falls due) until
+   * every join clients have in flight is through: snapshot received, join
+   * refused, or given up by the client. Nothing is short-circuited, so a
+   * join takes exactly as long as it would on a real server.
+   */
+  private _pumpJoins(): void {
     this._pumping = this._pumping.then(async () => {
+      const limit = this.clock.now() + JOIN_DELIVERY_LIMIT_MS
       ;(await this.transport.flush()).unwrap()
-      for (const room of this.server.getRoomManager().getRooms()) {
-        room._syncNow()
+      while ([...this._joins].some((joins) => joins.pending)) {
+        const due = this.clock.nextDue()
+        if (due === undefined || due > limit) break
+        await this.clock.advanceTo(due)
+        ;(await this.transport.flush()).unwrap()
       }
-      ;(await this.transport.flush()).unwrap()
     })
+  }
+
+  /** Waits for automatic join delivery, including deliveries it started. */
+  private async _settlePumps(): Promise<void> {
+    let pumping: Promise<void>
+    do {
+      pumping = this._pumping
+      await pumping
+    } while (pumping !== this._pumping)
+  }
+}
+
+/**
+ * Simulated time automatic join delivery gives up after (a join the server
+ * never completes, e.g. one the client abandoned without telling it).
+ */
+const JOIN_DELIVERY_LIMIT_MS = 60_000
+
+/**
+ * One harness client's joins in flight, followed through its frames: a
+ * `JOIN` is pending until its `JOIN_ERROR`, or until the `STATE_SNAPSHOT`
+ * (or `LEAVE`) of the roomRef its `JOIN_SUCCESS` assigned.
+ */
+class JoinTracker {
+  private readonly _requests = new Set<number>()
+  private readonly _refs = new Set<number>()
+
+  public get pending(): boolean {
+    return this._requests.size > 0 || this._refs.size > 0
+  }
+
+  /** A frame the client sent; true if it is a `JOIN`. */
+  public sent(data: Uint8Array): boolean {
+    const frame = decodeFrame(data, CLIENT_FRAME_HEADERS)
+    if (frame.isErr()) return false
+    const [first = 0] = frame.value.header
+    if (frame.value.type === ClientFrameType.JOIN) {
+      this._requests.add(first)
+      return true
+    }
+    // A client that gave up on a join (timeout) leaves the seat it got.
+    if (frame.value.type === ClientFrameType.LEAVE) this._refs.delete(first)
+    return false
+  }
+
+  public received(data: Uint8Array): void {
+    const frame = decodeFrame(data, SERVER_FRAME_HEADERS)
+    if (frame.isErr()) return
+    const [first = 0, second = 0] = frame.value.header
+    switch (frame.value.type) {
+      case ServerFrameType.JOIN_SUCCESS:
+        this._requests.delete(first)
+        this._refs.add(second)
+        return
+      case ServerFrameType.JOIN_ERROR:
+        this._requests.delete(first)
+        return
+      case ServerFrameType.STATE_SNAPSHOT:
+      case ServerFrameType.LEAVE:
+        this._refs.delete(first)
+    }
+  }
+
+  /** The connection closed: nothing in flight on it completes. */
+  public reset(): void {
+    this._requests.clear()
+    this._refs.clear()
   }
 }
 

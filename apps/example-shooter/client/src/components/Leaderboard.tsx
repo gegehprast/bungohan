@@ -1,21 +1,16 @@
 import { useRoomState } from "@bungohan/client-js/react"
+import type { GameState } from "@bungohan/example-shooter-shared"
 import type { GameRoom } from "../rooms"
 
-export function Leaderboard({ room }: { room: GameRoom }) {
-  // useRoomState compares its selection one level deep, so a list of row
-  // objects would never compare equal and would re-render on every state
-  // frame. Select the flat list of shown values instead, only to trigger
-  // a render when one changes, then read the rows from the replica.
-  useRoomState(room, (state) =>
-    [...state.players].flatMap(([id, p]) => [
-      id,
-      p.name.get(),
-      p.color.get(),
-      p.score.get(),
-    ]),
-  )
+interface Row {
+  id: string
+  name: string
+  score: number
+  color: string
+}
 
-  const rows = [...room.state.players]
+function selectRows(state: Readonly<GameState>): Row[] {
+  return [...state.players]
     .map(([id, player]) => ({
       id,
       name: player.name.get(),
@@ -23,6 +18,28 @@ export function Leaderboard({ room }: { room: GameRoom }) {
       color: player.color.get(),
     }))
     .sort((a, b) => b.score - a.score)
+}
+
+/** Rows are fresh objects every frame: compare what they show. */
+function sameRows(a: Row[], b: Row[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((row, i) => {
+      const other = b[i]
+      return (
+        other !== undefined &&
+        row.id === other.id &&
+        row.name === other.name &&
+        row.score === other.score &&
+        row.color === other.color
+      )
+    })
+  )
+}
+
+export function Leaderboard({ room }: { room: GameRoom }) {
+  // Re-renders only when a row changes, not on every position update.
+  const rows = useRoomState(room, selectRows, sameRows) ?? []
 
   return (
     <div className="w-64 bg-slate-800 border-l border-slate-700 p-4">

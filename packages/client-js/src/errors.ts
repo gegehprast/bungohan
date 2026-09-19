@@ -31,6 +31,12 @@ export type ClientErrorCode =
   | "DESYNC"
   /** An `ERROR` frame from the server; its code is in the message. */
   | "SERVER_ERROR"
+  /**
+   * The server sent an instance of a Schema class this client has none
+   * registered for; it was left out of the replica. Reported through
+   * `room.onError`, not as a failed operation.
+   */
+  | "UNKNOWN_CLASS"
 
 /** Every error client-js reports, in the §6.5 shape. */
 export class ClientError<T = unknown> extends Error {

@@ -50,6 +50,8 @@ export class ShooterRoom extends Room<GameState, typeof shooterContract> {
     this.state.maxPlayers.set(maxPlayers)
     this.maxClients = maxPlayers
     if (isPrivate) this.makePrivate()
+    this.setSimulationTickRate(GAME_CONFIG.SIMULATION_TICK_RATE)
+    this.setStateSyncTickRate(GAME_CONFIG.STATE_SYNC_RATE)
 
     this.onMessage("input", (client, input) => {
       this.inputs.set(client.sessionId, input)
@@ -117,6 +119,14 @@ export class ShooterRoom extends Room<GameState, typeof shooterContract> {
     this.publishListing()
   }
 
+  /**
+   * The player's connection dropped; their seat is held for reconnection.
+   * Drop their last input, or they'd keep running and shooting meanwhile.
+   */
+  protected override onDisconnect(client: Client): void {
+    this.inputs.delete(client.sessionId)
+  }
+
   protected override onTick(deltaTime: number): void {
     const { state } = this
     if (state.gameStatus.get() !== "playing") return
@@ -128,7 +138,7 @@ export class ShooterRoom extends Room<GameState, typeof shooterContract> {
       state,
       now: this.clock.now(),
       dt: deltaTime,
-      inputs: this.connectedInputs(),
+      inputs: this.inputs,
       nextId: () => ++this.lastEntityId,
     }
     this.movement.update(world)
@@ -233,19 +243,6 @@ export class ShooterRoom extends Room<GameState, typeof shooterContract> {
     if (this.autoStartTimer === undefined) return
     this.clock.clearTimeout(this.autoStartTimer)
     this.autoStartTimer = undefined
-  }
-
-  /**
-   * Inputs of players who are connected. A player whose connection dropped
-   * keeps their seat for a while (reconnection), and would otherwise keep
-   * running in the direction they were holding.
-   */
-  private connectedInputs(): Map<string, PlayerInput> {
-    const inputs = new Map<string, PlayerInput>()
-    for (const [id, input] of this.inputs) {
-      if (this.clients.get(id)?.connected === true) inputs.set(id, input)
-    }
-    return inputs
   }
 
   /** The first palette color nobody in the room has. */

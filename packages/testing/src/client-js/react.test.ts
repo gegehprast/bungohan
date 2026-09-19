@@ -161,6 +161,29 @@ describe("provider and useRoom", () => {
     expect(current?.error?.code).toBe("ROOM_NOT_FOUND")
   })
 
+  test("joinById joins the room with that id", async () => {
+    const host = await joined(await h.connect())
+    const client = await h.connect()
+    let current:
+      | ReturnType<typeof hooks.useRoom<GameState, typeof gameContract>>
+      | undefined
+    function Guest(props: { roomId: string }) {
+      current = hooks.useRoom(props.roomId, {}, "joinById", game)
+      return null
+    }
+    await render(
+      React.createElement(
+        hooks.BungohanProvider,
+        { client },
+        React.createElement(Guest, { roomId: host.id }),
+      ),
+    )
+    await act(() => h.flush())
+    expect(current?.status).toBe("connected")
+    expect(current?.room?.id).toBe(host.id)
+    expect(current?.room?.state.players.size).toBe(2)
+  })
+
   test("useBungohan outside a provider throws", async () => {
     let caught: unknown
     function Orphan() {
@@ -229,6 +252,36 @@ describe("useRoomState", () => {
     })
     expect(renders).toBe(2)
     expect(ids).toEqual([me.sessionId, other].sort())
+  })
+
+  test("an equality function decides when a selection changed", async () => {
+    const me = await joined(await h.connect())
+    const other = await joined(await h.connect())
+    await act(() => h.flushSync())
+    let renders = 0
+    type Row = { id: string; x: number }
+    let rows: Row[] | undefined
+    const sameRows = (a: Row[], b: Row[]) =>
+      a.length === b.length &&
+      a.every((row, i) => row.id === b[i]?.id && row.x === b[i]?.x)
+    function Board(props: { room: GameView }) {
+      renders++
+      rows = hooks.useRoomState(
+        props.room,
+        (s) => [...s.players].map(([id, p]) => ({ id, x: p.x.get() })),
+        sameRows,
+      )
+      return null
+    }
+    await render(React.createElement(Board, { room: me }))
+    expect(renders).toBe(1)
+    // A patch that leaves every row equal (fresh objects, same values).
+    serverRoom(me).game.turn.set(1)
+    await act(() => h.flushSync())
+    expect(renders).toBe(1)
+    await move(me, other.sessionId, 2)
+    expect(renders).toBe(2)
+    expect(rows?.find((row) => row.id === other.sessionId)?.x).toBe(2)
   })
 
   test("without a selector, re-renders on every applied state frame", async () => {

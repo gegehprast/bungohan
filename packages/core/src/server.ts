@@ -582,7 +582,8 @@ export class BungohanServer {
     if (!connection._open) {
       // Closed while joining. onJoin ran, so onLeave will too; without a
       // token the seat isn't held.
-      if (!reconnected) room._activate(client)
+      if (reconnected) room._reconnected(client)
+      else room._activate(client)
       room._connectionLost(client)
       return
     }
@@ -600,7 +601,10 @@ export class BungohanServer {
       return
     }
     this._host.sendFrame(connection, frame.value)
-    if (reconnected) return
+    if (reconnected) {
+      room._reconnected(client)
+      return
+    }
     room._activate(client)
     this._emit(this._onJoin, client, room)
   }

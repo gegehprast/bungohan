@@ -26,6 +26,10 @@ export interface LoopbackClientTransportOptions
   offline?: () => boolean
   /** Called with every frame the client sends, before it is queued. */
   onSend?: (data: Uint8Array) => void
+  /** Called with every frame delivered to the client. */
+  onReceive?: (data: Uint8Array) => void
+  /** Called when a connection this transport opened closes. */
+  onClose?: () => void
 }
 
 export class LoopbackClientTransport implements IClientTransport {
@@ -63,7 +67,7 @@ export class LoopbackClientTransport implements IClientTransport {
     }
     const searchParams = Object.fromEntries(parsed.searchParams)
     const token = parsed.searchParams.get("token") ?? undefined
-    const { offline, onSend, ...connect } = this._options
+    const { offline, onSend, onReceive, onClose, ...connect } = this._options
     const connected =
       offline?.() === true
         ? undefined
@@ -101,9 +105,14 @@ export class LoopbackClientTransport implements IClientTransport {
       handlers.onOpen(socket.protocol)
     })
     socket.onMessage((data) => {
-      if (open) handlers.onMessage(data)
+      if (!open) return
+      onReceive?.(data)
+      handlers.onMessage(data)
     })
-    socket.onClose((code, reason) => handlers.onClose(code, reason))
+    socket.onClose((code, reason) => {
+      onClose?.()
+      handlers.onClose(code, reason)
+    })
     return ok({
       send: (data) => {
         if (!open) return false

@@ -62,7 +62,7 @@ export const GAME_CONFIG = {
   GAME_DURATION_S: 60,
   WIN_SCORE: 100,
 
-  // Tick rates (server-wide: see server/src/index.ts)
+  // Tick rates of a shooter room (set in ShooterRoom.onCreate)
   SIMULATION_TICK_RATE: 60, // steps per second
   STATE_SYNC_RATE: 30, // state frames per second
 } as const

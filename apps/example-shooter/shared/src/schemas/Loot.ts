@@ -1,4 +1,5 @@
-import { createFixedPoint, Schema } from "@bungohan/state"
+import { createFixedPoint, createInt, Schema } from "@bungohan/state"
+import { f } from "@bungohan/types"
 
 /** A pickup dropped by a dead enemy, keyed by a numeric id in `GameState.loot`. */
 export class Loot extends Schema {
@@ -6,7 +7,7 @@ export class Loot extends Schema {
 
   public x = createFixedPoint(1)
   public y = createFixedPoint(1)
-  public value = createFixedPoint(0)
+  public value = createInt(f.uint8)
 
   /** Server-only: plain fields are never synchronized. */
   public spawnedAt = 0

@@ -1,11 +1,9 @@
-import type { ClientError } from "@bungohan/client-js"
+import { type ClientError, LeaveCode, type Result } from "@bungohan/client-js"
 import { useBungohan, useRoom } from "@bungohan/client-js/react"
 import {
   type CreateShooterOptions,
   ROOM_TYPE,
 } from "@bungohan/example-shooter-shared"
-import type { Result } from "@bungohan/result"
-import { LeaveCode } from "@bungohan/types"
 import { useEffect, useState } from "react"
 import { GameSession } from "./components/GameSession"
 import { LobbyScene } from "./components/LobbyScene"

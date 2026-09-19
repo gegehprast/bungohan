@@ -159,6 +159,9 @@ export abstract class Room<
   private _session: IStateCodecSession | undefined
   private _simulation: SimulationLoop | undefined
   private _sync: IntervalLoop | undefined
+  /** Rates asked for before the loops existed (e.g. in `onCreate`). */
+  private _simulationRate: number | undefined
+  private _syncRate: number | undefined
   private readonly _handlers = new Map<string, Set<Handler>>()
   private readonly _rawHandlers = new Map<string, Set<Handler>>()
   private readonly _unhandled = new Set<string>()
@@ -250,6 +253,21 @@ export abstract class Room<
   protected onBeforeSync(): void {}
 
   protected async onDispose(): Promise<void> {}
+
+  /**
+   * `client`'s connection dropped unexpectedly and its seat is now held
+   * for reconnection (`client.connected` is false). Its `onLeave` is
+   * deferred until the seat is released; use this to stop what the player
+   * was doing, e.g. their last input. Not called when the drop releases the
+   * seat at once (no reconnection): that is `onLeave(client, false)`.
+   */
+  protected onDisconnect(_client: Client): void {}
+
+  /**
+   * A held seat was resumed on a new connection (after `onResume`, if the
+   * room was paused). No `onJoin` runs: the seat never left.
+   */
+  protected onReconnect(_client: Client): void {}
 
   /** No client connected, and at least one seat awaits reconnection. */
   protected onPause(): void {}
@@ -431,12 +449,25 @@ export abstract class Room<
     this._visibility = "public"
   }
 
+  /**
+   * Steps per second of this room's simulation (default: the server's
+   * `simulation.tickRate`). Works from `onCreate`: the rate is kept and
+   * applied when the loop starts. Ignored unless finite and positive.
+   */
   public setSimulationTickRate(fps: number): void {
-    if (fps > 0) this._simulation?.setTickRate(fps)
+    if (!(Number.isFinite(fps) && fps > 0)) return
+    this._simulationRate = fps
+    this._simulation?.setTickRate(fps)
   }
 
+  /**
+   * State syncs per second of this room (default: the server's
+   * `sync.tickRate`). Works from `onCreate`, like `setSimulationTickRate`.
+   */
   public setStateSyncTickRate(hz: number): void {
-    if (hz > 0) this._sync?.setRate(hz)
+    if (!(Number.isFinite(hz) && hz > 0)) return
+    this._syncRate = hz
+    this._sync?.setRate(hz)
   }
 
   /**
@@ -640,12 +671,14 @@ export abstract class Room<
     this._session = host.stateCodec.createSession()
     this._simulation = new SimulationLoop(
       host.clock,
-      host.simulationTickRate,
+      this._simulationRate ?? host.simulationTickRate,
       (dt) => this._simulate(dt),
       host.maxCatchUpSteps,
     )
-    this._sync = new IntervalLoop(host.clock, host.syncTickRate, () =>
-      this._syncNow(),
+    this._sync = new IntervalLoop(
+      host.clock,
+      this._syncRate ?? host.syncTickRate,
+      () => this._syncNow(),
     )
     this._ready = true
     if (this._disposing === undefined) {
@@ -653,6 +686,12 @@ export abstract class Room<
       this._sync.start()
     }
     return ok(undefined)
+  }
+
+  /** @internal The sync loop's period in ms while it runs (the test harness). */
+  public get _syncPeriodMs(): number | undefined {
+    const sync = this._sync
+    return sync?.running === true ? sync.periodMs : undefined
   }
 
   /** @internal True once `onCreate` completed. */
@@ -802,6 +841,9 @@ export abstract class Room<
   public _activate(client: Client): void {
     if (client._status !== "joining") return
     client._status = "joined"
+    // A room paused with only held seats resumes for a newcomer, or it
+    // would never get its snapshot (spec §6.7.5).
+    this._updatePause()
     const queue = client._queue
     client._queue = undefined
     if (queue !== undefined) {
@@ -830,6 +872,14 @@ export abstract class Room<
     this._updatePause()
   }
 
+  /**
+   * @internal Called right after a resumed seat's `JOIN_SUCCESS`, so what
+   * `onReconnect` sends reaches the client after the handshake.
+   */
+  public _reconnected(client: Client): void {
+    this._hook("onReconnect", () => this.onReconnect(client), client)
+  }
+
   /** @internal The transport closed under this client. */
   public _connectionLost(client: Client): void {
     if (client._status === "left" || client._status === "reconnecting") return
@@ -852,6 +902,7 @@ export abstract class Room<
           void this._release(client, false, undefined)
         }, this.reconnectionTimeout * 1000),
       )
+      this._hook("onDisconnect", () => this.onDisconnect(client), client)
       this._updatePause()
       return
     }
@@ -1384,12 +1435,18 @@ export abstract class Room<
   // ==========================================================================
 
   /** Runs a synchronous hook; a throw goes to `server.onError`. */
-  private _hook(source: ErrorSource, run: () => void): boolean {
+  private _hook(
+    source: ErrorSource,
+    run: () => void,
+    client?: Client,
+  ): boolean {
     try {
       run()
       return true
     } catch (error) {
-      this._requireHost().reportError(error, { source, room: this })
+      const context: ErrorContext = { source, room: this }
+      if (client !== undefined) context.client = client
+      this._requireHost().reportError(error, context)
       return false
     }
   }

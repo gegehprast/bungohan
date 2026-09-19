@@ -200,6 +200,61 @@ describe("server callbacks", () => {
   })
 })
 
+describe("tick rates", () => {
+  class Counted extends Schema {
+    public static override schemaName = "Rates.Counted"
+    public n = createNumber()
+  }
+  const counts = { ticks: 0, syncs: 0 }
+  class SlowRoom extends Room<Counted> {
+    public override state = new Counted()
+    protected override async onCreate(): Promise<void> {
+      // The loops don't exist yet here; the rates must still apply.
+      this.setSimulationTickRate(10)
+      this.setStateSyncTickRate(4)
+    }
+    protected override onTick(): void {
+      counts.ticks++
+    }
+    protected override onBeforeSync(): void {
+      counts.syncs++
+    }
+  }
+
+  test("rates set in onCreate take effect when the loops start", async () => {
+    const h = await createServerHarness({
+      define: (s) => s.defineRoomType("slow", SlowRoom),
+    })
+    ;(await h.connect().joinOrCreate("slow")).unwrap()
+    counts.ticks = 0
+    counts.syncs = 0
+    await h.tick(1000)
+    expect(counts).toEqual({ ticks: 10, syncs: 4 })
+    await h.stop()
+  })
+
+  test("rates changed later restart the running loops", async () => {
+    class Later extends SlowRoom {
+      public speedUp(): void {
+        this.setSimulationTickRate(20)
+        this.setStateSyncTickRate(10)
+      }
+    }
+    const h = await createServerHarness({
+      define: (s) => s.defineRoomType("later", Later),
+    })
+    const view = (await h.connect().joinOrCreate("later")).unwrap()
+    const room = h.server.getMatchMaker().getRoom(view.roomId)
+    if (!(room instanceof Later)) throw new Error("no room")
+    room.speedUp()
+    counts.ticks = 0
+    counts.syncs = 0
+    await h.tick(1000)
+    expect(counts).toEqual({ ticks: 20, syncs: 10 })
+    await h.stop()
+  })
+})
+
 describe("persistence", () => {
   class Saved extends Schema {
     public static override schemaName = "E2E.Saved"

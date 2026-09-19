@@ -4,16 +4,6 @@ import { LobbyRoom } from "./rooms/LobbyRoom"
 import { ShooterRoom } from "./rooms/ShooterRoom"
 
 /**
- * Tick rates are server-wide: a room's `setSimulationTickRate()` and
- * `setStateSyncTickRate()` have no effect from `onCreate`, where a room
- * would naturally configure them.
- */
-export const TICK_RATES = {
-  simulation: { tickRate: GAME_CONFIG.SIMULATION_TICK_RATE },
-  sync: { tickRate: GAME_CONFIG.STATE_SYNC_RATE },
-}
-
-/**
  * Defines the shooter's room types and wires the server callbacks. Used
  * by `index.ts` and by the tests, so both run the same setup.
  */
@@ -24,11 +14,6 @@ export function setupShooterServer(
   server.defineRoomType(ROOM_TYPE.LOBBY, LobbyRoom, {
     maxClients: 100,
     autoDispose: false,
-    // Nothing in the lobby is worth resuming. Holding seats would also let
-    // it pause (every client dropped, seats held), and a paused room stays
-    // paused when someone new joins: they'd get no snapshot until the held
-    // seats expire.
-    allowReconnection: false,
   })
   server.defineRoomType(ROOM_TYPE.SHOOTER, ShooterRoom, {
     maxClients: GAME_CONFIG.MAX_PLAYERS,
