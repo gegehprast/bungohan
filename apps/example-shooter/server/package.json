@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "check:browser": "bun scripts/two-tab-check.ts"
   },
   "dependencies": {
     "@bungohan/core": "workspace:*",
@@ -18,6 +19,7 @@
   },
   "devDependencies": {
     "@bungohan/client-js": "workspace:*",
+    "@bungohan/serializer": "workspace:*",
     "@bungohan/testing": "workspace:*",
     "@types/bun": "catalog:"
   },

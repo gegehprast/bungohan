@@ -39,6 +39,7 @@
       },
       "devDependencies": {
         "@bungohan/client-js": "workspace:*",
+        "@bungohan/serializer": "workspace:*",
         "@bungohan/testing": "workspace:*",
         "@types/bun": "catalog:",
       },

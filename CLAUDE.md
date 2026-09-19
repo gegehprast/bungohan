@@ -103,3 +103,5 @@ import { test, expect } from "bun:test"
 `apps/example-shooter` is the end-to-end reference. Its client uses **Vite + React + Tailwind** — that's deliberate, don't migrate it to Bun's HTML-import bundler. The server app runs under Bun.
 
 When the framework API changes, update this app's call sites; it's the canary for DX regressions.
+
+To check the app in a real browser, run `bun run check:browser` in `apps/example-shooter/server`. It starts the server, the Vite client and two headless Chromium tabs, plays a short game, and decodes the WebSocket frames to confirm one tab's movement reaches the other's state. Use it rather than writing a new browser script. It needs Chromium (or `CHROMIUM=<binary>`) and free ports 6060, 5173 and 9223, so it isn't part of `bun test`.
