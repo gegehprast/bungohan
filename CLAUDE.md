@@ -93,6 +93,7 @@ import { test, expect } from "bun:test"
 
 - **Class field initialization order.** Derived-class field initializers run *after* the base constructor returns, so a base constructor cannot see subclass fields via `Object.keys(this)`. Schema initialization is therefore lazy (spec §5.1) — do not "simplify" it into the constructor.
 - **MessagePack buffers.** In `@msgpack/msgpack` 3.1.3, `Encoder.encode()` returns a copy, so its output is safe to keep. Only `encodeSharedRef()` returns a view into the encoder's reused buffer; don't use it for anything queued or retained. Re-check this if the library is upgraded.
+- **Type binary buffers precisely.** Under TypeScript 7, `WebSocket.send` only accepts views over a regular `ArrayBuffer`, so a plain `Uint8Array` (which could be backed by a `SharedArrayBuffer`) is rejected. Functions that allocate with `new Uint8Array(n)` should declare `Uint8Array<ArrayBuffer>` as their return type, not widen it to `Uint8Array`, and should never cast.
 - **Numeric ids are never baked into generated client code.** Message-type and schema-class ids come from the join handshake and resolve by name at runtime (spec §4.2), so a stale Unity/Godot build can't silently desync.
 
 ## Example app

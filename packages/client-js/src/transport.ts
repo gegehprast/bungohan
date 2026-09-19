@@ -24,7 +24,7 @@ export interface ClientSocketHandlers {
 /** An open (or opening) connection. */
 export interface ClientSocket {
   /** Sends one frame; false if the connection isn't open. */
-  send(data: Uint8Array): boolean
+  send(data: Uint8Array<ArrayBuffer>): boolean
   /** Closes the connection. `onClose` still fires. */
   close(code?: number, reason?: string): void
 }
@@ -101,7 +101,7 @@ export class WebSocketClientTransport implements IClientTransport {
       handlers.onClose(event.code, event.reason)
     }
     return ok({
-      send(data: Uint8Array): boolean {
+      send(data: Uint8Array<ArrayBuffer>): boolean {
         if (ws.readyState !== WebSocketImpl.OPEN) return false
         ws.send(data)
         return true

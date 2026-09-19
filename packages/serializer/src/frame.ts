@@ -83,7 +83,7 @@ export function encodeFrame(
   type: number,
   header: readonly number[],
   body?: Uint8Array,
-): Result<Uint8Array, SerializerError> {
+): Result<Uint8Array<ArrayBuffer>, SerializerError> {
   if (!Number.isInteger(type) || type < 0 || type > 255) {
     return err(new SerializerError("ENCODE_FAILED", `bad frame type ${type}`))
   }
