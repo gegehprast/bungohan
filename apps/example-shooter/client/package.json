@@ -1,0 +1,30 @@
+{
+  "name": "@bungohan/example-shooter-client",
+  "version": "0.0.0",
+  "description": "Browser client of the example shooter (Vite + React + Tailwind)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@bungohan/client-js": "workspace:*",
+    "@bungohan/example-shooter-shared": "workspace:*",
+    "@bungohan/result": "workspace:*",
+    "@bungohan/state": "workspace:*",
+    "@bungohan/types": "workspace:*",
+    "react": "catalog:",
+    "react-dom": "catalog:"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "^6.1.1",
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.3.0"
+  },
+  "license": "MIT"
+}

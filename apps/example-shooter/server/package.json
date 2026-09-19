@@ -1,0 +1,25 @@
+{
+  "name": "@bungohan/example-shooter-server",
+  "version": "0.0.0",
+  "description": "Server of the example shooter",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@bungohan/core": "workspace:*",
+    "@bungohan/example-shooter-shared": "workspace:*",
+    "@bungohan/state": "workspace:*",
+    "@bungohan/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@bungohan/client-js": "workspace:*",
+    "@bungohan/testing": "workspace:*",
+    "@types/bun": "catalog:"
+  },
+  "license": "MIT"
+}
