@@ -1,3 +1,4 @@
+export { ByteReader, ByteWriter, unzigzag, zigzag } from "./bytes"
 export { SerializerError, type SerializerErrorCode } from "./errors"
 export {
   decodeFrame,
@@ -14,6 +15,7 @@ export {
   unpackMessage,
 } from "./message-codec"
 export { MessagePackSerializer } from "./messagepack"
+export { SchemaCodec } from "./schema-codec"
 export type { ISerializer } from "./serializer"
 export {
   ClassTable,

@@ -1,0 +1,89 @@
+{
+  "description": "Malformed schema-codec state bodies (§13.1) that decoders must reject, and ops encoders must refuse. Each case first defines E (classId 0, root refId 0) = b bool, i uint16, m map<uint8,bool> (refId 1), c schema<E>. Hand-written from PROTOCOL.md.",
+  "generated": false,
+  "cases": [
+    { "kind": "state", "codec": "schema", "description": "op code 5", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "hex": "a0", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "op code 7", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "hex": "e0 00", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "bool byte other than 00/01", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "hex": "10 02", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "uint16 value 65536", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "hex": "11 80 80 04", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "target refId not in the target table", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "hex": "00 09 01", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "SET on the root before any DEFINE", "frames": [
+      { "hex": "10 01", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "ADD on a schema instance", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "hex": "30 01 01", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "CLEAR on a schema instance", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "hex": "70", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "SET on a map", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "hex": "00 01 00", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "field index past the class's last field", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "hex": "14 01", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "value varint truncated", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "hex": "11 80", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "op cut off after its header", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "hex": "10", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "F must be 0 on ADD", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "hex": "21 01 05 01", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "F must be 0 on REMOVE", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "hex": "42 01 05", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "bool map value byte 02", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "hex": "20 01 05 02", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "ref to an undefined classId", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "hex": "13 07 05", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "DEFINE that skips a class id", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "ops": [[4, 5, "Z", [], []]], "hex": "80 05 01 5a 00", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "DEFINE that contradicts a known class", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "ops": [[4, 0, "E", [], []]], "hex": "80 00 01 45 00", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "DEFINE with the S bit set", "frames": [
+      { "hex": "90 00 01 5a 00", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "DEFINE with a type outside the grammar", "frames": [
+      { "ops": [[4, 0, "Z", ["f"], ["int64"]]], "hex": "80 00 01 5a 01 01 66 05 696e743634", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "DEFINE whose name is invalid UTF-8", "frames": [
+      { "hex": "80 00 01 ff 00", "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "string length past the end of the body", "frames": [
+      { "hex": "80 00 05 5a 00", "error": true } ] },
+
+    { "kind": "state", "codec": "schema", "description": "encoders refuse a uint16 value out of range", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "ops": [[0, 0, 1, 70000]], "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "encoders refuse a non-integer for an integer field", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "ops": [[0, 0, 1, 1.5]], "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "encoders refuse a number for a bool field", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "ops": [[0, 0, 0, 1]], "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "encoders refuse a uint8 key out of range", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "ops": [[1, 1, 300, true]], "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "encoders refuse an unknown target", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "ops": [[0, 9, 0, true]], "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "encoders refuse a field index out of range", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "ops": [[0, 0, 5, 1]], "error": true } ] },
+    { "kind": "state", "codec": "schema", "description": "encoders refuse a ref to an undefined class", "frames": [
+      { "ops": [[4, 0, "E", ["b", "i", "m", "c"], ["bool", "uint16", "map<uint8,bool>", "schema<E>"]]], "hex": "80 00 01 45 04 01 62 04 626f6f6c 01 69 06 75696e743136 01 6d 0f 6d61703c75696e74382c626f6f6c3e 01 63 09 736368656d613c453e" },
+      { "ops": [[0, 0, 3, [9, 5]]], "error": true } ] }
+  ]
+}

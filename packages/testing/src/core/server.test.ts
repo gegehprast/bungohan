@@ -19,13 +19,19 @@ describe("protocol violations close the connection with 1008", () => {
     ],
     [
       "a message id outside the table",
-      (room) => room.sendById(99, []),
+      (room) => room.sendById(99, new Uint8Array()),
       /unknown message id 99/,
     ],
     [
-      "a payload of the wrong type",
-      (room) => room.sendById(0, ["not a number"]),
-      /move\.dx: expected an int32/,
+      // Tag-free: a payload can't have the wrong type, only the wrong bytes.
+      "a truncated payload",
+      (room) => room.sendById(0, new Uint8Array()),
+      /move: truncated varint/,
+    ],
+    [
+      "a payload with trailing bytes",
+      (room) => room.sendById(0, new Uint8Array([0xc8, 0x01, 0x00])),
+      /move: trailing bytes/,
     ],
     [
       "a malformed raw message",

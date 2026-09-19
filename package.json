@@ -8,7 +8,8 @@
     "check": "bunx --bun biome check --write",
     "format": "bunx --bun biome format --write",
     "lint": "bunx --bun biome lint --write && bunx --bun tsc --noEmit",
-    "typecheck": "bunx --bun tsc --noEmit"
+    "typecheck": "bunx --bun tsc --noEmit",
+    "vectors": "bun packages/testing/src/conformance/generate.ts"
   },
   "workspaces": {
     "packages": [

@@ -538,7 +538,7 @@ function createFixedPoint(decimalPlaces: number, initial?: number): FixedPointSt
 
 ##### 5.7.6.1 Fixed-point rules — **[DECIDED]** (`packages/types/src/fixed.ts`, shared by `f.fixed(n)` and `createFixedPoint(n)`)
 
-Every implementation (TS, C#, GDScript, …) must reproduce these rules bit for bit. They belong in `PROTOCOL.md` and the conformance vectors (`004-fixed-point-precision`).
+Every implementation (TS, C#, GDScript, …) must reproduce these rules bit for bit. **[DECIDED]** They are in `PROTOCOL.md` §12, with vectors in `conformance/v1/002-numeric-rules.json` (and every codec vector that carries a fixed-point value).
 
 | Aspect | Rule |
 |---|---|
@@ -594,7 +594,7 @@ Both peers follow these rules on the same op stream, which is what keeps them in
 
 - ~~**Collection element types are erased.**~~ **[DECIDED] Closed.** Collections now take runtime element descriptors (§5.3), and the class table carries them (§5.7.2 grammar), e.g. `map<string,fixed:1>` or `schemaMap<uint32,Player>`. Phase 2 `SchemaCodec` and codegen can read element types straight from the table. Primitive collection elements are also quantized on the wire now (they were sent raw before, which made `createArray` of a lossy type impossible to express).
 - ~~`IStateCodec.encodeOps(ops, table)` should maintain its table from the `DEFINE` ops.~~ **[DECIDED] Closed** by the §8.1.5 codec sessions.
-- Bandwidth baselines are recorded in `packages/state/src/bandwidth.test.ts` (100-entity room, MessagePack: one position update 8 B, all moving 1,396 B, 10+10 churn 433 B, snapshot **4,032 B**, idle 0 B). The snapshot grew by 17 B, once per join, for the element-typed table entry `schemaMap<uint32,B.Entity>`. The previously recorded 4,006 B was already stale: the code before this change measured 4,015 B. Per-tick costs are unchanged. A 30,000-tick churn run (3 spawns/tick, 30-tick lifetimes) stays at exactly 138 B/tick from the first steady tick to the last, which only holds because of refId reuse.
+- Bandwidth baselines: **[DECIDED]** moved to §11.1, which now measures both codecs side by side (`packages/serializer/src/bandwidth.test.ts`). The MessagePack numbers recorded here before (one position update 8 B, all moving 1,396 B, 10+10 churn 433 B, snapshot 4,032 B, idle 0 B, 30,000-tick churn flat at 138 B/tick) are unchanged.
 
 ## 6. `@bungohan/core` — Server, Room, MatchMaker
 
@@ -780,6 +780,8 @@ Off by default (`metrics.enabled: false`). When enabled, `ServerMetrics`/`RoomMe
 
 This is the protocol every client (client-js, Unity, Godot, …) implements. It supersedes the loose descriptions in §4, §4.2 (envelope compaction), §5.5 (join handshake) and §8.1.1 (message-type table). Constants live in `packages/types/src/protocol.ts`; the frame codec in `packages/serializer/src/frame.ts`.
 
+**[DECIDED] `PROTOCOL.md` (repo root) is authoritative for the bytes.** It is written for client authors, stands alone (no references to TypeScript source), and specifies every rule in bytes: connection and version negotiation, frames and varints, every frame body, the join sequence, the compatibility rules, the state op stream and its semantics, the numeric rules, and both codecs. `conformance/v1/` is its executable form (§11.3). This section and §5.7 keep the design rationale; where they describe a byte layout, `PROTOCOL.md` wins, and a wire change is made there first.
+
 #### 6.7.1 Frames
 
 One transport message (one WebSocket binary message) is one frame:
@@ -795,7 +797,7 @@ varint = unsigned LEB128, at most 5 bytes, value ≤ 0xFFFFFFFF
 - **codec**: bytes produced by the room's state codec session (§8.1.5), carried as-is. No second encoding layer, no `bin` header.
 - **empty**: zero bytes.
 
-Why a binary header instead of the §4.2 MessagePack envelope array: the header costs exactly `1 + Σ varint` bytes (usually 2–3), a state frame's codec bytes aren't wrapped in a MessagePack `bin` (saving 2–3 more bytes per patch), and the header parses the same way in any language, whatever serializer the body uses. A one-SET position patch is **9 bytes** on the wire (2 header + 7 ops) instead of the 12 an array envelope would cost. The §4 string enums stay for readability. Only these numeric ids are sent.
+Why a binary header instead of the §4.2 MessagePack envelope array: the header costs exactly `1 + Σ varint` bytes (usually 2–3), a state frame's codec bytes aren't wrapped in a MessagePack `bin` (saving 2–3 more bytes per patch), and the header parses the same way in any language, whatever serializer the body uses. A one-SET position patch is **6 bytes** on the wire under the default `schema` codec (2 header + 4 op, §8.1.2), and 9 under `messagepack` (2 + 7), instead of the 12 an array envelope would cost. The §4 string enums stay for readability. Only these numeric ids are sent.
 
 On the server, a frame that doesn't parse is a protocol violation (§6.7.6). A client drops a frame of a type it doesn't know (§6.7.7).
 
@@ -803,7 +805,7 @@ On the server, a frame that doesn't parse is a protocol violation (§6.7.6). A c
 
 | id | Frame | Header varints | Body |
 |---|---|---|---|
-| 0 | `ROOM_MESSAGE` | `roomRef`, `messageId` | ser: the positionally packed payload (§8.1.1 Phase 1 table) |
+| 0 | `ROOM_MESSAGE` | `roomRef`, `messageId` | codec: the contract message, encoded by the room's codec (**[DECIDED]** §8.1.2; was ser) |
 | 1 | `ROOM_MESSAGE_RAW` | `roomRef` | ser: `[type: string, payload: any]` |
 | 2 | `JOIN` | `requestId` | ser: `[mode, target, options, contractHash]` (§6.7.3) |
 | 3 | `LEAVE` | `roomRef` | empty |
@@ -813,7 +815,7 @@ On the server, a frame that doesn't parse is a protocol violation (§6.7.6). A c
 
 | id | Frame | Header varints | Body |
 |---|---|---|---|
-| 0 | `ROOM_MESSAGE` | `roomRef`, `messageId` | ser: packed payload |
+| 0 | `ROOM_MESSAGE` | `roomRef`, `messageId` | codec: the contract message |
 | 1 | `ROOM_MESSAGE_RAW` | `roomRef` | ser: `[type: string, payload: any]` |
 | 2 | `STATE_SNAPSHOT` | `roomRef` | codec: the full-state ops (§5.7.10) |
 | 3 | `STATE_PATCH` | `roomRef` | codec: one sync tick's ops |
@@ -888,7 +890,7 @@ Header: `requestId`, `roomRef`. Body:
 
 - **`sessionId`** identifies the seat. It is stable across reconnection, and is the id other clients see in `CLIENT_JOINED`/`CLIENT_LEFT`.
 - **`reconnectionToken`** is an opaque secret, or `null` when the room doesn't allow reconnection. It is **replaced on every successful (re)join**, and the old one stops working.
-- **`stateCodec`** names the room's `IStateCodec` (`"messagepack"` in Phase 1). A client that has no decoder for it must `LEAVE` and fail the join locally (`CODEC_MISMATCH`). The server never falls back to another codec.
+- **`stateCodec`** names the room's `IStateCodec`: **[DECIDED]** `"schema"` by default, or `"messagepack"`. It selects the encoding of the room's state frames **and** its contract messages, in both directions, so a room has one codec, not two (§8.1.2). A client that has no decoder for it must `LEAVE` and fail the join locally (`CODEC_MISMATCH`). The server never falls back to another codec.
 - **`clientMessages` / `serverMessages`** are the message-type tables (§8.1.1): message names in the contract's key order, and a message's id is its index. Clients resolve ids **by name** at runtime and never bake them in (§4.2). A received `ROOM_MESSAGE` whose id the client can't map is dropped (and logged).
 - **`contractHash`** is the room type's contract hash, even for a room with `EmptyContract`. A client that sent `null` can still compare it.
 
@@ -937,7 +939,7 @@ Only TypeScript computes hashes (the server, and `@bungohan/codegen`, which bake
 | `INVALID_TOKEN` | mode 4: unknown token, or the seat is no longer held |
 | `RESERVATION_NOT_FOUND` / `RESERVATION_EXPIRED` | mode 5 |
 
-**Protocol violations** close the connection. The server sends `ERROR(0, ["INVALID_MESSAGE", why])`, then closes it with `1008 POLICY_VIOLATION`, and logs the reason. They are: an unparseable frame, an unknown frame type, a body the serializer can't decode, a `JOIN` whose body isn't an array, a `ROOM_MESSAGE` with a `messageId` outside the room's table, and a payload that `unpackMessage` rejects (§4.1: malformed frames never reach a handler). A `ROOM_MESSAGE`/`LEAVE` for a `roomRef` the connection doesn't hold is **dropped silently**, not a violation: it can legitimately race a kick. A well-formed message with no registered handler is dropped with a server-side warning (a server bug, not the client's).
+**Protocol violations** close the connection. The server sends `ERROR(0, ["INVALID_MESSAGE", why])`, then closes it with `1008 POLICY_VIOLATION`, and logs the reason. They are: an unparseable frame, an unknown frame type, a body the serializer can't decode, a `JOIN` whose body isn't an array, a `ROOM_MESSAGE` with a `messageId` outside the room's table, and a contract payload the room's codec rejects (§4.1: malformed frames never reach a handler). A `ROOM_MESSAGE`/`LEAVE` for a `roomRef` the connection doesn't hold is **dropped silently**, not a violation: it can legitimately race a kick. A well-formed message with no registered handler is dropped with a server-side warning (a server bug, not the client's).
 
 Other close codes: `1001 GOING_AWAY` when the server shuts down (after every room has sent `LEAVE(…, 4001)`), and `1002 PROTOCOL_ERROR` for a rejected protocol version (§6.7.7).
 
@@ -996,13 +998,13 @@ This is how §6.1–6.3, §6.5 and §6.6 were built. Cluster mode (§6.4: `RoomP
 
 #### 6.8.3 Sync boundary
 
-Each sync tick runs this sequence: `onBeforeSync` → adopt a replaced state → `generateDeltas(state, clientsWithSnapshots)` → group clients by the returned op array (clients with identical visibility share one array, §5.6) → **encode each distinct array once** with the room's single codec session → group again by `roomRef` (in practice every client uses `1`) → one frame per group through `transport.broadcast` → `clearChangeTrees` → one snapshot per waiting client. An idle tick sends nothing. A single position update is **9 bytes on the wire** (2-byte header, then the 7-byte MessagePack op). Clients awaiting reconnection are left out of `generateDeltas`. Their snapshot on return resets their filter-visibility memory.
+Each sync tick runs this sequence: `onBeforeSync` → adopt a replaced state → `generateDeltas(state, clientsWithSnapshots)` → group clients by the returned op array (clients with identical visibility share one array, §5.6) → **encode each distinct array once** with the room's single codec session → group again by `roomRef` (in practice every client uses `1`) → one frame per group through `transport.broadcast` → `clearChangeTrees` → one snapshot per waiting client. An idle tick sends nothing. A single position update is **6 bytes on the wire** (2-byte header, then the 4-byte `schema` op), asserted byte for byte in `packages/testing/src/core/sync.test.ts`; 9 under `messagepack`. Clients awaiting reconnection are left out of `generateDeltas`. Their snapshot on return resets their filter-visibility memory.
 
 #### 6.8.4 Startup validation
 
 `defineRoomType` (and `matchMaker.registerRoomType`) validates, then **throws one `TypeError` listing every problem**. This is the definition-time exception of CLAUDE.md rule 1. It checks:
 
-- the contract, with `validateContract` (`@bungohan/types`): every entry is a message whose name equals its key, field names are identifiers, fixed decimals are 0–9, enums are non-empty, distinct and made of strings or finite numbers, there is no optional-in-optional, and nested messages are well formed;
+- the contract, with `validateContract` (`@bungohan/types`): every entry is a message whose name equals its key, field names are identifiers, fixed decimals are 0–9, enums are non-empty, distinct and made of strings or finite numbers, there is no optional-in-optional, **[DECIDED]** no array or map holds messages that encode to zero bytes (§8.1.2), and nested messages are well formed;
 - the state, with `validateSchemaClass` (`@bungohan/state`): every Schema class reachable from the probe's state (nested fields, declared collection element classes, and the classes of initial elements) has its own `schemaName`, and no two reachable classes share one. It also checks every collection descriptor. It runs once per class. A constructor that throws is reported, not propagated;
 - a duplicate room type name.
 
@@ -1028,7 +1030,7 @@ A state first assigned in `onCreate` isn't visible to the probe. It is validated
 
 - `@bungohan/testing` depends on core. Core's own unit tests (`loop.test.ts`, `room.test.ts`, `room.test-d.ts`) use no harness. **Core's end-to-end suites live in `packages/testing/src/core/`**, which avoids a core ↔ testing dependency cycle.
 - `ServerHarness` / `createServerHarness({ define, server, transport })` is the server half of §11.2: a real `BungohanServer` on `LoopbackTransport` + `ManualClock`, with `connect()`, `tick(ms)`, `flush()`, `flushSync()`, `bytesSent()`/`bytesReceived()` (**[DECIDED]** semantics in §11.2: no shortcuts past the rooms' loops). **[DECIDED]** `createTestHarness` (with client-js) is built; see §11.2.
-- `TestClient` / `TestRoom` is a wire-level driver. It builds and parses frames byte by byte, keeps a replica with `applyDelta` (a fresh one per snapshot), decodes contract messages, and records raw frames for byte assertions. It stands in for client-js now and serves as an executable reference for non-JS client authors.
+- `TestClient` / `TestRoom` is a wire-level driver. It builds and parses frames byte by byte, keeps a replica with `applyDelta` (a fresh one per snapshot), decodes contract messages, and records raw frames for byte assertions. It stands in for client-js now and serves as an executable reference for non-JS client authors. **[DECIDED]** Like a real client, it picks the codec the handshake names from `DriverOptions.stateCodecs` (default `schema` and `messagepack`), leaves the seat with `CODEC_MISMATCH` when it lacks it, and encodes and decodes contract messages with it. A frame for a `roomRef` it doesn't hold is dropped silently (PROTOCOL.md §7.1), and a `JOIN_SUCCESS`/`JOIN_ERROR` for a JOIN it didn't send through `request()` is recorded in `unmatched`, not thrown.
 
 ## 7. `@bungohan/client-js` — Reference Client Implementation
 
@@ -1148,7 +1150,7 @@ client-js implements §6.7, including §6.7.7, and is the reference for other cl
 - **The contract hash** sent in the `JOIN` is `contractHash(contract)`, computed once per contract object, or `null` without a contract. Resumes send the same hash.
 - **Message ids resolve by name** from the handshake's tables, per join and again per resume. A typed `send` of a name that isn't in both the local contract and the server's table is `UNKNOWN_MESSAGE`. A received id with no name, or a name with no local descriptor, is dropped and logged.
 - **A join completes with the first `STATE_SNAPSHOT`** (§6.7.2). `JOIN_SUCCESS` binds the room; the returned promise resolves only when the snapshot has been applied, so `room.state` is always populated.
-- **Unknown state codec:** the client sends `LEAVE(roomRef)` for the seat the server gave it, and the join fails locally with `CODEC_MISMATCH`. Codecs are `ClientOptions.stateCodecs` (default `[MessagePackStateCodec]`), matched by `getName()`.
+- **Unknown state codec:** the client sends `LEAVE(roomRef)` for the seat the server gave it, and the join fails locally with `CODEC_MISMATCH`. Codecs are `ClientOptions.stateCodecs` (**[DECIDED]** default `[SchemaCodec, MessagePackStateCodec]`), matched by `getName()`. The room's codec also encodes `send` and decodes typed messages (§8.1.2).
 - `JOIN_ERROR` codes map to `ClientError` codes one to one. A code this client doesn't know (a newer server) becomes `JOIN_FAILED`, with the original in `error.context.code`.
 - **Frames held during a first join.** A message the server sends in `onJoin` arrives between `JOIN_SUCCESS` and the snapshot, before the caller has the room to register a handler on. So from `JOIN_SUCCESS` on, a new room **holds its frames**, in order, except the first snapshot (which completes the join) and a `LEAVE` before it (which fails the join with `LEFT`). The held frames are handled on the **client clock's next turn** (a 0 ms timer), after the code awaiting the join has run. Order is kept, including relative to patches. A held event (contract or raw message, `CLIENT_JOINED`/`CLIENT_LEFT`) that still finds no handler is kept as **unclaimed** (at most 64, oldest dropped) and delivered to the first handler registered for it, on the next clock turn. React needs this: `useRoomMessage` subscribes in an effect, which may run after that 0 ms timer. Only pre-join events are kept; later ones with no handler are dropped with a warning. A resumed seat already has its handlers and holds nothing.
 
@@ -1263,6 +1265,7 @@ interface IBackplane {
 - **Backplane.** A process receives its own publications on channels it subscribes to, as in Redis. `subscribe` resolves once the subscription is live. `unsubscribe` removes every callback on the channel. Non-JSON messages and throwing callbacks are logged and skipped, and don't affect the other callbacks. `RedisBackplane` issues one `SUBSCRIBE` per channel, and concurrent `subscribe` calls share the in-flight one. A failed `SUBSCRIBE` rolls back its callback so that a retry re-subscribes. `unsubscribe` during an in-flight `SUBSCRIBE` waits for it, so the channel ends up unsubscribed.
 - **Redis clients.** `new RedisClient(url)` throws on a malformed URL, and a constructor can't return a `Result`. So `RedisStore`/`RedisBackplane` construction never throws: a bad URL makes every operation return `INVALID_OPTIONS`. Both accept injected clients (`client` / `clients: { publisher, subscriber }`) typed by minimal interfaces (`RedisStoreClient`, `RedisPubSubClient`) that Bun's `RedisClient` satisfies. That is how the unit tests use in-memory fakes. `redisUrl()` URL-encodes the password (the old code didn't), and `redis` passes `RedisOptions` through.
 - **In-memory implementations ship as real exports.** `MemoryStore` (JSON copy semantics identical to Redis; injectable `now` for manual clocks) and `MemoryBackplane` plus `MemoryBus` (several backplanes on one bus simulate a cluster in one process). Delivery goes through JSON on a microtask, in publish order, and is never re-entrant. They are the single-process defaults for core and the test doubles for §2's "mock store / mock backplane".
+- **[DECIDED] MessagePack strings are strict UTF-8.** `@msgpack/msgpack` decodes invalid UTF-8 leniently (a lone `ff` becomes `"ÿ"`), which PROTOCOL.md §4 forbids. `MessagePackSerializer.decode` walks the MessagePack structure first and checks every string and map key with a fatal decoder, so such a body is `DECODE_FAILED`.
 - **Integration tests** (`*.integration.test.ts` in store and backplane) run against a real Redis when `REDIS_URL` is set and skip otherwise. Each run uses unique key/channel prefixes and cleans up after itself.
 
 ### 8.1 Serializer strategy — **[NEW]**
@@ -1288,7 +1291,7 @@ Stays the pluggable `ISerializer`. Three implementation improvements over the ol
 
 Note that contract-declared messages (§4.1) have known field types, so they skip MessagePack entirely and encode through the §8.1.2 codec like state ops — tag-free. MessagePack remains the encoder only for `sendRaw`/`onMessageRaw` traffic.
 
-**[DECIDED] Phase 1 contract messages** (`packages/serializer/src/message-codec.ts`). Until `SchemaCodec` exists, contract messages go through the active `ISerializer`, but **positionally**: `packMessage(def, payload)` returns a plain array in `fieldNames` order, and `unpackMessage(def, wire)` reads one back. `PlayerMove {x: 145.5, y: -3.25}` is 7 B instead of 23 B as a keyed MessagePack map. Wire form per field:
+**[DECIDED] Phase 1 contract messages** (`packages/serializer/src/message-codec.ts`). **Now the `messagepack` codec's message encoding** (§8.1.2: the room's codec encodes its contract messages; this is no longer the active `ISerializer`'s job). Contract messages go through MessagePack **positionally**: `packMessage(def, payload)` returns a plain array in `fieldNames` order, and `unpackMessage(def, wire)` reads one back. `PlayerMove {x: 145.5, y: -3.25}` is 7 B instead of 23 B as a keyed MessagePack map. Wire form per field:
 
 | Field | Wire value |
 |---|---|
@@ -1334,12 +1337,39 @@ Concrete comparison for one position update — `[SET, refId=12, field=3, 145.5]
 
 That's ~3× better than tight MessagePack and ~10× better than JSON, on the single most frequent message in a realtime game.
 
+**[DECIDED] `SchemaCodec` as built** (`packages/serializer/src/schema-codec.ts`, codec name `"schema"`, the default). **PROTOCOL.md §13.1 is the byte layout.** This records why it looks the way it does. The list above was a starting point: every rule costs every client implementation, so each was kept only if it paid for itself in measured bytes. The measurements below were taken before any codec code, with a size model over the §11.1 scenarios plus a 30-tick shooter-like stream built from the example app's real classes (8 players, 20 enemies, 30 bullets with spawns and despawns, sizes are op bodies in bytes). The built codec's numbers are in §11.1.
+
+| Scenario | MessagePack | A: op 3 bits + field 5 bits | B1: A + "same target" bit | **B2 (built): B1, a ref value also counts as "last"** | C: A, refId as zigzag delta |
+|---|---|---|---|---|---|
+| snapshot, 100 entities | 4,032 | 3,451 | 3,053 | **2,953** | 3,523 |
+| one position update | 8 | 5 | 5 | **5** | 5 |
+| all 100 entities move | 1,396 | 911 | 811 | **811** | 912 |
+| churn 10 + 10 | 433 | 370 | 320 | **310** | 390 |
+| shooter snapshot | 2,588 | 1,963 | 1,829 | **1,771** | 1,963 |
+| shooter tick (mean of 30) | 901 | 525 | 457 | **456** | 525 |
+
+- **Op header: 3-bit op code, 1 "same target" bit, 4-bit field index** (15 escapes to a varint). Two bits can't hold five ops (`DEFINE` included). The S bit ("target = the previous op's target") saves 11–13% everywhere, because an instance's SETs are consecutive. It costs a field bit: fields 15 and up take one extra byte, and no class measured, nor any in the example app, has more than 11 fields.
+- **A ref value also becomes "last"** (B2): the content of a new instance, which always follows the op placing it, needs no target. That's another 3% on snapshots and spawns for one assignment in the decoder. Kept.
+- **Delta-coded refIds** (C): no gain over absolute varints. Dropped.
+- **Boolean bit-packing in state ops: dropped.** It only helps when two or more bools of one instance change in one tick. Its upper bound over all the scenarios was 0 B, and 3 B over 30 shooter ticks (0.1 B/tick), which doesn't pay for a second SET encoding in every client.
+- **Bools in contract messages: packed, as message flags**, together with `optional` presence bits (PROTOCOL.md §13.1.6). Measured on the example's `input` message, the most frequent client→server message: 9 B in MessagePack, 7 B with one byte per bool, **3 B** with flags. Optional presence costs a bit instead of a byte, which also removes the MessagePack codec's "trim trailing absent optionals" rule from this codec.
+- **8-bit integers are one raw byte; wider integers are (zigzag) varints.** Same size in every scenario (values under 128), a byte smaller for 128–255 (health, counts), and simpler than a varint.
+- **`DEFINE` type strings stay strings** (140 B for the §11.1 table vs 145 B in MessagePack). A compact type code would save ~40 B once per join but add a second encoding of the §5.7.2 grammar.
+- **A ref always carries its classId**, even for a refId the session has seen. Omitting it would need one encoder session per client: the room's single session knows refIds that a late joiner's or a filtered client's session never saw.
+- **Floats are IEEE bits, little-endian, NaN canonical, −0 preserved.** (MessagePack encodes −0 as the integer 0; both are documented, and the vectors pin the difference.)
+- **Tag-free decoding needs to know what each refId is.** Sessions keep a *target table* (refId → class, or collection type), fed by the root (refId 0 is always class 0) and by every ref read or written. It never needs pruning: blocks are reused only within their class (§5.7.9), so a refId means the same thing for the whole stream.
+- **One codec per room.** `IStateCodec` gained `encodeMessage(def, payload)` / `decodeMessage(def, bytes)`, and the handshake's `stateCodec` selects the encoding of state *and* contract messages, both directions (§8.1.1 intended contract messages to skip MessagePack). Raw messages and control bodies stay on the connection's `ISerializer` (MessagePack).
+- **Sessions are all-or-nothing per frame**: a failed encode or decode rolls back the `DEFINE`s and refIds it bound, so a refused frame never desynchronizes the room's encoder from what was actually sent.
+- **Counts are bounded by the bytes left in the body** (a decoder never allocates from a hostile count). Since an array of zero-field messages would encode each element in zero bytes, **[DECIDED]** `validateContract` rejects arrays and maps whose elements are messages with no data (a definition-time error, §6.8.4).
+- **The §8.1.2 prediction** (4 bytes for `[SET, refId=12, field=3, 145.5]` at 2 dp) is **5 bytes** as built: the value is zigzag(14550) = 29100, a 3-byte varint, not 2. The prediction holds for |value| ≤ 81.91 at 2 dp, or at 1 dp (the example app's positions, zigzag(1455) = 2910). With the S bit, the second axis of a move costs 3 B. The test `bandwidth.test.ts` checks the exact 5 bytes.
+
 #### 8.1.3 Phasing
 
 `SchemaCodec` is the largest piece of new work in this spec, so build it in two stages and keep both behind the same seam:
 
 - **Phase 1** — implement state sync over `MessagePackSerializer` using the positional `WireOp[]` encoding from §5.7.3. Fully correct, already a big improvement, gets the system working end to end.
 - **Phase 2** — implement `SchemaCodec` against the same `WireOp[]` input/output and swap it in via `ServerOptions.stateCodec`.
+- **[DECIDED] Both phases are done.** `SchemaCodec` is the default in core, client-js and the test driver; `MessagePackStateCodec` stays selectable (`ServerOptions.stateCodec`), and client-js and the driver implement both by default, so either server configuration works with a default client.
 
 Because both stages consume and produce identical `WireOp[]`, Phase 2 is a drop-in swap with no changes to the state layer, and the §11.1 bandwidth tests can run against both to prove the improvement rather than assume it. Keep `MessagePackSerializer` selectable for state sync permanently — it's invaluable for debugging, since its output is inspectable without the schema table.
 
@@ -1349,7 +1379,7 @@ Because both stages consume and produce identical `WireOp[]`, Phase 2 is a drop-
 interface ServerOptions {
   // ...
   serializer?: ISerializer;   // room messages — default MessagePackSerializer
-  stateCodec?: IStateCodec;   // [NEW] state sync — default SchemaCodec (Phase 2), MessagePack-backed in Phase 1
+  stateCodec?: IStateCodec;   // [NEW] state sync and contract messages — [DECIDED] default SchemaCodec
 }
 ```
 
@@ -1374,6 +1404,7 @@ interface IStateCodecSession {
 - A session applies every `DEFINE` it encodes or decodes (`ClassTable`). A new class must take the next `classId`, and an existing one must be restated identically; a late joiner's snapshot replays the whole table, which is fine. A `DEFINE` that contradicts the table or skips an id is an error (`ENCODE_FAILED` / `DECODE_FAILED`). One server session per room is enough: every client's stream carries the same `DEFINE` sequence, because `DEFINE`s are never filtered.
 - `decodeOps` guarantees **well-formed ops** (`isWireOp`: op code, arity, and value types; `DEFINE` types must parse per the §5.7.2 grammar). Whether refs and field indices make sense for the receiving tree remains `applyDelta`'s job.
 - **Phase 1 `MessagePackStateCodec`** encodes the `WireOp[]` array as-is. Its output is byte-identical to `encode(ops)`, so the §5.7.11 / §11.1 baselines apply to it unchanged, and it stays inspectable without the table.
+- **[DECIDED]** `IStateCodec` also has `encodeMessage(def, payload)` and `decodeMessage(def, bytes)` (§8.1.2): messages need no session, since their declarations are the whole layout. `ClassTable` gained `truncate(size)` for the sessions' rollback.
 
 ## 9. Message Flow
 
@@ -1458,6 +1489,20 @@ test("single position update on one entity in a 100-entity room stays under N by
 
 Cover at minimum: (1) one field change in a large room, (2) all entities moving simultaneously (worst-case tick), (3) entity add/remove churn, (4) initial join snapshot size, (5) idle tick emits zero bytes. Record the measured numbers in the test names/comments so regressions are legible in the diff.
 
+**[DECIDED] Both codecs, side by side** (`packages/serializer/src/bandwidth.test.ts`, moved from `@bungohan/state`, which can't depend on the codecs). Every scenario runs through a real codec session (snapshot first, so the session knows every refId, as on a server), and each codec's size must stay under its measured number + 5%. A 100-entity room (`Entity`: `x`/`y` fixed:2, `angle` fixed:3, `hp` float64 = 100, `alive`, `kind`), op body bytes (a frame adds 2):
+
+| Scenario | `messagepack` | `schema` | §8.1.2 prediction |
+|---|---|---|---|
+| idle tick | 0 | 0 | 0 |
+| one position update (x = 145.5) | 8 | **5** | ~4 (see §8.1.2: 5 is right for this value) |
+| one entity, both axes | 15 | **8** | – |
+| all 100 entities move | 1,396 | **811** (−42%) | – |
+| churn: 10 spawns + 10 despawns | 433 | **310** (−28%) | – |
+| join snapshot, 100 entities | 4,032 | **2,953** (−27%) | – |
+| 30,000-tick churn, per tick (flat) | 138 | **94** (−32%) | – |
+
+On the wire: the core end-to-end fixture's one-position patch is 6 B (was 9), checked byte for byte. In the example app's two-tab browser run (headless Chromium, real server, Vite client, frames captured over CDP and decoded with `SchemaCodec`), the shooter's `STATE_PATCH` bodies averaged ~9 B and every `input` message was 3 B.
+
 ### 11.2 `@bungohan/testing` — in-process harness — **[NEW]**
 
 Testing a networked framework by booting real sockets and sleeping on real timers is slow and flaky. Ship a harness instead:
@@ -1490,7 +1535,7 @@ Also expose `harness.bytesSent()` / `bytesReceived()` so §11.1's bandwidth asse
 - **`ManualClock`** implements `Clock` (`now`, `setTimeout`/`clearTimeout`, `setInterval`/`clearInterval`). `await clock.advance(ms)` fires due timers in due-time order (ties in scheduling order), setting `now()` to each timer's due time, and **settles promise continuations after each timer**, so a tick's async work finishes before the next tick. Delays clamp like the platform's (negative/NaN → 0; intervals ≥ 1 ms). `advance` calls made during an advance (e.g. from a timer) run after it, in order. Settling uses `setImmediate` (the next macrotask), which is not a sleep.
 - **Errors from code under test propagate.** An exception from a timer callback rejects `advance()`, and one from a *client-side* socket listener rejects `flush()`. A failed `expect()` inside a callback therefore fails the test instead of vanishing. Server-side handlers keep `ITransport` semantics (routed to `onError`), because that is what core sees in production.
 - ~~`Clock` lives in `@bungohan/testing` for now.~~ ~~`Clock` now lives in `@bungohan/core`.~~ **[DECIDED] `Clock` lives in `@bungohan/types`** (`packages/types/src/clock.ts`, with the browser-safe `SystemClock`), shared by core (`ServerOptions.clock`) and client-js (`ClientOptions.clock`: PING and reconnection backoff). Core and testing re-export it. `ManualClock` implements it, so one clock drives server and clients in the harness.
-- `end-to-end.test.ts` wires what exists so far the way core and client-js will: state → `MessagePackStateCodec` → loopback → decode → `applyDelta`, with positionally packed contract messages going the other way, driven by `ManualClock` at 20 Hz. A two-input steer produces one 7-byte sync frame, and an idle tick produces nothing.
+- `end-to-end.test.ts` wires what exists so far the way core and client-js will: state → `MessagePackStateCodec` → loopback → decode → `applyDelta`, with positionally packed contract messages going the other way, driven by `ManualClock` at 20 Hz. A two-input steer produces one 7-byte sync frame, and an idle tick produces nothing. (It predates core and pins the MessagePack path; core's own suites now run on `schema`.)
 
 - **[DECIDED] `createTestHarness`** (`packages/testing/src/harness.ts`) is built: a real server on `LoopbackTransport` + `ManualClock`, with real client-js clients.
   - `await createTestHarness({ rooms: { game: GameRoom, other: [OtherRoom, defineOptions] }, client, server, autoJoin })` is async, like `createServerHarness`. `rooms` entries are type-checked per class (`RoomClass<R>`).
@@ -1521,6 +1566,13 @@ conformance/
 
 Any implementation in any language runs the corpus and must match byte-for-byte. This is what makes a community-contributed Godot client trustworthy without reverse-engineering, turns `PROTOCOL.md` into something verifiable rather than prose, and doubles as the §11.1 bandwidth suite since every vector has a known size. Bump the directory version only on breaking wire changes.
 
+**[DECIDED] As built.** The format is PROTOCOL.md §14 (JSON, hex with optional spaces, `{"f64": bits}` for NaN/±Infinity/−0, message declarations as JSON).
+
+- **Hand-written (`0xx-*.json`, `"generated": false`)**, computed byte by byte from PROTOCOL.md *before* `SchemaCodec` existed, so they test the implementation against the document and not against itself: varints and zigzag (`001`), the numeric rules including half-way negatives, saturation, NaN and −0 (`002`), frames and MessagePack bodies (`003`), `schema` state streams with every op kind, value type, key type, the S bit, the field escape and inline `DEFINE`s, plus the same stream under `messagepack` (`004`), malformed bodies and unencodable ops (`005`), contract messages under both codecs (`006`), malformed messages (`007`), and the compatibility/violation rules (`008`). `SchemaCodec` matched every one of them on its first run. That run's only failures were two gaps the vectors exposed elsewhere, both fixed: `MessagePackSerializer` accepted invalid UTF-8, and `TestClient` threw on frames for a `roomRef` it didn't hold. The runner itself was then checked by corrupting single bytes of a vector. **Never regenerate these.** If one is wrong, fix it by hand, against PROTOCOL.md.
+- **Generated (`1xx-*.json`, `"generated": true`)** by `bun run vectors` (`packages/testing/src/conformance/generate.ts`), deterministically, from the real state layer and both codecs: frames at every varint boundary and handshake bodies (`101`), snapshots with `DEFINE`s, every collection element type, nested schemas and a late joiner, refId reuse, numeric edges (`102`), per-client filtered streams (`103`), contract messages over every field kind with seeded random payloads and the example's contract (`104`), and unknown frame types and trailing elements (`105`).
+- **Runner:** `packages/testing/src/conformance/conformance.test.ts`, part of `bun test`. Every codec case runs in both directions (encode → exact bytes, bytes → decoded ops/payload) for each codec it names. Behavior cases run against a real server (server side) and against both the byte-level `TestClient` and client-js (client side).
+- `conformance/` is excluded from Biome: the files are golden data, laid out for reading.
+
 ## 12. Build Order
 
 Given package dependencies, implement in this order so each layer can be tested against real (not mocked) lower layers:
@@ -1528,13 +1580,13 @@ Given package dependencies, implement in this order so each layer can be tested 
 1. `@bungohan/result` — no deps
 2. `@bungohan/types` — no deps. Includes the §4.1 contract builders (`defineMessage`, `defineContract`, `f`, `Infer`) and the `WireOp`/`SchemaTable` types, so both `state` and `serializer` can depend on the wire vocabulary without depending on each other.
 3. `@bungohan/state` — depends on `result`, `types`
-4. `@bungohan/serializer` — depends on `types` (external: `@msgpack/msgpack`). Ship `MessagePackSerializer` + `JsonSerializer` first; `SchemaCodec` (§8.1.2) is Phase 2.
+4. `@bungohan/serializer` — depends on `types` (external: `@msgpack/msgpack`). Ship `MessagePackSerializer` + `JsonSerializer` first; `SchemaCodec` (§8.1.2) is Phase 2. **[DECIDED] Done**, and the default.
 5. `@bungohan/transport` — depends on `result`; external: Bun native `Bun.serve`
 6. `@bungohan/store` — depends on `result`; external: Bun native `RedisClient`
 7. `@bungohan/backplane` — depends on `result`; external: Bun native `RedisClient`
 8. `@bungohan/core` — depends on all of the above
 9. `@bungohan/client-js` — depends on `result`, `serializer`, `state`, `types` (never `core`, never Bun/Node-only APIs — must run in a browser)
 10. `@bungohan/testing` — depends on `core` + `client-js`; the loopback harness (§11.2). Build it early enough to use it while developing 8 and 9.
-11. `PROTOCOL.md` + `conformance/` vectors (§11.3) — write these as the wire format stabilizes, not after. They're the contract every non-JS client implements against.
+11. `PROTOCOL.md` + `conformance/` vectors (§11.3) — write these as the wire format stabilizes, not after. They're the contract every non-JS client implements against. **[DECIDED] Done** for v1 (§6.7, §11.3).
 12. `@bungohan/codegen` — depends on `types`; emits C#/GDScript/JSON bindings (§4.2)
 13. `apps/example-shooter` — exercises everything end-to-end; port the existing app's server/client/shared code onto the rebuilt API, adjusting call sites for the **[NEW]**/**[FIX]** items above (it can now use `server.onJoin(...)` instead of hand-rolling it via `RoomManager`, should declare its messages through a §4.1 contract, and should switch from its bespoke `useBungohan` hook to the real `@bungohan/client-js/react` one).

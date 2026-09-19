@@ -1,0 +1,25 @@
+{
+  "description": "Forward-compatibility and violation rules (§9, §8.2). Client-side cases start from a connection holding one joined room at roomRef 1 with no contract; server-side cases from a connection that joined room type `compat` (no contract) at roomRef 1. Hand-written from PROTOCOL.md.",
+  "generated": false,
+  "cases": [
+    { "kind": "behavior", "side": "client", "description": "unknown server frame type: skip the frame", "frames": ["c8 01 02 03"], "expect": "drop" },
+    { "kind": "behavior", "side": "client", "description": "unknown server frame type with no header", "frames": ["ff"], "expect": "drop" },
+    { "kind": "behavior", "side": "client", "description": "ROOM_MESSAGE with a messageId outside serverMessages", "frames": ["00 01 05"], "expect": "drop" },
+    { "kind": "behavior", "side": "client", "description": "ERROR with a trailing element", "frames": ["09 01 93 a1 58 a1 79 07"], "expect": "accept" },
+    { "kind": "behavior", "side": "client", "description": "ROOM_MESSAGE_RAW with a trailing element", "frames": ["01 01 93 a1 74 01 a5 6578747261"], "expect": "accept" },
+    { "kind": "behavior", "side": "client", "description": "a frame for a roomRef the client doesn't hold", "frames": ["06 09 a1 61"], "expect": "accept" },
+
+    { "kind": "behavior", "side": "server", "description": "unknown client frame type", "frames": ["05 01"], "expect": "violation" },
+    { "kind": "behavior", "side": "server", "description": "truncated header (PING without rtt)", "frames": ["04 07"], "expect": "violation" },
+    { "kind": "behavior", "side": "server", "description": "JOIN body that isn't an array", "frames": ["02 09 a1 78"], "expect": "violation" },
+    { "kind": "behavior", "side": "server", "description": "JOIN body that isn't MessagePack", "frames": ["02 09 c1"], "expect": "violation" },
+    { "kind": "behavior", "side": "server", "description": "JOIN with a fifth element (CREATE compat)", "frames": ["02 07 95 01 a6 636f6d706174 c0 c0 a6 667574757265"], "expect": "accept" },
+    { "kind": "behavior", "side": "server", "description": "JOIN with only mode and target (CREATE compat)", "frames": ["02 08 92 01 a6 636f6d706174"], "expect": "accept" },
+    { "kind": "behavior", "side": "server", "description": "JOIN with an unknown mode gets JOIN_ERROR INVALID_OPTIONS, not a violation", "frames": ["02 0a 92 09 a6 636f6d706174"], "expect": "accept" },
+    { "kind": "behavior", "side": "server", "description": "ROOM_MESSAGE_RAW with a trailing element", "frames": ["01 01 93 a1 74 01 02"], "expect": "accept" },
+    { "kind": "behavior", "side": "server", "description": "ROOM_MESSAGE for a roomRef the connection doesn't hold", "frames": ["00 09 00 90"], "expect": "accept" },
+    { "kind": "behavior", "side": "server", "description": "ROOM_MESSAGE with a messageId outside clientMessages", "frames": ["00 01 00 90"], "expect": "violation" },
+    { "kind": "behavior", "side": "server", "description": "LEAVE for an unknown roomRef, with stray body bytes", "frames": ["03 09 01 02"], "expect": "accept" },
+    { "kind": "behavior", "side": "server", "description": "PING is answered and not a violation", "frames": ["04 07 00"], "expect": "accept" }
+  ]
+}

@@ -1,0 +1,172 @@
+{
+  "description": "State op streams under the schema codec (§13.1): every op kind, every value and key type, the S bit and `last`, the field-index escape, inline DEFINEs, and numeric edge values. Hand-written from PROTOCOL.md. Classes: T (root, classId 0) = m map<string,fixed:1>, t set<int16>, a array<string>, p schemaMap<uint32,C>, q schemaSet<C>, r schemaArray<C>, k map<float64,bool>, u array<float32>, c schema<C>, d float64, e float32, x fixed:2, s string, b bool, g int8, h uint8, i int16, j int32, l uint16, n uint32. C (classId 1) = v uint8. D (classId 2) = w array<bool>. Root refIds: T 0, then m 1, t 2, a 3, p 4, q 5, r 6, k 7, u 8.",
+  "generated": false,
+  "cases": [
+    {
+      "kind": "state",
+      "description": "one stream through every op and type",
+      "codec": "schema",
+      "frames": [
+        {
+          "description": "DEFINE T and C (a snapshot's table)",
+          "ops": [
+            [4, 0, "T",
+              ["m", "t", "a", "p", "q", "r", "k", "u", "c", "d", "e", "x", "s", "b", "g", "h", "i", "j", "l", "n"],
+              ["map<string,fixed:1>", "set<int16>", "array<string>", "schemaMap<uint32,C>", "schemaSet<C>", "schemaArray<C>", "map<float64,bool>", "array<float32>", "schema<C>", "float64", "float32", "fixed:2", "string", "bool", "int8", "uint8", "int16", "int32", "uint16", "uint32"]],
+            [4, 1, "C", ["v"], ["uint8"]]
+          ],
+          "hex": "80 00 01 54 14 01 6d 13 6d61703c737472696e672c66697865643a313e 01 74 0a 7365743c696e7431363e 01 61 0d 61727261793c737472696e673e 01 70 13 736368656d614d61703c75696e7433322c433e 01 71 0c 736368656d615365743c433e 01 72 0e 736368656d6141727261793c433e 01 6b 11 6d61703c666c6f617436342c626f6f6c3e 01 75 0e 61727261793c666c6f617433323e 01 63 09 736368656d613c433e 01 64 07 666c6f61743634 01 65 07 666c6f61743332 01 78 07 66697865643a32 01 73 06 737472696e67 01 62 04 626f6f6c 01 67 04 696e7438 01 68 05 75696e7438 01 69 05 696e743136 01 6a 05 696e743332 01 6c 06 75696e743136 01 6e 06 75696e743332 80 01 01 43 01 01 76 05 75696e7438"
+        },
+        {
+          "description": "SET every primitive type on the root. last starts at 0 (the root), so every op has S = 1; fields 15..19 use the F = 15 escape",
+          "ops": [
+            [0, 0, 9, 1.5],
+            [0, 0, 10, 0.10000000149011612],
+            [0, 0, 11, -325],
+            [0, 0, 12, "hé"],
+            [0, 0, 13, true],
+            [0, 0, 14, -128],
+            [0, 0, 15, 255],
+            [0, 0, 16, -32768],
+            [0, 0, 17, -2147483648],
+            [0, 0, 18, 65535],
+            [0, 0, 19, 4294967295]
+          ],
+          "hex": "19 000000000000f83f 1a cdcccc3d 1b 8905 1c 03 68c3a9 1d 01 1e 80 1f 00 ff 1f 01 ffff03 1f 02 ffffffff0f 1f 03 ffff03 1f 04 ffffffff0f"
+        },
+        {
+          "description": "nested schema field, then float and fixed edge values (NaN, -0, ±Infinity, int32 bounds)",
+          "ops": [
+            [0, 0, 8, [1, 9]],
+            [0, 9, 0, 200],
+            [0, 0, 9, { "f64": "7ff8000000000000" }],
+            [0, 0, 9, { "f64": "8000000000000000" }],
+            [0, 0, 10, { "f64": "fff0000000000000" }],
+            [0, 0, 10, { "f64": "7ff8000000000000" }],
+            [0, 0, 11, 2147483647],
+            [0, 0, 11, -2147483648],
+            [0, 0, 9, { "f64": "7ff0000000000000" }]
+          ],
+          "hex": "18 01 09 10 c8 09 00 000000000000f87f 19 0000000000000080 1a 000080ff 1a 0000c07f 1b feffffff0f 1b ffffffff0f 19 000000000000f07f"
+        },
+        {
+          "description": "primitive collections: map (string key), set (int16), array (string) incl. SET-replace and CLEAR, map with float64 keys, array<float32>",
+          "ops": [
+            [1, 1, "hp", 25],
+            [2, 1, "hp"],
+            [1, 2, -2],
+            [2, 2, -2],
+            [1, 3, 0, "a"],
+            [0, 3, 0, "b"],
+            [2, 3, 0],
+            [3, 3],
+            [1, 7, -1.5, true],
+            [1, 8, 0, 0.5]
+          ],
+          "hex": "20 01 02 6870 32 50 02 6870 20 02 03 50 03 20 03 00 01 61 10 00 01 62 50 00 70 20 07 000000000000f8bf 01 20 08 00 0000003f"
+        },
+        {
+          "description": "schema collections: a ref value becomes `last`, so a new instance's content needs no target",
+          "ops": [
+            [1, 4, 7, [1, 10]],
+            [0, 10, 0, 5],
+            [1, 5, [1, 11]],
+            [1, 6, 0, [1, 12]],
+            [0, 6, 0, [1, 13]],
+            [2, 5, 11],
+            [2, 4, 7],
+            [2, 6, 0],
+            [3, 4]
+          ],
+          "hex": "20 04 07 01 0a 10 05 20 05 01 0b 20 06 00 01 0c 00 06 00 01 0d 40 05 0b 40 04 07 40 06 00 60 04"
+        },
+        {
+          "description": "an inline DEFINE for a new class, then a ref to it: its collection gets refId base + 1",
+          "ops": [
+            [4, 2, "D", ["w"], ["array<bool>"]],
+            [1, 4, 9, [2, 14]],
+            [1, 15, 0, true]
+          ],
+          "hex": "80 02 01 44 01 01 77 0b 61727261793c626f6f6c3e 20 04 09 02 0e 20 0f 00 01"
+        },
+        {
+          "description": "restating a known class changes nothing; multi-byte key and refId",
+          "ops": [
+            [4, 1, "C", ["v"], ["uint8"]],
+            [1, 4, 300, [1, 200]],
+            [0, 200, 0, 7]
+          ],
+          "hex": "80 01 01 43 01 01 76 05 75696e7438 20 04 ac02 01 c801 10 07"
+        }
+      ]
+    },
+    {
+      "kind": "state",
+      "description": "the §13.1.5 example: a one-entity snapshot, then a patch",
+      "codec": "schema",
+      "frames": [
+        {
+          "ops": [
+            [4, 0, "World", ["tick", "entities"], ["float64", "schemaMap<uint32,Entity>"]],
+            [4, 1, "Entity", ["x", "y"], ["fixed:2", "fixed:2"]],
+            [1, 1, 5, [1, 2]],
+            [0, 2, 0, 150]
+          ],
+          "hex": "80 00 05 576f726c64 02 04 7469636b 07 666c6f61743634 08 656e746974696573 18 736368656d614d61703c75696e7433322c456e746974793e 80 01 06 456e74697479 02 01 78 07 66697865643a32 01 79 07 66697865643a32 20 01 05 01 02 10 ac02"
+        },
+        {
+          "ops": [[0, 2, 1, -325]],
+          "hex": "01 02 89 05"
+        }
+      ]
+    },
+    {
+      "kind": "state",
+      "description": "the same stream under the messagepack codec (§13.2.1)",
+      "codec": "messagepack",
+      "frames": [
+        {
+          "ops": [
+            [4, 0, "World", ["tick", "entities"], ["float64", "schemaMap<uint32,Entity>"]],
+            [4, 1, "Entity", ["x", "y"], ["fixed:2", "fixed:2"]],
+            [1, 1, 5, [1, 2]],
+            [0, 2, 0, 150]
+          ],
+          "hex": "94 95 04 00 a5 576f726c64 92 a4 7469636b a8 656e746974696573 92 a7 666c6f61743634 b8 736368656d614d61703c75696e7433322c456e746974793e 95 04 01 a6 456e74697479 92 a1 78 a1 79 92 a7 66697865643a32 a7 66697865643a32 94 01 01 05 92 01 02 94 00 02 00 cc 96"
+        },
+        {
+          "ops": [[0, 2, 1, -325]],
+          "hex": "91 94 00 02 01 d1 febb"
+        }
+      ]
+    },
+    {
+      "kind": "state",
+      "description": "an empty snapshot (a room with no state)",
+      "codec": "schema",
+      "frames": [{ "ops": [], "hex": "" }]
+    },
+    {
+      "kind": "state",
+      "description": "an empty snapshot under messagepack",
+      "codec": "messagepack",
+      "frames": [{ "ops": [], "hex": "90" }]
+    },
+    {
+      "kind": "state",
+      "description": "decoders accept S = 0 with target == last, and a non-shortest target varint",
+      "codec": "schema",
+      "frames": [
+        {
+          "ops": [[4, 0, "C", ["v"], ["uint8"]]],
+          "hex": "80 00 01 43 01 01 76 05 75696e7438"
+        },
+        {
+          "ops": [[0, 0, 0, 7]],
+          "hex": "00 80 00 07",
+          "encode": false
+        }
+      ]
+    }
+  ]
+}

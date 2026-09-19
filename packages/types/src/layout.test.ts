@@ -102,4 +102,25 @@ describe("validateContract", () => {
       "contract.server: missing message map",
     ])
   })
+
+  test("arrays and maps can't hold messages that encode to zero bytes", () => {
+    const Empty = defineMessage("empty", {})
+    const OnlyEmpty = defineMessage("onlyEmpty", { e: f.nested(Empty) })
+    const Flagged = defineMessage("flagged", { b: f.bool })
+    const contract = defineContract({
+      client: {
+        lists: defineMessage("lists", {
+          a: f.array(f.nested(Empty)),
+          m: f.map(f.nested(OnlyEmpty)),
+          ok: f.array(f.nested(Flagged)),
+          one: f.nested(Empty),
+        }),
+      },
+      server: {},
+    })
+    expect(validateContract(contract)).toEqual([
+      "client.lists.a: array elements can't be messages with no data",
+      "client.lists.m: map elements can't be messages with no data",
+    ])
+  })
 })

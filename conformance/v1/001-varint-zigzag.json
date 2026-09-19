@@ -1,0 +1,36 @@
+{
+  "description": "Varints (§1.1) and zigzag (§1.2), including the 5-byte limit and non-shortest forms. Hand-written from PROTOCOL.md.",
+  "generated": false,
+  "cases": [
+    { "kind": "varint", "value": 0, "hex": "00" },
+    { "kind": "varint", "value": 1, "hex": "01" },
+    { "kind": "varint", "value": 127, "hex": "7f" },
+    { "kind": "varint", "value": 128, "hex": "80 01" },
+    { "kind": "varint", "value": 300, "hex": "ac 02" },
+    { "kind": "varint", "value": 16383, "hex": "ff 7f" },
+    { "kind": "varint", "value": 16384, "hex": "80 80 01" },
+    { "kind": "varint", "value": 2097151, "hex": "ff ff 7f" },
+    { "kind": "varint", "value": 268435455, "hex": "ff ff ff 7f" },
+    { "kind": "varint", "value": 268435456, "hex": "80 80 80 80 01" },
+    { "kind": "varint", "value": 2147483648, "hex": "80 80 80 80 08" },
+    { "kind": "varint", "value": 4294967295, "hex": "ff ff ff ff 0f" },
+    { "kind": "varint", "description": "non-shortest form: decoders accept it", "value": 0, "hex": "80 00", "encode": false },
+    { "kind": "varint", "description": "non-shortest 5-byte form of 1", "value": 1, "hex": "81 80 80 80 00", "encode": false },
+    { "kind": "varint", "description": "truncated", "hex": "80", "error": true },
+    { "kind": "varint", "description": "empty", "hex": "", "error": true },
+    { "kind": "varint", "description": "above 2^32-1 (fifth byte > 0x0f)", "hex": "ff ff ff ff 10", "error": true },
+    { "kind": "varint", "description": "longer than 5 bytes", "hex": "80 80 80 80 80 00", "error": true },
+
+    { "kind": "zigzag", "value": 0, "hex": "00" },
+    { "kind": "zigzag", "value": -1, "hex": "01" },
+    { "kind": "zigzag", "value": 1, "hex": "02" },
+    { "kind": "zigzag", "value": -2, "hex": "03" },
+    { "kind": "zigzag", "value": 63, "hex": "7e" },
+    { "kind": "zigzag", "value": -64, "hex": "7f" },
+    { "kind": "zigzag", "value": 64, "hex": "80 01" },
+    { "kind": "zigzag", "value": -325, "hex": "89 05" },
+    { "kind": "zigzag", "value": 14550, "hex": "ac e3 01" },
+    { "kind": "zigzag", "value": 2147483647, "hex": "fe ff ff ff 0f" },
+    { "kind": "zigzag", "value": -2147483648, "hex": "ff ff ff ff 0f" }
+  ]
+}

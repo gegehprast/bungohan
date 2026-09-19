@@ -6,16 +6,16 @@ import { describe, expect, test } from "bun:test"
 import {
   type IStateCodec,
   type IStateCodecSession,
-  MessagePackStateCodec,
+  SchemaCodec,
 } from "@bungohan/serializer"
-import { ServerFrameType } from "@bungohan/types"
+import { type MessageDef, ServerFrameType } from "@bungohan/types"
 import { calls, GameState, gameContract, Player } from "./fixtures"
 import { serverRoom, setup } from "./helpers"
 
 /** Counts `encodeOps` calls, to prove frames are encoded once. */
 class CountingCodec implements IStateCodec {
   public encodes = 0
-  private readonly _inner = new MessagePackStateCodec()
+  private readonly _inner = new SchemaCodec()
 
   public getName(): string {
     return this._inner.getName()
@@ -31,6 +31,14 @@ class CountingCodec implements IStateCodec {
       decodeOps: (data) => inner.decodeOps(data),
       getTable: () => inner.getTable(),
     }
+  }
+
+  public encodeMessage(def: MessageDef, payload: unknown) {
+    return this._inner.encodeMessage(def, payload)
+  }
+
+  public decodeMessage<M extends MessageDef>(def: M, data: Uint8Array) {
+    return this._inner.decodeMessage(def, data)
   }
 }
 
@@ -102,16 +110,22 @@ describe("bandwidth", () => {
     await h.stop()
   })
 
-  test("one position change is one 9-byte frame", async () => {
+  test("one position change is one 6-byte frame", async () => {
     const { h, join } = await setup()
-    const room = await join()
+    const client = h.connect()
+    const room = await join(client)
     await h.tick(50)
     room.send("move", { dx: 1.5 })
     await h.flush()
     h.resetStats()
+    const before = client.frames.length
     await h.tick(50)
-    // [STATE_PATCH, roomRef=1] + MessagePack [[0, ref, 1, 150]]
-    expect(h.bytesSent()).toBe(9)
+    // [STATE_PATCH, roomRef 1] + schema op SET(target 2, field 1, zigzag
+    // 150): 01 02 ac 02 (PROTOCOL.md §13.1.3). MessagePack took 9 bytes.
+    expect(h.bytesSent()).toBe(6)
+    expect([...(client.frames[before] ?? [])]).toEqual([
+      0x03, 0x01, 0x01, 0x02, 0xac, 0x02,
+    ])
     expect(room.state?.players.get(room.sessionId)?.x.get()).toBe(1.5)
     await h.stop()
   })

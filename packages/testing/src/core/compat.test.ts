@@ -105,7 +105,8 @@ describe("trailing elements are ignored", () => {
     const { h, join } = await setup()
     const client = h.connect()
     const room = await join(client)
-    room.sendById(0, [100, "extra"]) // move is [dx]
+    // move is { dx: fixed:2 }: dx = 1 (zigzag 200) and one byte too many.
+    room.sendById(0, new Uint8Array([0xc8, 0x01, 0x00]))
     await h.flush()
     expect(client.closeCode).toBe(CloseCode.POLICY_VIOLATION)
     await h.stop()

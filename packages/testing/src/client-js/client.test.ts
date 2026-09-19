@@ -11,7 +11,11 @@ import {
   type IRoom,
 } from "@bungohan/client-js"
 import { Room } from "@bungohan/core"
-import { encodeFrame, MessagePackSerializer } from "@bungohan/serializer"
+import {
+  encodeFrame,
+  MessagePackSerializer,
+  MessagePackStateCodec,
+} from "@bungohan/serializer"
 import {
   createNumber,
   createSchemaMap,
@@ -173,6 +177,36 @@ describe("join", () => {
     // The client left the seat the server had given it.
     expect(calls.some((call) => /^onLeave .* true$/.test(call))).toBe(true)
     expect(client.getRooms().size).toBe(0)
+  })
+
+  test("a client without the default schema codec fails with CODEC_MISMATCH", async () => {
+    const client = await h.connect({
+      stateCodecs: [new MessagePackStateCodec()],
+    })
+    const result = await client.joinOrCreate("game", {}, game)
+    expect(result.isErr() && result.error.code).toBe("CODEC_MISMATCH")
+    await h.flush()
+    expect(calls.some((call) => /^onLeave .* true$/.test(call))).toBe(true)
+    expect(client.getRooms().size).toBe(0)
+  })
+
+  test("MessagePack stays selectable: state and messages both ways", async () => {
+    await h.stop()
+    h = await createTestHarness({
+      rooms: { game: GameRoom },
+      client: { logger, pingInterval: 0 },
+      server: { stateCodec: new MessagePackStateCodec() },
+    })
+    const a = await join()
+    const b = await join()
+    expect(a instanceof ClientRoom && a.stateCodec).toBe("messagepack")
+    const heard: string[] = []
+    b.onMessage("said", ({ text }) => heard.push(text))
+    expect(a.send("move", { dx: 1.25 }).isOk()).toBe(true)
+    a.send("say", { text: "hi" })
+    await sync()
+    expect(player(b, a.sessionId).x.get()).toBe(1.25)
+    expect(heard).toEqual(["hi"])
   })
 })
 

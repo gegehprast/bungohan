@@ -21,7 +21,7 @@ describe("join handshake", () => {
     expect(room.sessionId).toMatch(/^[\w-]{12}$/)
     expect(room.reconnectionToken?.startsWith(`${room.roomId}.`)).toBe(true)
     expect(room.contractHash).toBe(contractHash(gameContract))
-    expect(room.stateCodec).toBe("messagepack")
+    expect(room.stateCodec).toBe("schema")
     expect(room.clientMessages).toEqual(["move", "say", "boom"])
     expect(room.serverMessages).toEqual(["welcome", "said"])
 

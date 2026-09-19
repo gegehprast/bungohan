@@ -3,12 +3,10 @@
  * `BungohanClient`; frames reach it already parsed and routed by roomRef.
  */
 import { err, ok, type Result } from "@bungohan/result"
-import {
-  type ISerializer,
-  type IStateCodec,
-  type IStateCodecSession,
-  packUnknownMessage,
-  unpackMessage,
+import type {
+  ISerializer,
+  IStateCodec,
+  IStateCodecSession,
 } from "@bungohan/serializer"
 import {
   applyDelta,
@@ -294,11 +292,20 @@ export class Room<S extends Schema = Schema, C extends Contract = EmptyContract>
         ),
       )
     }
-    const packed = packUnknownMessage(def, message)
-    if (packed.isErr()) {
-      return err(new ClientError("ENCODE_FAILED", packed.error.message))
+    // Contract messages use the room's codec (PROTOCOL.md §6.4).
+    const codec = this._codec
+    if (codec === undefined) {
+      return err(new ClientError("NOT_JOINED", "the room has no codec yet"))
     }
-    return this._sendBody(ClientFrameType.ROOM_MESSAGE, [this._ref, id], packed)
+    const encoded = codec.encodeMessage(def, message)
+    if (encoded.isErr()) {
+      return err(new ClientError("ENCODE_FAILED", encoded.error.message))
+    }
+    return this._host.sendFrame(
+      ClientFrameType.ROOM_MESSAGE,
+      [this._ref, id],
+      encoded.value,
+    )
   }
 
   public sendRaw(type: string, message: unknown): Result<void, ClientError> {
@@ -743,12 +750,12 @@ export class Room<S extends Schema = Schema, C extends Contract = EmptyContract>
       this._host.warn(`dropped message "${name}": not in the client contract`)
       return
     }
-    const wire = this._host.serializer.decode(body)
-    if (wire.isErr()) {
-      this._host.warn(`dropped message "${name}": ${wire.error.message}`)
+    const codec = this._codec
+    if (codec === undefined) {
+      this._host.warn(`dropped message "${name}": the room has no codec yet`)
       return
     }
-    const payload = unpackMessage(def, wire.value)
+    const payload = codec.decodeMessage(def, body)
     if (payload.isErr()) {
       this._host.warn(`dropped message "${name}": ${payload.error.message}`)
       return

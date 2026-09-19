@@ -1,10 +1,13 @@
 /**
  * State-sync codecs (spec §8.1.2–8.1.5). A codec encodes the `WireOp[]`
- * stream produced by `@bungohan/state`; Phase 1 (this file) is MessagePack,
- * Phase 2 will be the tag-free `SchemaCodec` behind the same interface.
+ * stream produced by `@bungohan/state`, and the room's contract messages;
+ * PROTOCOL.md §13 is the byte layout. This file holds the interface and the
+ * `messagepack` codec; `schema-codec.ts` holds the default `schema` codec.
  */
 import { err, ok, type Result } from "@bungohan/result"
 import {
+  type Infer,
+  type MessageDef,
   parseFieldType,
   type SchemaClassEntry,
   type SchemaFieldType,
@@ -12,18 +15,40 @@ import {
   type WireOp,
 } from "@bungohan/types"
 import { SerializerError } from "./errors"
+import { packUnknownMessage, unpackMessage } from "./message-codec"
 import { MessagePackSerializer } from "./messagepack"
 
 /**
- * A state codec. Stateless itself: each stream (a room on the server, a
- * joined room on a client) gets its own {@link IStateCodecSession}, because
- * the class table grows during a session and a tag-free codec needs it to
- * decode.
+ * A room's codec (PROTOCOL.md §13): it encodes the state op stream and the
+ * room's contract messages, so a room has exactly one codec, named in the
+ * join handshake. Raw messages and control bodies are not its business
+ * (they use the connection's `ISerializer`).
+ *
+ * Stateless itself: each state stream (a room on the server, a joined room
+ * on a client) gets its own {@link IStateCodecSession}, because the class
+ * table grows during a stream and a tag-free codec needs it to decode.
+ * Messages need no session: their declarations are the whole layout.
  */
 export interface IStateCodec {
   /** Named in the join handshake so the client picks the matching codec. */
   getName(): string
   createSession(): IStateCodecSession
+  /**
+   * Encodes a contract message. Numbers are converted per PROTOCOL.md §12;
+   * a payload that got past the types is `ENCODE_FAILED`.
+   */
+  encodeMessage(
+    def: MessageDef,
+    payload: unknown,
+  ): Result<Uint8Array, SerializerError>
+  /**
+   * Decodes a contract message, type-directed and strict: anything but an
+   * exact encoding is `DECODE_FAILED` and must never reach a handler.
+   */
+  decodeMessage<M extends MessageDef>(
+    def: M,
+    data: Uint8Array,
+  ): Result<Infer<M>, SerializerError>
 }
 
 /**
@@ -128,6 +153,11 @@ export class ClassTable {
     return this._classes.length
   }
 
+  /** Forgets every class from `size` on (rolls back a failed frame). */
+  public truncate(size: number): void {
+    if (size < this._classes.length) this._classes.length = size
+  }
+
   /**
    * Applies one `DEFINE` (already shape-checked). Class ids are assigned in
    * order, so a new class must take the next id; an existing id must be
@@ -204,6 +234,23 @@ export class MessagePackStateCodec implements IStateCodec {
 
   public createSession(): IStateCodecSession {
     return new MessagePackStateSession(this._serializer)
+  }
+
+  /** Positional MessagePack array (PROTOCOL.md §13.2.2). */
+  public encodeMessage(
+    def: MessageDef,
+    payload: unknown,
+  ): Result<Uint8Array, SerializerError> {
+    const packed = packUnknownMessage(def, payload)
+    return packed.isErr() ? packed : this._serializer.encode(packed.value)
+  }
+
+  public decodeMessage<M extends MessageDef>(
+    def: M,
+    data: Uint8Array,
+  ): Result<Infer<M>, SerializerError> {
+    const decoded = this._serializer.decode(data)
+    return decoded.isErr() ? decoded : unpackMessage(def, decoded.value)
   }
 }
 

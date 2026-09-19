@@ -1,0 +1,72 @@
+{
+  "description": "Forward-compatibility rules (§9): unknown frame types in both directions, trailing elements in array bodies. Generated.",
+  "generated": true,
+  "cases": [
+    {"kind":"behavior","side":"client","description":"unknown server frame type 11 (any header or body)","expect":"drop", "frames": [
+      "0b018001c0ff"
+    ]},
+    {"kind":"behavior","side":"client","description":"unknown server frame type 12 (any header or body)","expect":"drop", "frames": [
+      "0c018001c0ff"
+    ]},
+    {"kind":"behavior","side":"client","description":"unknown server frame type 64 (any header or body)","expect":"drop", "frames": [
+      "40018001c0ff"
+    ]},
+    {"kind":"behavior","side":"client","description":"unknown server frame type 127 (any header or body)","expect":"drop", "frames": [
+      "7f018001c0ff"
+    ]},
+    {"kind":"behavior","side":"client","description":"unknown server frame type 128 (any header or body)","expect":"drop", "frames": [
+      "80018001c0ff"
+    ]},
+    {"kind":"behavior","side":"client","description":"unknown server frame type 200 (any header or body)","expect":"drop", "frames": [
+      "c8018001c0ff"
+    ]},
+    {"kind":"behavior","side":"client","description":"unknown server frame type 254 (any header or body)","expect":"drop", "frames": [
+      "fe018001c0ff"
+    ]},
+    {"kind":"behavior","side":"client","description":"unknown server frame type 255 (any header or body)","expect":"drop", "frames": [
+      "ff018001c0ff"
+    ]},
+    {"kind":"behavior","side":"server","description":"unknown client frame type 5","expect":"violation", "frames": [
+      "0501"
+    ]},
+    {"kind":"behavior","side":"server","description":"unknown client frame type 6","expect":"violation", "frames": [
+      "0601"
+    ]},
+    {"kind":"behavior","side":"server","description":"unknown client frame type 10","expect":"violation", "frames": [
+      "0a01"
+    ]},
+    {"kind":"behavior","side":"server","description":"unknown client frame type 128","expect":"violation", "frames": [
+      "8001"
+    ]},
+    {"kind":"behavior","side":"server","description":"unknown client frame type 255","expect":"violation", "frames": [
+      "ff01"
+    ]},
+    {"kind":"behavior","side":"server","description":"JOIN (CREATE compat) with 1 trailing element(s)","expect":"accept", "frames": [
+      "02149501a6636f6d70617480c0c0"
+    ]},
+    {"kind":"behavior","side":"server","description":"ROOM_MESSAGE_RAW with 1 trailing element(s)","expect":"accept", "frames": [
+      "010193a174a77061796c6f6164c0"
+    ]},
+    {"kind":"behavior","side":"client","description":"ERROR with 1 trailing element(s)","expect":"accept", "frames": [
+      "090193a4434f4445a76d657373616765c0"
+    ]},
+    {"kind":"behavior","side":"server","description":"JOIN (CREATE compat) with 2 trailing element(s)","expect":"accept", "frames": [
+      "02149601a6636f6d70617480c001a374776f"
+    ]},
+    {"kind":"behavior","side":"server","description":"ROOM_MESSAGE_RAW with 2 trailing element(s)","expect":"accept", "frames": [
+      "010194a174a77061796c6f616401a374776f"
+    ]},
+    {"kind":"behavior","side":"client","description":"ERROR with 2 trailing element(s)","expect":"accept", "frames": [
+      "090194a4434f4445a76d65737361676501a374776f"
+    ]},
+    {"kind":"behavior","side":"server","description":"JOIN (CREATE compat) with 3 trailing element(s)","expect":"accept", "frames": [
+      "02149701a6636f6d70617480c081a66e6573746564920102c3cb400c000000000000"
+    ]},
+    {"kind":"behavior","side":"server","description":"ROOM_MESSAGE_RAW with 3 trailing element(s)","expect":"accept", "frames": [
+      "010195a174a77061796c6f616481a66e6573746564920102c3cb400c000000000000"
+    ]},
+    {"kind":"behavior","side":"client","description":"ERROR with 3 trailing element(s)","expect":"accept", "frames": [
+      "090195a4434f4445a76d65737361676581a66e6573746564920102c3cb400c000000000000"
+    ]}
+  ]
+}

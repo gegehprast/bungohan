@@ -1,0 +1,126 @@
+{
+  "description": "Contract messages (§10) under both codecs (§13.1.6, §13.2.2): every field kind, flags for bools and optionals, numeric conversion on send, nested messages, arrays and maps. Hand-written from PROTOCOL.md.",
+  "generated": false,
+  "cases": [
+    {
+      "kind": "message",
+      "description": "fixed-point position",
+      "message": { "name": "playerMove", "fields": [["x", "fixed:2"], ["y", "fixed:2"]] },
+      "payload": { "x": 145.5, "y": -3.25 },
+      "hex": { "schema": "ace301 8905", "messagepack": "92 cd38d6 d1febb" }
+    },
+    {
+      "kind": "message",
+      "description": "bools pack into one flags byte (left = bit 2, shooting = bit 4)",
+      "message": { "name": "input", "fields": [["up", "bool"], ["down", "bool"], ["left", "bool"], ["right", "bool"], ["rotation", "fixed:2"], ["shooting", "bool"]] },
+      "payload": { "up": false, "down": false, "left": true, "right": false, "rotation": 3.14, "shooting": true },
+      "hex": { "schema": "14 f404", "messagepack": "96 c2 c2 c3 c2 cd013a c3" }
+    },
+    {
+      "kind": "message",
+      "description": "integers are truncated toward zero and saturated on send; NaN becomes 0",
+      "message": { "name": "ints", "fields": [["a", "int8"], ["b", "uint8"], ["c", "int16"], ["d", "int32"], ["e", "uint16"], ["f", "uint32"]] },
+      "payload": { "a": -1.9, "b": 300, "c": -40000, "d": 2.5, "e": -5, "f": { "f64": "7ff8000000000000" } },
+      "decoded": { "a": -1, "b": 255, "c": -32768, "d": 2, "e": 0, "f": 0 },
+      "hex": { "schema": "ff ff ffff03 04 00 00", "messagepack": "96 ff ccff d18000 02 00 00" }
+    },
+    {
+      "kind": "message",
+      "description": "integer extremes",
+      "message": { "name": "intMax", "fields": [["a", "int8"], ["b", "int16"], ["c", "int32"], ["d", "uint16"], ["e", "uint32"]] },
+      "payload": { "a": 127, "b": 32767, "c": 2147483647, "d": 65535, "e": 4294967295 },
+      "hex": { "schema": "7f feff03 feffffff0f ffff03 ffffffff0f", "messagepack": "95 7f cd7fff ce7fffffff cdffff ceffffffff" }
+    },
+    {
+      "kind": "message",
+      "description": "fixed-point: half-way rounding in both directions, 1.005, saturation, -0, -Infinity",
+      "message": { "name": "fixedEdges", "fields": [["p", "fixed:0"], ["q", "fixed:0"], ["r", "fixed:2"], ["s", "fixed:2"], ["t", "fixed:3"], ["u", "fixed:2"], ["v", "fixed:2"]] },
+      "payload": { "p": 2.5, "q": -2.5, "r": 1.005, "s": 1e12, "t": { "f64": "8000000000000000" }, "u": { "f64": "fff0000000000000" }, "v": -0.125 },
+      "decoded": { "p": 3, "q": -3, "r": 1, "s": 21474836.47, "t": 0, "u": -21474836.48, "v": -0.13 },
+      "hex": { "schema": "06 05 c801 feffffff0f 00 ffffffff0f 19", "messagepack": "97 03 fd 64 ce7fffffff 00 d280000000 f3" }
+    },
+    {
+      "kind": "message",
+      "description": "floats under the schema codec: float32 rounding, -0 keeps its sign, NaN is canonical",
+      "message": { "name": "floats", "fields": [["a", "float32"], ["b", "float64"], ["c", "float32"], ["d", "float64"]] },
+      "payload": { "a": 0.1, "b": { "f64": "8000000000000000" }, "c": { "f64": "7ff8000000000000" }, "d": 1.5 },
+      "decoded": { "a": 0.10000000149011612, "b": { "f64": "8000000000000000" }, "c": { "f64": "7ff8000000000000" }, "d": 1.5 },
+      "hex": { "schema": "cdcccc3d 0000000000000080 0000c07f 000000000000f83f" }
+    },
+    {
+      "kind": "message",
+      "description": "floats under the messagepack codec: -0 becomes 0",
+      "message": { "name": "floats", "fields": [["a", "float32"], ["b", "float64"], ["c", "float32"], ["d", "float64"]] },
+      "payload": { "a": 0.1, "b": { "f64": "8000000000000000" }, "c": { "f64": "7ff8000000000000" }, "d": 1.5 },
+      "decoded": { "a": 0.10000000149011612, "b": 0, "c": { "f64": "7ff8000000000000" }, "d": 1.5 },
+      "hex": { "messagepack": "94 cb3fb99999a0000000 00 cb7ff8000000000000 cb3ff8000000000000" }
+    },
+    {
+      "kind": "message",
+      "description": "optionals absent: only the bool's flag bit is set; messagepack trims the trailing absent optionals",
+      "message": { "name": "chat", "fields": [["text", "string"], ["loud", "bool"], ["color", { "enum": ["red", "green", "blue"] }], ["to", { "optional": "string" }], ["urgent", { "optional": "bool" }], ["count", { "optional": "uint8" }]] },
+      "payload": { "text": "hi", "loud": true, "color": "blue" },
+      "hex": { "schema": "01 02 6869 02", "messagepack": "93 a2 6869 c3 02" }
+    },
+    {
+      "kind": "message",
+      "description": "optionals present, including optional<bool> false (two flag bits: present, value)",
+      "message": { "name": "chat", "fields": [["text", "string"], ["loud", "bool"], ["color", { "enum": ["red", "green", "blue"] }], ["to", { "optional": "string" }], ["urgent", { "optional": "bool" }], ["count", { "optional": "uint8" }]] },
+      "payload": { "text": "", "loud": false, "color": "red", "to": "bob", "urgent": false, "count": 7 },
+      "hex": { "schema": "16 00 00 03 626f62 07", "messagepack": "96 a0 c2 00 a3 626f62 c2 07" }
+    },
+    {
+      "kind": "message",
+      "description": "an absent optional before a present one",
+      "message": { "name": "chat", "fields": [["text", "string"], ["loud", "bool"], ["color", { "enum": ["red", "green", "blue"] }], ["to", { "optional": "string" }], ["urgent", { "optional": "bool" }], ["count", { "optional": "uint8" }]] },
+      "payload": { "text": "x", "loud": false, "color": "green", "urgent": true },
+      "hex": { "schema": "0c 01 78 01", "messagepack": "95 a1 78 c2 01 c0 c3" }
+    },
+    {
+      "kind": "message",
+      "description": "arrays of nested messages (each with its own flags), a map, optional array elements, bool array elements",
+      "message": {
+        "name": "outer",
+        "fields": [
+          ["items", { "array": { "nested": { "name": "inner", "fields": [["id", "uint16"], ["tag", { "optional": "string" }]] } } }],
+          ["scores", { "map": "int32" }],
+          ["maybe", { "array": { "optional": "float64" } }],
+          ["flags", { "array": "bool" }]
+        ]
+      },
+      "payload": { "items": [{ "id": 300 }, { "id": 1, "tag": "a" }], "scores": { "ann": -1, "bo": 64 }, "maybe": [null, 2.5], "flags": [true, false] },
+      "hex": {
+        "schema": "02 00 ac02 01 01 01 61 02 03 616e6e 01 02 626f 8001 02 00 01 0000000000000440 02 01 00",
+        "messagepack": "94 92 91 cd012c 92 01 a1 61 82 a3 616e6e ff a2 626f 40 92 c0 cb4004000000000000 92 c3 c2"
+      }
+    },
+    {
+      "kind": "message",
+      "description": "a message with no fields is zero bytes under schema",
+      "message": { "name": "startGame", "fields": [] },
+      "payload": {},
+      "hex": { "schema": "", "messagepack": "90" }
+    },
+    {
+      "kind": "message",
+      "description": "enum of numbers; the index is sent",
+      "message": { "name": "pick", "fields": [["n", { "enum": [10, 20, 30] }]] },
+      "payload": { "n": 30 },
+      "hex": { "schema": "02", "messagepack": "91 02" }
+    },
+    {
+      "kind": "message",
+      "description": "nine bools take two flag bytes",
+      "message": { "name": "nine", "fields": [["a", "bool"], ["b", "bool"], ["c", "bool"], ["d", "bool"], ["e", "bool"], ["f", "bool"], ["g", "bool"], ["h", "bool"], ["i", "bool"]] },
+      "payload": { "a": true, "b": false, "c": false, "d": false, "e": false, "f": false, "g": false, "h": true, "i": true },
+      "hex": { "schema": "81 01", "messagepack": "99 c3 c2 c2 c2 c2 c2 c2 c3 c3" }
+    },
+    {
+      "kind": "message",
+      "description": "UTF-8 strings",
+      "message": { "name": "say", "fields": [["s", "string"]] },
+      "payload": { "s": "héllo ☃" },
+      "hex": { "schema": "0a 68c3a96c6c6f20e29883", "messagepack": "91 aa 68c3a96c6c6f20e29883" }
+    }
+  ]
+}

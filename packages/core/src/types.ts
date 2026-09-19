@@ -36,7 +36,11 @@ export interface ServerOptions {
   }
   /** Room messages and envelope bodies. Default `MessagePackSerializer`. */
   serializer?: ISerializer
-  /** State sync. Default `MessagePackStateCodec` (Phase 1, spec §8.1.3). */
+  /**
+   * The rooms' codec: state sync and contract messages (PROTOCOL.md §13).
+   * Default `SchemaCodec`; `MessagePackStateCodec` is inspectable, for
+   * debugging.
+   */
   stateCodec?: IStateCodec
   /** Off by default; when off, metrics cost nothing (spec §6.6). */
   metrics?: { enabled?: boolean }

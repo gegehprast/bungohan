@@ -5,9 +5,7 @@ import {
   type IStateCodec,
   type IStateCodecSession,
   MessagePackSerializer,
-  MessagePackStateCodec,
-  packUnknownMessage,
-  unpackMessage,
+  SchemaCodec,
 } from "@bungohan/serializer"
 import {
   clearChangeTrees,
@@ -998,9 +996,7 @@ export abstract class Room<
     if (def === undefined) {
       return err(new Error(`unknown message id ${messageId}`))
     }
-    const decoded = this._requireHost().serializer.decode(body)
-    if (decoded.isErr()) return decoded
-    const payload = unpackMessage(def, decoded.value)
+    const payload = this._requireHost().stateCodec.decodeMessage(def, body)
     if (payload.isErr()) return payload
     this._countInbound(client, body.byteLength)
     this._dispatch(this._handlers, def.name, client, payload.value)
@@ -1370,17 +1366,17 @@ export abstract class Room<
       )
       return undefined
     }
-    const packed = packUnknownMessage(def, message)
-    if (packed.isErr()) {
-      host.reportError(packed.error, {
+    // Contract messages use the room's codec, like its state (§8.1.1).
+    const body = host.stateCodec.encodeMessage(def, message)
+    if (body.isErr()) {
+      host.reportError(body.error, {
         source: "send",
         room: this,
         messageType: name,
       })
       return undefined
     }
-    const body = this._encodeBody(packed.value)
-    return body === undefined ? undefined : [id, body]
+    return [id, body.value]
   }
 
   private _encodeRaw(type: string, message: unknown): Uint8Array | undefined {
@@ -1503,7 +1499,7 @@ function detachedHost(): RoomHost {
     clock: new SystemClock(),
     logger,
     serializer: new MessagePackSerializer(),
-    stateCodec: new MessagePackStateCodec(),
+    stateCodec: new SchemaCodec(),
     store: undefined,
     metrics: undefined,
     simulationTickRate: 60,

@@ -13,8 +13,7 @@ import {
   type IStateCodecSession,
   MessagePackSerializer,
   MessagePackStateCodec,
-  packUnknownMessage,
-  unpackMessage,
+  SchemaCodec,
 } from "@bungohan/serializer"
 import {
   applyDelta,
@@ -110,7 +109,11 @@ export interface JoinOptions<S extends Schema, C extends Contract> {
 
 export interface DriverOptions {
   serializer?: ISerializer
-  stateCodec?: IStateCodec
+  /**
+   * Codecs this client implements, matched by name against the handshake's
+   * `stateCodec` (PROTOCOL.md §6.4). Default: `schema` and `messagepack`.
+   */
+  stateCodecs?: IStateCodec[]
   /** Where dropped-frame notices go. Default `console.warn`. */
   log?: (message: string) => void
 }
@@ -138,12 +141,17 @@ export class TestClient {
   public readonly frames: Uint8Array[] = []
   /** Frames dropped as unknown (frame types, message ids), not fatal. */
   public readonly dropped: DroppedFrame[] = []
+  /**
+   * `JOIN_SUCCESS`/`JOIN_ERROR` whose requestId no `request()` is waiting
+   * for (replies to JOINs sent with `sendBytes`): `[frame type, requestId]`.
+   */
+  public readonly unmatched: [type: number, requestId: number][] = []
   /** Close code and reason, once the connection closed. */
   public closeReason: string | undefined
   public closeCode: number | undefined
   private readonly _flush: () => Promise<void>
   private readonly _serializer: ISerializer
-  private readonly _codec: IStateCodec
+  private readonly _codecs: ReadonlyMap<string, IStateCodec>
   private readonly _rooms = new Map<number, TestRoom<Schema, Contract>>()
   private readonly _pending = new Map<number, Pending>()
   private _nextRequest = 1
@@ -157,7 +165,11 @@ export class TestClient {
     this.socket = socket
     this._flush = flush
     this._serializer = options.serializer ?? new MessagePackSerializer()
-    this._codec = options.stateCodec ?? new MessagePackStateCodec()
+    const codecs = options.stateCodecs ?? [
+      new SchemaCodec(),
+      new MessagePackStateCodec(),
+    ]
+    this._codecs = new Map(codecs.map((codec) => [codec.getName(), codec]))
     this._log = options.log ?? ((message) => console.warn(message))
     socket.onMessage((data) => this._receive(data))
     socket.onClose((code, reason) => {
@@ -293,9 +305,9 @@ export class TestClient {
     return this._flush()
   }
 
-  /** @internal */
-  public _createSession(): IStateCodecSession {
-    return this._codec.createSession()
+  /** @internal The codec a handshake named, if this client has it. */
+  public _codec(name: string): IStateCodec | undefined {
+    return this._codecs.get(name)
   }
 
   /** @internal */
@@ -329,20 +341,40 @@ export class TestClient {
     switch (type) {
       case ServerFrameType.JOIN_SUCCESS: {
         const pending = this._pending.get(first)
-        if (pending === undefined)
-          throw new Error(`unexpected JOIN_SUCCESS ${first}`)
+        if (pending === undefined) {
+          // A reply to a JOIN sent as raw bytes, not through request().
+          this.unmatched.push([type, first])
+          return
+        }
         this._pending.delete(first)
         const ref = header[1] ?? 0
         const handshake = parseHandshake(this._decode(body))
-        pending.room._bind(ref, handshake)
+        const codec = this._codecs.get(handshake[5])
+        if (codec === undefined) {
+          // No decoder for the room's codec: give the seat back and fail
+          // the join locally (PROTOCOL.md §6.4).
+          this.sendFrame(ClientFrameType.LEAVE, [ref])
+          pending.resolve(
+            err(
+              new JoinFailure(
+                "CODEC_MISMATCH",
+                `the room uses codec "${handshake[5]}"`,
+              ),
+            ),
+          )
+          return
+        }
+        pending.room._bind(ref, handshake, codec)
         this._rooms.set(ref, pending.room)
         pending.resolve(ok(handshake))
         return
       }
       case ServerFrameType.JOIN_ERROR: {
         const pending = this._pending.get(first)
-        if (pending === undefined)
-          throw new Error(`unexpected JOIN_ERROR ${first}`)
+        if (pending === undefined) {
+          this.unmatched.push([type, first])
+          return
+        }
         this._pending.delete(first)
         const [code, message] = parseError(this._decode(body), "JOIN_ERROR")
         pending.resolve(err(new JoinFailure(code, message)))
@@ -358,10 +390,11 @@ export class TestClient {
         this.pongs.push(first)
         return
       default: {
+        // A frame for a roomRef this client doesn't hold is dropped
+        // silently (PROTOCOL.md §7.1): typically the LEAVE(1000) that
+        // acknowledges our own LEAVE.
         const room = this._rooms.get(first)
-        if (room === undefined) {
-          throw new Error(`frame ${type} for unknown roomRef ${first}`)
-        }
+        if (room === undefined) return
         room._receive(frame.type, header, body, (b) => this._decode(b))
       }
     }
@@ -394,6 +427,7 @@ export class TestRoom<S extends Schema, C extends Contract = EmptyContract> {
   public leaveReason: string | undefined
   private readonly _client: TestClient
   private readonly _options: JoinOptions<S, C>
+  private _codec: IStateCodec | undefined
   private _session: IStateCodecSession | undefined
 
   public constructor(client: TestClient, options: JoinOptions<S, C>) {
@@ -408,21 +442,31 @@ export class TestRoom<S extends Schema, C extends Contract = EmptyContract> {
   ): void {
     const id = this.clientMessages.indexOf(type)
     const def = this._options.contract?.client[type]
-    if (id < 0 || def === undefined) throw new Error(`cannot send "${type}"`)
-    const packed = packUnknownMessage(def, payload).unwrap()
-    this._client.sendFrame(
-      ClientFrameType.ROOM_MESSAGE,
-      [this.roomRef, id],
-      packed,
+    if (id < 0 || def === undefined || this._codec === undefined) {
+      throw new Error(`cannot send "${type}"`)
+    }
+    // Contract messages are encoded by the room's codec (PROTOCOL.md §10).
+    const body = this._codec.encodeMessage(def, payload).unwrap()
+    this._client.sendBytes(
+      encodeFrame(
+        ClientFrameType.ROOM_MESSAGE,
+        [this.roomRef, id],
+        body,
+      ).unwrap(),
     )
   }
 
-  /** Sends a `ROOM_MESSAGE` with an arbitrary id and body (malformed tests). */
-  public sendById(messageId: number, body: unknown): void {
-    this._client.sendFrame(
-      ClientFrameType.ROOM_MESSAGE,
-      [this.roomRef, messageId],
-      body,
+  /**
+   * Sends a `ROOM_MESSAGE` with an arbitrary id and body bytes (malformed
+   * tests).
+   */
+  public sendById(messageId: number, body: Uint8Array): void {
+    this._client.sendBytes(
+      encodeFrame(
+        ClientFrameType.ROOM_MESSAGE,
+        [this.roomRef, messageId],
+        body,
+      ).unwrap(),
     )
   }
 
@@ -450,7 +494,12 @@ export class TestRoom<S extends Schema, C extends Contract = EmptyContract> {
   }
 
   /** @internal */
-  public _bind(ref: number, handshake: JoinHandshake): void {
+  public _bind(
+    ref: number,
+    handshake: JoinHandshake,
+    codec: IStateCodec,
+  ): void {
+    this._codec = codec
     this.roomRef = ref
     ;[
       this.roomId,
@@ -474,7 +523,7 @@ export class TestRoom<S extends Schema, C extends Contract = EmptyContract> {
     switch (type) {
       case ServerFrameType.STATE_SNAPSHOT:
         // Every snapshot starts a fresh stream (spec §6.7.2).
-        this._session = this._client._createSession()
+        this._session = this._codec?.createSession()
         this.state =
           this._options.state === undefined
             ? undefined
@@ -494,9 +543,11 @@ export class TestRoom<S extends Schema, C extends Contract = EmptyContract> {
           return
         }
         const def = this._options.contract?.server[name]
-        const wire = decode(body)
-        const payload =
-          def === undefined ? wire : unpackMessage(def, wire).unwrap()
+        if (def === undefined || this._codec === undefined) {
+          this._client._drop(type, `no definition for message "${name}"`)
+          return
+        }
+        const payload = this._codec.decodeMessage(def, body).unwrap()
         this.messages.push({ type: name, payload, raw: false })
         return
       }

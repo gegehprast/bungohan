@@ -383,7 +383,7 @@ describe("joins", () => {
         "session-1",
         null,
         contractHash(contract),
-        "schema",
+        "a-codec-this-client-lacks",
         [],
         [],
       ],

@@ -11,6 +11,7 @@ import {
   type IStateCodec,
   MessagePackSerializer,
   MessagePackStateCodec,
+  SchemaCodec,
 } from "@bungohan/serializer"
 import type { Schema } from "@bungohan/state"
 import {
@@ -252,7 +253,10 @@ export class BungohanClient implements IBungohanClient {
     this._url = withToken(options.url, options.token)
     this._reconnection = { ...DEFAULT_RECONNECTION, ...options.reconnection }
     this._serializer = options.serializer ?? new MessagePackSerializer()
-    const codecs = options.stateCodecs ?? [new MessagePackStateCodec()]
+    const codecs = options.stateCodecs ?? [
+      new SchemaCodec(),
+      new MessagePackStateCodec(),
+    ]
     this._codecs = new Map(codecs.map((codec) => [codec.getName(), codec]))
     this._transport = options.transport ?? new WebSocketClientTransport()
     this._clock = options.clock ?? new SystemClock()

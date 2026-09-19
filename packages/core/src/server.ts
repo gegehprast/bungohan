@@ -5,7 +5,7 @@ import {
   type ISerializer,
   type IStateCodec,
   MessagePackSerializer,
-  MessagePackStateCodec,
+  SchemaCodec,
 } from "@bungohan/serializer"
 import { type IStore, RedisStore } from "@bungohan/store"
 import { type ITransport, WebSocketTransport } from "@bungohan/transport"
@@ -113,7 +113,7 @@ export class BungohanServer {
     this._clock = options.clock ?? new SystemClock()
     this._logger = new Logger(options.logger)
     this._serializer = options.serializer ?? new MessagePackSerializer()
-    this._stateCodec = options.stateCodec ?? new MessagePackStateCodec()
+    this._stateCodec = options.stateCodec ?? new SchemaCodec()
     const config = options.transport?.config ?? {}
     this._transport =
       options.transport?.provider ??

@@ -114,8 +114,15 @@ function fieldProblems(
         : [`${path}: enum values must be distinct`]
     }
     case "array":
-    case "map":
-      return fieldProblems(field["of"], `${path}<${kind}>`, seen, false)
+    case "map": {
+      const of = field["of"]
+      if (isRecord(of) && of["kind"] === "nested" && encodesEmpty(of)) {
+        // Zero bytes per element would let a tiny body claim a huge count;
+        // decoders bound counts by the bytes left (PROTOCOL.md §13.1.6).
+        return [`${path}: ${kind} elements can't be messages with no data`]
+      }
+      return fieldProblems(of, `${path}<${kind}>`, seen, false)
+    }
     case "optional":
       if (parentOptional) return [`${path}: optional inside optional`]
       return fieldProblems(field["of"], path, seen, true)
@@ -124,6 +131,24 @@ function fieldProblems(
     default:
       return isIntKind(kind) ? [] : [`${path}: unknown field kind "${kind}"`]
   }
+}
+
+/**
+ * True for a nested field whose message encodes to zero bytes under the
+ * schema codec: every field is (recursively) such a nested message, so
+ * there are no values and no flag bits.
+ */
+function encodesEmpty(field: Record<string, unknown>, depth = 0): boolean {
+  const def = field["message"]
+  if (!isRecord(def) || depth > 32) return false
+  const fields = def["fields"]
+  if (!isRecord(fields)) return false
+  return Object.values(fields).every(
+    (inner) =>
+      isRecord(inner) &&
+      inner["kind"] === "nested" &&
+      encodesEmpty(inner, depth + 1),
+  )
 }
 
 function messageProblems(
