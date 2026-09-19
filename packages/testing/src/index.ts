@@ -1,6 +1,7 @@
 export { type Clock, ManualClock, type TimerId } from "./clock"
 export {
   type DriverOptions,
+  type DroppedFrame,
   JoinFailure,
   type JoinOptions,
   type ReceivedMessage,

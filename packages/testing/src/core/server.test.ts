@@ -3,7 +3,7 @@
  * metrics (§6.6) and the optional HTTP server.
  */
 import { describe, expect, test } from "bun:test"
-import { ClientFrameType, CloseCode } from "@bungohan/types"
+import { ClientFrameType, CloseCode, PROTOCOL_VERSION } from "@bungohan/types"
 import { createServerHarness } from "../harness"
 import { GameRoom } from "./fixtures"
 import { type GameView, serverRoom, setup } from "./helpers"
@@ -222,7 +222,9 @@ describe("over a real WebSocket", () => {
     const transport = server.getTransport()
     if (!(transport instanceof WebSocketTransport)) throw new Error("no ws")
 
-    const ws = new WebSocket(`ws://127.0.0.1:${transport.getPort()}`)
+    const ws = new WebSocket(`ws://127.0.0.1:${transport.getPort()}`, [
+      PROTOCOL_VERSION,
+    ])
     ws.binaryType = "arraybuffer"
     const types: number[] = []
     const snapshot = new Promise<void>((resolve) => {

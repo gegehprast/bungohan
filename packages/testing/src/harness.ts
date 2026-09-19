@@ -10,6 +10,7 @@ import {
   type RoomClass,
   type ServerOptions,
 } from "@bungohan/core"
+import { PROTOCOL_VERSION } from "@bungohan/types"
 import { ManualClock } from "./clock"
 import { type DriverOptions, TestClient } from "./driver"
 import {
@@ -62,11 +63,16 @@ export class ServerHarness {
     return this
   }
 
-  /** A new client connection speaking the wire protocol. */
+  /**
+   * A new client connection speaking the wire protocol. It offers
+   * `PROTOCOL_VERSION` unless `options.protocols` says otherwise.
+   */
   public connect(
     options: LoopbackConnectOptions & DriverOptions = {},
   ): TestClient {
-    const socket = this.transport.connect(options).unwrap()
+    const socket = this.transport
+      .connect({ protocols: [PROTOCOL_VERSION], ...options })
+      .unwrap()
     return new TestClient(socket, () => this.flush(), options)
   }
 

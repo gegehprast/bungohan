@@ -559,11 +559,11 @@ For messages, `f.fixed(n)` applies the identical encoding when the payload is wr
 | 125 B (churn tick) | 127 B | 76 B |
 | 703 B | 707 B | 468 B |
 
-So `WebSocketTransport` takes `compression` (default `true`: negotiate, and compress eligible frames) plus **`compressionThreshold` (default 128 B)**. Frames below the threshold go out uncompressed. Deflate breaks even at about 60–85 B of MessagePack and saves ~40% by 128 B. Bun showed no context takeover between frames (identical repeated frames compress to the same size). `ServerOptions.transport.config` should pass `compressionThreshold` through when core is built. `avgCompressionRatio` (§5.7.8) should count only the frames that were actually compressed.
+So `WebSocketTransport` takes `compression` (default `true`: negotiate, and compress eligible frames) plus **`compressionThreshold` (default 128 B)**. Frames below the threshold go out uncompressed. Deflate breaks even at about 60–85 B of MessagePack and saves ~40% by 128 B. Bun showed no context takeover between frames (identical repeated frames compress to the same size). `ServerOptions.transport.config` should pass `compressionThreshold` through when core is built. **[DECIDED]** There is no compression-ratio metric (§5.7.8).
 
 #### 5.7.8 Metrics
 
-Extend `RoomMetrics` (§6.6) with `avgStateDeltaBytes` (already specified) plus **[NEW]** `avgStateSnapshotBytes` and, when `transport.config.compression` is enabled, `avgCompressionRatio` — so bandwidth wins from this section are actually observable in production, not just assumed.
+Extend `RoomMetrics` (§6.6) with `avgStateDeltaBytes` (already specified) plus **[NEW]** `avgStateSnapshotBytes`, so bandwidth wins from this section are actually observable in production, not just assumed. **[DECIDED]** There is no compression-ratio metric: Bun doesn't expose a frame's deflated size, so it can't be measured through `ITransport`.
 
 #### 5.7.9 Sync semantics — **[DECIDED]** (`packages/state/src/{encoder,decoder}.ts`)
 
@@ -787,7 +787,7 @@ varint = unsigned LEB128, at most 5 bytes, value ≤ 0xFFFFFFFF
 
 Why a binary header instead of the §4.2 MessagePack envelope array: the header costs exactly `1 + Σ varint` bytes (usually 2–3), a state frame's codec bytes aren't wrapped in a MessagePack `bin` (saving 2–3 more bytes per patch), and the header parses the same way in any language, whatever serializer the body uses. A one-SET position patch is **9 bytes** on the wire (2 header + 7 ops) instead of the 12 an array envelope would cost. The §4 string enums stay for readability. Only these numeric ids are sent.
 
-A frame that doesn't parse is a protocol violation (§6.7.6).
+On the server, a frame that doesn't parse is a protocol violation (§6.7.6). A client drops a frame of a type it doesn't know (§6.7.7).
 
 **Client → server** (`ClientFrameType`):
 
@@ -823,7 +823,8 @@ A frame that doesn't parse is a protocol violation (§6.7.6).
 
 ```
 client                                        server
-  │ ── transport connect ───────────────────▶ │ Connection created, server.onConnect
+  │ ── connect, subprotocol "bungohan.v1" ──▶ │ version check (§6.7.7); else close 1002
+  │                                            │ Connection created, server.onConnect
   │ ── JOIN(requestId, [mode, target, …]) ──▶ │ 1. decode + shape check
   │                                            │ 2. contract hash check (before any hook)
   │                                            │ 3. matchmaking: find / create room, take a seat
@@ -849,7 +850,7 @@ client                                        server
 
 #### 6.7.3 `JOIN` request
 
-Body: `[mode: uint, target: string, options: any, contractHash: string | null]`.
+Body: `[mode: uint, target: string, options: any, contractHash: string | null]`. Elements after these four are ignored (§6.7.7).
 
 | mode | Name | `target` | Behavior |
 |---|---|---|---|
@@ -926,9 +927,30 @@ Only TypeScript computes hashes (the server, and `@bungohan/codegen`, which bake
 
 **Protocol violations** close the connection. The server sends `ERROR(0, ["INVALID_MESSAGE", why])`, then closes it with `1008 POLICY_VIOLATION`, and logs the reason. They are: an unparseable frame, an unknown frame type, a body the serializer can't decode, a `JOIN` whose body isn't an array, a `ROOM_MESSAGE` with a `messageId` outside the room's table, and a payload that `unpackMessage` rejects (§4.1: malformed frames never reach a handler). A `ROOM_MESSAGE`/`LEAVE` for a `roomRef` the connection doesn't hold is **dropped silently**, not a violation: it can legitimately race a kick. A well-formed message with no registered handler is dropped with a server-side warning (a server bug, not the client's).
 
-Other close codes: `1001 GOING_AWAY` when the server shuts down (after every room has sent `LEAVE(…, 4001)`).
+Other close codes: `1001 GOING_AWAY` when the server shuts down (after every room has sent `LEAVE(…, 4001)`), and `1002 PROTOCOL_ERROR` for a rejected protocol version (§6.7.7).
 
 `PING(nonce, rtt)` is answered at once with `PONG(nonce)`. The client measures the round trip. The server records the reported `rtt` into `ClientMetrics.avgLatency` (when metrics are on) for every seat of that connection. It's metrics only, and never trusted for game logic.
+
+#### 6.7.7 Forward compatibility and versioning — **[DECIDED]**
+
+No client has shipped yet, so these rules are in the protocol from v1. They let the server or clients evolve without breaking the other side, and give a clean break when that's impossible.
+
+**1. Array bodies: receivers ignore trailing elements they don't know.** This applies to the `JOIN` body, the `JOIN_SUCCESS` handshake, `JOIN_ERROR`, `ERROR`, and raw messages (`[type, payload]`) in both directions. A receiver reads the elements it knows by position, requires only those (fewer is malformed, as before), and ignores the rest. So a later version may **append** fields but never reorder or remove them. A v2 `JOIN` may carry a fifth element that a v1 server skips, and a v2 handshake a ninth element that a v1 client skips. The server's `parseJoin` accepts `length >= 2` (mode and target are required; options and hash default to `{}` and `null`).
+
+- **Contract payloads are deliberately excluded.** A `ROOM_MESSAGE`'s packed payload stays strict (§8.1.1): an extra field is a violation. Version skew there is caught up front by the contract hash (§6.7.3), not tolerated field by field.
+
+**2. Unknown server frame types are dropped by clients, not fatal.** A newer server may send a frame type an older client predates. The client can't know that type's header layout, but a frame is exactly one transport message, so it skips the whole frame, logs it, and carries on. The same applies to a `ROOM_MESSAGE` whose `messageId` the client can't map (§6.7.4). The rule is asymmetric: **the server still treats an unknown client frame type as a protocol violation** (`ERROR` then close 1008). The server is always at least as new as the protocol it accepts (point 3), so an unknown type from a client means a broken client, not a newer one.
+
+**3. The protocol version is the WebSocket subprotocol**, currently **`bungohan.v1`** (`PROTOCOL_VERSION` in `@bungohan/types`). It is negotiated in the opening handshake, **before any frame is parsed**, so it keeps working even if a later version changes the frame format itself.
+
+- **Client:** offers it as a subprotocol: `new WebSocket(url, ["bungohan.v1"])`. Godot's `WebSocketPeer.supported_protocols` and most C# WebSocket libraries support this. A client that supports several versions offers them all, in its preferred order.
+- **Server:** picks the first version on its own accepted list that the client offered, and answers with it (`Sec-WebSocket-Protocol`). The accepted connection exposes it as `ConnectionContext.protocol`.
+- **Mismatch:** the connection is closed with **`1002 PROTOCOL_ERROR`** and a readable reason naming what the server expects. The reason is either `unsupported protocol bungohan.v0; expected bungohan.v1` or `no protocol version offered; expected bungohan.v1` (clipped to the 123-byte close-reason limit).
+  - To make that reason visible to every client, the transport **completes the upgrade, echoing the client's own first offer, then closes at once**. It doesn't answer with an HTTP error, because browsers (and Bun's client) surface a refused upgrade only as "Expected 101", with no status and no body (measured on Bun 1.3.13).
+  - A rejected connection never reaches `onConnection`, `server.onConnect`, or the frame parser.
+- **`ITransport.acceptProtocols?(protocols)`** is the seam. Core calls it with `[PROTOCOL_VERSION]` in `start()`. `WebSocketTransport` checks the protocol at upgrade, and `LoopbackTransport` at `connect({ protocols })`, which is `[PROTOCOL_VERSION]` by default in the test harness. Both share `negotiateProtocol` (`@bungohan/transport`).
+  - **Core checks again in its connection handler.** A connection whose `context.protocol` isn't an accepted version is closed with 1002 before anything else. So a transport that doesn't implement `acceptProtocols` can't let an unversioned client through; it just can't accept anyone. A custom `ITransport` must therefore negotiate the subprotocol and report it.
+- **Bump the version only for a breaking change**, meaning one that rules 1 and 2 can't absorb (a new frame layout, changed element meaning). A server that wants to keep old clients during a migration accepts several versions and branches on `context.protocol`.
 
 ### 6.8 Core, single-process — **[DECIDED]** (`packages/core`)
 
@@ -949,7 +971,7 @@ This is how §6.1–6.3, §6.5 and §6.6 were built. Cluster mode (§6.4: `RoomP
   - `join(client, options)` seats a connectionless client (bots, tests) through the instance `onAuth` and `onJoin`. `leave(client, consented = true)` sends `LEAVE(1000 | 4000)`.
   - Additions: `dispose()` (sends `LEAVE(4002)`), `getSeatCount()` (clients plus open reservations), `isAvailable()`, and `protected get clock()`, the server's clock, for game timers that tests can drive.
   - `clients` includes joining and held seats.
-- **Hooks never crash a room.** Every hook, message handler (sync throw or rejected promise) and server callback is caught and routed to `server.onError(error, context)`. The context is `{ source, room?, client?, connection?, messageType? }`, where `source` is one of the hook names, `"send"`, `"sync"`, `"transport"`, `"protocol"` or `"callback"`. Without an `onError` callback, errors are logged. Handlers are not awaited, so a slow async handler doesn't block the next message. `onJoin` throwing → `JOIN_FAILED`, with the seat released and no `onLeave` (the join never completed). `onLeave` throwing still releases the seat. `server.onJoin` does not fire on a reconnect (the seat never left).
+- **Hooks never crash a room.** Every hook, message handler (sync throw or rejected promise) and server callback is caught and routed to `server.onError(error, context)`. The context is `{ source, room?, client?, connection?, messageType? }`, where `source` is one of the hook names, `"send"`, `"sync"`, `"transport"`, `"protocol"` or `"callback"`. Without an `onError` callback, errors are logged. Handlers are not awaited, so a slow async handler doesn't block the next message. The flip side is that async handlers can finish out of order, even for one client. Code that needs ordering across an `await` must serialize it itself (documented on `onMessage`). `onJoin` throwing → `JOIN_FAILED`, with the seat released and no `onLeave` (the join never completed). `onLeave` throwing still releases the seat. `server.onJoin` does not fire on a reconnect (the seat never left).
 - **`autoDispose`** fires when the last seat *and* the last reservation are gone. A room created by `matchMaker.createRoom` that nobody ever joins lives until disposed, as before.
 
 #### 6.8.2 Loops and time
@@ -986,7 +1008,7 @@ A state first assigned in `onCreate` isn't visible to the probe. It is validated
 #### 6.8.6 Metrics and HTTP
 
 - **Off by default and free when off.** With metrics disabled there is no `MetricsCollector`, and rooms and clients hold no stats objects. Every recording site is an optional call on `undefined`, so nothing is counted or allocated. The getters return `METRICS_DISABLED`.
-- `ServerMetrics`: uptime, connections, rooms, messages, bytes in/out, errors, memory. `RoomMetrics`: messages, sync count, simulation ticks, average tick/sync duration, `avgStateDeltaBytes`, `avgStateSnapshotBytes`, `droppedSimulationMs`. `ClientMetrics`: frames and bytes each way, `avgLatency` (the mean of the `rtt` values reported in `PING`, §6.7.6), `lastMessageAt`. **`avgCompressionRatio` stays undefined**: Bun doesn't expose a frame's deflated size, so it can't be measured through `ITransport`.
+- `ServerMetrics`: uptime, connections, rooms, messages, bytes in/out, errors, memory. `RoomMetrics`: messages, sync count, simulation ticks, average tick/sync duration, `avgStateDeltaBytes`, `avgStateSnapshotBytes`, `droppedSimulationMs`. `ClientMetrics`: frames and bytes each way, `avgLatency` (the mean of the `rtt` values reported in `PING`, §6.7.6), `lastMessageAt`. There is no compression-ratio metric (§5.7.8).
 - **HTTP** (`http.enabled`): a separate `Bun.serve` with `GET /health`, `/metrics` (404 when metrics are off) and `/rooms`, each switchable, plus CORS.
 
 #### 6.8.7 Testing
@@ -1113,6 +1135,7 @@ interface ITransport {
 }
 // WebSocketTransport (Bun.serve/ServerWebSocket-based) additionally exposes getClientCount(), isClientConnected(clientId)
 // Extracts auth token from `?token=` query param or `Authorization: Bearer` header
+// [DECIDED] acceptProtocols?(protocols) + ConnectionContext.protocol: the protocol version as the WebSocket subprotocol (§6.7.7)
 // TransportError codes: CONNECTION_LOST | CLIENT_NOT_FOUND | INVALID_OPTIONS | CONNECTION_FAILED
 
 // serializer — see §8.1, the interface is KEPT but the implementations are significantly extended

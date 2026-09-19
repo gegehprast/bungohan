@@ -16,6 +16,7 @@ import {
   JoinMode,
   type JoinRequest,
   LeaveCode,
+  PROTOCOL_VERSION,
   ServerFrameType,
 } from "@bungohan/types"
 import { nanoid } from "nanoid"
@@ -55,11 +56,13 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error))
 }
 
-/** A `JOIN` body (spec §6.7.3), or undefined if it has the wrong shape. */
+/**
+ * A `JOIN` body (spec §6.7.3), or undefined if it has the wrong shape.
+ * Trailing elements past the known four are ignored (spec §6.7.7), so a
+ * newer client can add fields without breaking this server.
+ */
 function parseJoin(value: unknown): JoinRequest | undefined {
-  if (!Array.isArray(value) || value.length < 2 || value.length > 4) {
-    return undefined
-  }
+  if (!Array.isArray(value) || value.length < 2) return undefined
   const [mode, target, options, hash] = value
   if (
     typeof mode !== "number" ||
@@ -185,6 +188,7 @@ export class BungohanServer {
       )
     }
     const transport = this._transport
+    transport.acceptProtocols?.([PROTOCOL_VERSION])
     transport.onConnection?.((id, context) =>
       this._handleConnection(id, context),
     )
@@ -435,6 +439,19 @@ export class BungohanServer {
   // ==========================================================================
 
   private _handleConnection(id: string, context: Connection["context"]): void {
+    // The transport already refused other versions (acceptProtocols). This
+    // also covers a transport that doesn't negotiate at all: no frame of a
+    // connection without the right version is ever parsed (spec §6.7.7).
+    if (context.protocol !== PROTOCOL_VERSION) {
+      const offered = context.protocol ?? "none"
+      this._logger.warn(`rejected ${id}: protocol version ${offered}`)
+      this._transport.disconnect(
+        id,
+        CloseCode.PROTOCOL_ERROR,
+        `unsupported protocol ${offered}; expected ${PROTOCOL_VERSION}`,
+      )
+      return
+    }
     const connection = new Connection(id, context, this._clock.now())
     this._connections.set(id, connection)
     if (this._metrics !== undefined) this._metrics.totalConnections++

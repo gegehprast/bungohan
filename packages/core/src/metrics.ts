@@ -49,11 +49,6 @@ export interface RoomMetrics {
   avgStateDeltaBytes: number
   /** Mean size of a snapshot frame's state payload. */
   avgStateSnapshotBytes: number
-  /**
-   * Not measurable through `ITransport`: Bun doesn't report the deflated
-   * size of a frame (spec §6.8). Always undefined for now.
-   */
-  avgCompressionRatio?: number
   /** Simulated time discarded by the catch-up cap (spec §6.8). */
   droppedSimulationMs: number
   timestamp: number

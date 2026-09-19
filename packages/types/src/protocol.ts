@@ -36,6 +36,8 @@ export enum LeaveCode {
 export enum CloseCode {
   NORMAL = 1000,
   GOING_AWAY = 1001,
+  /** Unsupported protocol version (spec §6.7.7). */
+  PROTOCOL_ERROR = 1002,
   POLICY_VIOLATION = 1008,
   INTERNAL_ERROR = 1011,
 }
@@ -79,6 +81,12 @@ export interface RoomMessageEnvelope {
   __messageType: string
   __data: unknown
 }
+
+/**
+ * The protocol version, negotiated as the WebSocket subprotocol when a
+ * connection opens (spec §6.7.7). Bumped only for breaking wire changes.
+ */
+export const PROTOCOL_VERSION = "bungohan.v1"
 
 // ---------------------------------------------------------------------------
 // Wire ids (spec §6.7). These, not the string enums above, cross the wire.

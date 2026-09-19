@@ -263,6 +263,12 @@ export abstract class Room<
    * from the contract; it was decoded type-directed, so its shape is
    * guaranteed (its *values* are still the client's: validate game rules).
    * Returns an unsubscribe function.
+   *
+   * Handlers are **not awaited**. Each message's handlers are called as it
+   * arrives, so an async handler that awaits can finish after handlers of
+   * later messages, even from the same client. If order matters across an
+   * `await`, serialize it yourself (e.g. a per-client promise chain). A
+   * rejection goes to `server.onError`, like a throw.
    */
   public onMessage<K extends keyof RecvMap<TContract>>(
     type: K,
@@ -284,7 +290,10 @@ export abstract class Room<
     return addHandler(this._handlers, name, wrapped)
   }
 
-  /** Handles an untyped message sent with `sendRaw` (MessagePack, no contract). */
+  /**
+   * Handles an untyped message sent with `sendRaw` (MessagePack, no
+   * contract). Like `onMessage`, handlers are not awaited.
+   */
   public onMessageRaw(
     type: string,
     handler: (client: Client, message: unknown) => void | Promise<void>,
@@ -952,7 +961,7 @@ export abstract class Room<
     const value = decoded.value
     if (
       !Array.isArray(value) ||
-      value.length !== 2 ||
+      value.length < 2 || // trailing elements are ignored (spec §6.7.7)
       typeof value[0] !== "string"
     ) {
       return err(new Error("raw message must be [type, payload]"))

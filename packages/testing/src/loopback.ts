@@ -2,6 +2,8 @@ import { err, ok, type Result } from "@bungohan/result"
 import {
   type ConnectionContext,
   type ITransport,
+  negotiateProtocol,
+  PROTOCOL_ERROR,
   TransportError,
 } from "@bungohan/transport"
 import { settle } from "./settle"
@@ -22,6 +24,8 @@ export interface LoopbackTransportOptions {
 }
 
 export interface LoopbackConnectOptions {
+  /** Offered WebSocket subprotocols (protocol versions), in preference order. */
+  protocols?: string[]
   /** Exposed as `context.token`, as if sent via `?token=`. */
   token?: string
   searchParams?: Record<string, string>
@@ -91,6 +95,7 @@ export class LoopbackTransport implements ITransport {
     | ((clientId: string, code: number, reason: string) => void)
     | undefined
   private _onError: ((error: Error) => void) | undefined
+  private _protocols: readonly string[] | undefined
 
   public constructor(options: LoopbackTransportOptions = {}) {
     this._maxPayloadLength = options.maxPayloadLength ?? 16 * 1024 * 1024
@@ -185,6 +190,11 @@ export class LoopbackTransport implements ITransport {
     this._onError = cb
   }
 
+  /** Like `WebSocketTransport`: other versions are closed with 1002 on open. */
+  public acceptProtocols(protocols: readonly string[]): void {
+    this._protocols = [...protocols]
+  }
+
   public getName(): string {
     return "loopback"
   }
@@ -203,6 +213,23 @@ export class LoopbackTransport implements ITransport {
     }
     const clientId = `loopback-${this._nextId++}`
     const socket = new LoopbackSocket(clientId, this)
+    const negotiated = negotiateProtocol(
+      options.protocols ?? [],
+      this._protocols,
+    )
+    if (!negotiated.ok) {
+      // Opened only to be closed: the server never sees it (spec §6.7.7).
+      socket._closing()
+      socket._droppedByServer = true
+      this._queue.push({
+        to: "client",
+        kind: "close",
+        socket,
+        code: PROTOCOL_ERROR,
+        reason: negotiated.reason,
+      })
+      return ok(socket)
+    }
     this._sockets.set(clientId, socket)
     const context: ConnectionContext = {
       ip: options.ip ?? "127.0.0.1",
@@ -210,6 +237,8 @@ export class LoopbackTransport implements ITransport {
       headers: new Headers(options.headers),
     }
     if (options.token !== undefined) context.token = options.token
+    if (negotiated.protocol !== undefined)
+      context.protocol = negotiated.protocol
     this._guard(() => this._onConnection?.(clientId, context))
     return ok(socket)
   }

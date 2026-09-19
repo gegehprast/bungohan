@@ -37,6 +37,55 @@ import {
 } from "@bungohan/types"
 import type { LoopbackSocket } from "./loopback"
 
+/**
+ * The known leading elements of an array body. Elements past them are
+ * ignored, which is what lets a newer server append fields (spec §6.7.7).
+ * Throws (failing the test) if the body is not an array or is too short.
+ */
+function known(value: unknown, count: number, what: string): unknown[] {
+  if (!Array.isArray(value) || value.length < count) {
+    throw new Error(`${what}: expected an array of at least ${count}`)
+  }
+  return value.slice(0, count)
+}
+
+function str(value: unknown, what: string): string {
+  if (typeof value !== "string") throw new Error(`${what}: expected a string`)
+  return value
+}
+
+function strings(value: unknown, what: string): string[] {
+  if (!Array.isArray(value)) throw new Error(`${what}: expected an array`)
+  return value.map((v) => str(v, what))
+}
+
+function parseHandshake(value: unknown): JoinHandshake {
+  const [roomId, roomType, sessionId, token, hash, codec, client, server] =
+    known(value, 8, "JOIN_SUCCESS")
+  return [
+    str(roomId, "roomId"),
+    str(roomType, "roomType"),
+    str(sessionId, "sessionId"),
+    token === null ? null : str(token, "reconnectionToken"),
+    str(hash, "contractHash"),
+    str(codec, "stateCodec"),
+    strings(client, "clientMessages"),
+    strings(server, "serverMessages"),
+  ]
+}
+
+/** `[code, message]` of `JOIN_ERROR` and `ERROR` bodies. */
+function parseError(value: unknown, what: string): [string, string] {
+  const [code, message] = known(value, 2, what)
+  return [str(code, `${what} code`), str(message, `${what} message`)]
+}
+
+/** A frame the driver dropped instead of failing on (spec §6.7.7). */
+export interface DroppedFrame {
+  readonly type: number
+  readonly reason: string
+}
+
 /** A failed join: the `JOIN_ERROR` code and message. */
 export class JoinFailure extends Error {
   public readonly code: string
@@ -55,11 +104,15 @@ export interface JoinOptions<S extends Schema, C extends Contract> {
   contract?: C
   /** Sent as the `JOIN`'s contract hash. Default: the contract's, or null. */
   contractHash?: string | null
+  /** Extra `JOIN` elements after the four v1 knows (a "newer client"). */
+  trailing?: unknown[]
 }
 
 export interface DriverOptions {
   serializer?: ISerializer
   stateCodec?: IStateCodec
+  /** Where dropped-frame notices go. Default `console.warn`. */
+  log?: (message: string) => void
 }
 
 /** A received room message: contract (decoded) or raw. */
@@ -83,7 +136,10 @@ export class TestClient {
   public readonly pongs: number[] = []
   /** Every frame received, as raw bytes (for byte-level assertions). */
   public readonly frames: Uint8Array[] = []
-  /** Close code, once the connection closed. */
+  /** Frames dropped as unknown (frame types, message ids), not fatal. */
+  public readonly dropped: DroppedFrame[] = []
+  /** Close code and reason, once the connection closed. */
+  public closeReason: string | undefined
   public closeCode: number | undefined
   private readonly _flush: () => Promise<void>
   private readonly _serializer: ISerializer
@@ -91,6 +147,7 @@ export class TestClient {
   private readonly _rooms = new Map<number, TestRoom<Schema, Contract>>()
   private readonly _pending = new Map<number, Pending>()
   private _nextRequest = 1
+  private readonly _log: (message: string) => void
 
   public constructor(
     socket: LoopbackSocket,
@@ -101,9 +158,11 @@ export class TestClient {
     this._flush = flush
     this._serializer = options.serializer ?? new MessagePackSerializer()
     this._codec = options.stateCodec ?? new MessagePackStateCodec()
+    this._log = options.log ?? ((message) => console.warn(message))
     socket.onMessage((data) => this._receive(data))
-    socket.onClose((code) => {
+    socket.onClose((code, reason) => {
       this.closeCode = code
+      this.closeReason = reason
     })
   }
 
@@ -189,7 +248,7 @@ export class TestClient {
     this.sendFrame(
       ClientFrameType.JOIN,
       [requestId],
-      [mode, target, options, hash],
+      [mode, target, options, hash, ...(join.trailing ?? [])],
     )
     await this._flush()
     const pending = this._pending.get(requestId)
@@ -244,14 +303,28 @@ export class TestClient {
     this._rooms.delete(ref)
   }
 
+  /** @internal Drops a frame this client doesn't understand, and logs it. */
+  public _drop(type: number, reason: string): void {
+    this.dropped.push({ type, reason })
+    this._log(`[bungohan/testing] dropped frame ${type}: ${reason}`)
+  }
+
   private _decode(body: Uint8Array): unknown {
     return this._serializer.decode(body).unwrap()
   }
 
   private _receive(data: Uint8Array): void {
     this.frames.push(data)
+    // An unknown frame type isn't fatal: a newer server may send frames
+    // this client predates. Its header layout is unknown too, but a frame
+    // is one whole transport message, so the whole frame is skipped.
+    const type = data[0]
+    if (type !== undefined && !Object.hasOwn(SERVER_FRAME_HEADERS, type)) {
+      this._drop(type, "unknown frame type")
+      return
+    }
     const frame = decodeFrame(data, SERVER_FRAME_HEADERS).unwrap()
-    const { type, header, body } = frame
+    const { header, body } = frame
     const first = header[0] ?? 0
     switch (type) {
       case ServerFrameType.JOIN_SUCCESS: {
@@ -260,7 +333,7 @@ export class TestClient {
           throw new Error(`unexpected JOIN_SUCCESS ${first}`)
         this._pending.delete(first)
         const ref = header[1] ?? 0
-        const handshake = this._decode(body) as JoinHandshake
+        const handshake = parseHandshake(this._decode(body))
         pending.room._bind(ref, handshake)
         this._rooms.set(ref, pending.room)
         pending.resolve(ok(handshake))
@@ -271,12 +344,12 @@ export class TestClient {
         if (pending === undefined)
           throw new Error(`unexpected JOIN_ERROR ${first}`)
         this._pending.delete(first)
-        const [code, message] = this._decode(body) as [string, string]
+        const [code, message] = parseError(this._decode(body), "JOIN_ERROR")
         pending.resolve(err(new JoinFailure(code, message)))
         return
       }
       case ServerFrameType.ERROR: {
-        const error = this._decode(body) as [string, string]
+        const error = parseError(this._decode(body), "ERROR")
         if (first === 0) this.errors.push(error)
         else this._rooms.get(first)?.errors.push(error)
         return
@@ -289,7 +362,7 @@ export class TestClient {
         if (room === undefined) {
           throw new Error(`frame ${type} for unknown roomRef ${first}`)
         }
-        room._receive(type, header, body, (b) => this._decode(b))
+        room._receive(frame.type, header, body, (b) => this._decode(b))
       }
     }
   }
@@ -416,7 +489,10 @@ export class TestRoom<S extends Schema, C extends Contract = EmptyContract> {
         return
       case ServerFrameType.ROOM_MESSAGE: {
         const name = this.serverMessages[header[1] ?? -1]
-        if (name === undefined) throw new Error("unknown message id")
+        if (name === undefined) {
+          this._client._drop(type, `unknown message id ${header[1]}`)
+          return
+        }
         const def = this._options.contract?.server[name]
         const wire = decode(body)
         const payload =
@@ -425,19 +501,20 @@ export class TestRoom<S extends Schema, C extends Contract = EmptyContract> {
         return
       }
       case ServerFrameType.ROOM_MESSAGE_RAW: {
-        const [name, payload] = decode(body) as [string, unknown]
+        const [name, payload] = known(decode(body), 2, "ROOM_MESSAGE_RAW")
+        if (typeof name !== "string") throw new Error("raw type: not a string")
         this.messages.push({ type: name, payload, raw: true })
         return
       }
       case ServerFrameType.CLIENT_JOINED:
-        this.joined.push(decode(body) as string)
+        this.joined.push(str(decode(body), "CLIENT_JOINED"))
         return
       case ServerFrameType.CLIENT_LEFT:
-        this.left.push(decode(body) as string)
+        this.left.push(str(decode(body), "CLIENT_LEFT"))
         return
       case ServerFrameType.LEAVE:
         this.leaveCode = header[1]
-        if (body.byteLength > 0) this.leaveReason = decode(body) as string
+        if (body.byteLength > 0) this.leaveReason = str(decode(body), "reason")
         this._client._forget(this.roomRef)
         return
       default:

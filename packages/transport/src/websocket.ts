@@ -2,6 +2,7 @@ import { err, ok, type Result } from "@bungohan/result"
 import type { Server, ServerWebSocket } from "bun"
 import { nanoid } from "nanoid"
 import { reason, TransportError } from "./errors"
+import { negotiateProtocol, PROTOCOL_ERROR, parseProtocols } from "./protocol"
 import type { ConnectionContext, ITransport } from "./transport"
 
 export interface WebSocketTransportOptions {
@@ -32,6 +33,8 @@ export interface WebSocketListenOptions {
 interface SocketData {
   clientId: string
   context: ConnectionContext
+  /** Set when the protocol version was rejected: close on open. */
+  rejection?: string
 }
 
 type Socket = ServerWebSocket<SocketData>
@@ -58,6 +61,7 @@ function isPort(port: number): boolean {
  */
 export class WebSocketTransport implements ITransport {
   private readonly _maxPayloadLength: number
+  private _protocols: readonly string[] | undefined
   private readonly _idleTimeout: number
   private readonly _compression: boolean
   private readonly _compressionThreshold: number
@@ -221,6 +225,10 @@ export class WebSocketTransport implements ITransport {
     this._onError = cb
   }
 
+  public acceptProtocols(protocols: readonly string[]): void {
+    this._protocols = [...protocols]
+  }
+
   public getName(): string {
     return "websocket"
   }
@@ -252,13 +260,38 @@ export class WebSocketTransport implements ITransport {
     }
     const token = url.searchParams.get("token") ?? bearerToken(request.headers)
     if (token !== undefined && token !== "") context.token = token
+    const negotiated = negotiateProtocol(
+      parseProtocols(request.headers.get("sec-websocket-protocol")),
+      this._protocols,
+    )
     const data: SocketData = { clientId: nanoid(), context }
-    if (server.upgrade(request, { data })) return undefined
+    // Answer with the chosen protocol, or (when rejecting) with the
+    // client's own offer, so the upgrade succeeds and the client can read
+    // the close reason. Browsers can't read an HTTP error body.
+    const answer = negotiated.ok ? negotiated.protocol : negotiated.echo
+    if (negotiated.ok && negotiated.protocol !== undefined) {
+      context.protocol = negotiated.protocol
+    }
+    if (!negotiated.ok) data.rejection = negotiated.reason
+    const headers =
+      answer === undefined ? undefined : { "Sec-WebSocket-Protocol": answer }
+    if (
+      server.upgrade(
+        request,
+        headers === undefined ? { data } : { data, headers },
+      )
+    ) {
+      return undefined
+    }
     return new Response("Upgrade Required", { status: 426 })
   }
 
   private _opened(ws: Socket): void {
-    const { clientId, context } = ws.data
+    const { clientId, context, rejection } = ws.data
+    if (rejection !== undefined) {
+      ws.close(PROTOCOL_ERROR, rejection)
+      return
+    }
     this._clients.set(clientId, ws)
     this._guard(() => this._onConnection?.(clientId, context))
   }
@@ -273,6 +306,8 @@ export class WebSocketTransport implements ITransport {
 
   private _closed(ws: Socket, code: number, closeReason: string): void {
     const { clientId } = ws.data
+    // A rejected connection never reached onConnection: no onDisconnect.
+    if (ws.data.rejection !== undefined) return
     if (this._clients.get(clientId) === ws) this._clients.delete(clientId)
     this._guard(() => this._onDisconnect?.(clientId, code, closeReason))
   }
