@@ -205,8 +205,11 @@ function typeOf(field: Field): unknown {
 // ---------------------------------------------------------------------------
 
 /**
- * JSON view of a decoded value: `undefined` array elements (absent
- * optionals) become `null`, `undefined` properties are dropped.
+ * JSON view of a decoded value (PROTOCOL.md §14): an absent optional inside
+ * an array or map becomes `null`. The decoders leave an absent message-level
+ * optional out of the object altogether, so the only `undefined` properties
+ * they produce are map entries, whose keys must survive: `{ x: undefined }`
+ * is the map with key "x" and an absent value, not the empty map.
  */
 export function normalize(value: unknown): unknown {
   if (Array.isArray(value)) {
@@ -215,7 +218,7 @@ export function normalize(value: unknown): unknown {
   if (isRecord(value)) {
     const out: Record<string, unknown> = {}
     for (const [key, entry] of Object.entries(value)) {
-      if (entry !== undefined) out[key] = normalize(entry)
+      out[key] = entry === undefined ? null : normalize(entry)
     }
     return out
   }

@@ -1,0 +1,377 @@
+{
+  "format": "bungohan-codegen/1",
+  "protocol": "bungohan.v1",
+  "contracts": [
+    {
+      "name": "lobbyContract",
+      "hash": "4342ab15",
+      "client": [
+        "refreshRooms",
+        "joinByCode"
+      ],
+      "server": [
+        "roomFound",
+        "error"
+      ]
+    },
+    {
+      "name": "shooterContract",
+      "hash": "f671e798",
+      "client": [
+        "input",
+        "ready",
+        "startGame"
+      ],
+      "server": [
+        "playerJoined",
+        "playerLeft",
+        "gameStarted",
+        "gameEnded"
+      ]
+    }
+  ],
+  "messages": [
+    {
+      "name": "error",
+      "fields": [
+        [
+          "message",
+          "string"
+        ]
+      ]
+    },
+    {
+      "name": "gameEnded",
+      "fields": [
+        [
+          "results",
+          {
+            "array": {
+              "nested": {
+                "name": "gameResult",
+                "fields": [
+                  [
+                    "playerId",
+                    "string"
+                  ],
+                  [
+                    "playerName",
+                    "string"
+                  ],
+                  [
+                    "score",
+                    "int32"
+                  ],
+                  [
+                    "rank",
+                    "uint8"
+                  ],
+                  [
+                    "color",
+                    "string"
+                  ]
+                ]
+              }
+            }
+          }
+        ]
+      ]
+    },
+    {
+      "name": "gameResult",
+      "fields": [
+        [
+          "playerId",
+          "string"
+        ],
+        [
+          "playerName",
+          "string"
+        ],
+        [
+          "score",
+          "int32"
+        ],
+        [
+          "rank",
+          "uint8"
+        ],
+        [
+          "color",
+          "string"
+        ]
+      ]
+    },
+    {
+      "name": "gameStarted",
+      "fields": []
+    },
+    {
+      "name": "input",
+      "fields": [
+        [
+          "up",
+          "bool"
+        ],
+        [
+          "down",
+          "bool"
+        ],
+        [
+          "left",
+          "bool"
+        ],
+        [
+          "right",
+          "bool"
+        ],
+        [
+          "rotation",
+          "fixed:2"
+        ],
+        [
+          "shooting",
+          "bool"
+        ]
+      ]
+    },
+    {
+      "name": "joinByCode",
+      "fields": [
+        [
+          "roomCode",
+          "string"
+        ]
+      ]
+    },
+    {
+      "name": "playerJoined",
+      "fields": [
+        [
+          "playerId",
+          "string"
+        ],
+        [
+          "playerName",
+          "string"
+        ]
+      ]
+    },
+    {
+      "name": "playerLeft",
+      "fields": [
+        [
+          "playerId",
+          "string"
+        ]
+      ]
+    },
+    {
+      "name": "ready",
+      "fields": [
+        [
+          "isReady",
+          "bool"
+        ]
+      ]
+    },
+    {
+      "name": "refreshRooms",
+      "fields": []
+    },
+    {
+      "name": "roomFound",
+      "fields": [
+        [
+          "roomId",
+          "string"
+        ]
+      ]
+    },
+    {
+      "name": "startGame",
+      "fields": []
+    }
+  ],
+  "schemas": [
+    {
+      "name": "Bullet",
+      "fields": [
+        [
+          "ownerId",
+          "string"
+        ],
+        [
+          "x",
+          "fixed:1"
+        ],
+        [
+          "y",
+          "fixed:1"
+        ]
+      ]
+    },
+    {
+      "name": "Enemy",
+      "fields": [
+        [
+          "x",
+          "fixed:1"
+        ],
+        [
+          "y",
+          "fixed:1"
+        ],
+        [
+          "health",
+          "uint8"
+        ]
+      ]
+    },
+    {
+      "name": "GameState",
+      "fields": [
+        [
+          "players",
+          "schemaMap<string,Player>"
+        ],
+        [
+          "enemies",
+          "schemaMap<uint32,Enemy>"
+        ],
+        [
+          "bullets",
+          "schemaMap<uint32,Bullet>"
+        ],
+        [
+          "loot",
+          "schemaMap<uint32,Loot>"
+        ],
+        [
+          "roomCode",
+          "string"
+        ],
+        [
+          "roomName",
+          "string"
+        ],
+        [
+          "hostId",
+          "string"
+        ],
+        [
+          "gameTime",
+          "uint16"
+        ],
+        [
+          "gameStatus",
+          "string"
+        ],
+        [
+          "maxPlayers",
+          "uint8"
+        ],
+        [
+          "canStart",
+          "bool"
+        ]
+      ]
+    },
+    {
+      "name": "LobbyState",
+      "fields": [
+        [
+          "rooms",
+          "schemaMap<string,RoomInfo>"
+        ]
+      ]
+    },
+    {
+      "name": "Loot",
+      "fields": [
+        [
+          "x",
+          "fixed:1"
+        ],
+        [
+          "y",
+          "fixed:1"
+        ],
+        [
+          "value",
+          "uint8"
+        ]
+      ]
+    },
+    {
+      "name": "Player",
+      "fields": [
+        [
+          "name",
+          "string"
+        ],
+        [
+          "color",
+          "string"
+        ],
+        [
+          "x",
+          "fixed:1"
+        ],
+        [
+          "y",
+          "fixed:1"
+        ],
+        [
+          "rotation",
+          "fixed:2"
+        ],
+        [
+          "score",
+          "int32"
+        ],
+        [
+          "health",
+          "uint8"
+        ],
+        [
+          "isDead",
+          "bool"
+        ],
+        [
+          "isReady",
+          "bool"
+        ]
+      ]
+    },
+    {
+      "name": "RoomInfo",
+      "fields": [
+        [
+          "name",
+          "string"
+        ],
+        [
+          "code",
+          "string"
+        ],
+        [
+          "hostName",
+          "string"
+        ],
+        [
+          "playerCount",
+          "uint8"
+        ],
+        [
+          "maxPlayers",
+          "uint8"
+        ],
+        [
+          "status",
+          "string"
+        ]
+      ]
+    }
+  ]
+}

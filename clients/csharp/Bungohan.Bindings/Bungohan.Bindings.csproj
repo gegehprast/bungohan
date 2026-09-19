@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Generated bindings, compiled under the same constraints as the protocol
+    core (Unity and Godot .NET: netstandard2.1, C# 9, no packages):
+    Shooter/ is generated from apps/example-shooter/shared (bun run
+    codegen:example), and the codegen golden files are compiled too, so a
+    generator change that emits invalid C# fails this build.
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9</LangVersion>
+    <Nullable>enable</Nullable>
+    <AssemblyName>Bungohan.Bindings</AssemblyName>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../../packages/codegen/test/golden/csharp/**/*.cs" Link="Golden/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Bungohan.Protocol/Bungohan.Protocol.csproj" />
+  </ItemGroup>
+
+</Project>

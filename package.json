@@ -9,7 +9,10 @@
     "format": "bunx --bun biome format --write",
     "lint": "bunx --bun biome lint --write && bunx --bun tsc --noEmit",
     "typecheck": "bunx --bun tsc --noEmit",
-    "vectors": "bun packages/testing/src/conformance/generate.ts"
+    "vectors": "bun packages/testing/src/conformance/generate.ts",
+    "codegen:example": "bun packages/codegen/src/cli.ts --contract apps/example-shooter/shared/src/index.ts --state apps/example-shooter/shared/src/index.ts --lang csharp --namespace Bungohan.Example.Shooter --out clients/csharp/Bungohan.Bindings/Shooter && bun packages/codegen/src/cli.ts --contract apps/example-shooter/shared/src/index.ts --state apps/example-shooter/shared/src/index.ts --lang gdscript --out clients/godot/example/shooter && bun packages/codegen/src/cli.ts --contract apps/example-shooter/shared/src/index.ts --state apps/example-shooter/shared/src/index.ts --lang json --out clients/fixtures",
+    "test:csharp": "dotnet run --project clients/csharp/Bungohan.Protocol.Tests",
+    "test:godot": "cd clients/godot && godot-mono --headless --script tests/run_all.gd"
   },
   "workspaces": {
     "packages": [
@@ -32,6 +35,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.14",
+    "@bungohan/codegen": "workspace:*",
     "@types/bun": "latest",
     "typescript": "^7.0.2"
   },

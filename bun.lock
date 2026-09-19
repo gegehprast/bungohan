@@ -6,6 +6,7 @@
       "name": "bungohan-alpha2",
       "devDependencies": {
         "@biomejs/biome": "2.5.14",
+        "@bungohan/codegen": "workspace:*",
         "@types/bun": "latest",
         "typescript": "^7.0.2",
       },
@@ -78,6 +79,22 @@
       "optionalPeers": [
         "react",
       ],
+    },
+    "packages/codegen": {
+      "name": "@bungohan/codegen",
+      "version": "0.0.0",
+      "bin": {
+        "codegen": "./src/cli.ts",
+        "bungohan-codegen": "./src/cli.ts",
+      },
+      "dependencies": {
+        "@bungohan/state": "workspace:*",
+        "@bungohan/types": "workspace:*",
+      },
+      "devDependencies": {
+        "@bungohan/example-shooter-shared": "workspace:*",
+        "@types/bun": "catalog:",
+      },
     },
     "packages/core": {
       "name": "@bungohan/core",
@@ -196,6 +213,8 @@
     "@bungohan/backplane": ["@bungohan/backplane@workspace:packages/backplane"],
 
     "@bungohan/client-js": ["@bungohan/client-js@workspace:packages/client-js"],
+
+    "@bungohan/codegen": ["@bungohan/codegen@workspace:packages/codegen"],
 
     "@bungohan/core": ["@bungohan/core@workspace:packages/core"],
 

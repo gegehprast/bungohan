@@ -1,0 +1,28 @@
+{
+  "name": "@bungohan/codegen",
+  "version": "0.0.0",
+  "description": "Emits C#, GDScript and JSON client bindings from a Bungohan contract and state module (spec §4.2)",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": "./src/index.ts",
+  "bin": {
+    "codegen": "./src/cli.ts",
+    "bungohan-codegen": "./src/cli.ts"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@bungohan/state": "workspace:*",
+    "@bungohan/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@bungohan/example-shooter-shared": "workspace:*",
+    "@types/bun": "catalog:"
+  },
+  "engines": {
+    "bun": ">=1.3.3"
+  },
+  "license": "MIT"
+}

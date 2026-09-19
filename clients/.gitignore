@@ -1,0 +1,5 @@
+# .NET and Godot build output
+bin/
+obj/
+.godot/
+*.import

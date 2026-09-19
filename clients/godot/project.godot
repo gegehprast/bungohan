@@ -1,0 +1,10 @@
+; Engine configuration file.
+; A minimal project so the Bungohan addon, its tests and the example
+; bindings can run headless: godot-mono --headless --script tests/run_vectors.gd
+
+config_version=5
+
+[application]
+
+config/name="Bungohan Godot client"
+config/features=PackedStringArray("4.7")

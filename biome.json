@@ -7,7 +7,14 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "includes": ["**", "!**/*.html", "!reference", "!conformance"]
+    "includes": [
+      "**",
+      "!**/*.html",
+      "!reference",
+      "!conformance",
+      "!clients/fixtures",
+      "!packages/codegen/test/golden"
+    ]
   },
   "formatter": {
     "enabled": true,

@@ -33,7 +33,10 @@ Bun workspaces. Packages export raw TypeScript (`"main": "./src/index.ts"`) — 
 ```
 packages/result  types  state  serializer  transport  store  backplane  core  client-js  codegen  testing
 apps/example-shooter/{server,client,shared}
+clients/csharp   clients/godot   clients/fixtures      # outside the Bun workspace (spec §4.2.1)
 ```
+
+`clients/` holds the non-TypeScript protocol cores: C# (`clients/csharp/Bungohan.Protocol`, netstandard2.1, C# 9, no NuGet packages, so it builds for Unity and Godot .NET) and a GDScript Godot addon (`clients/godot/addons/bungohan`). Their generated example bindings (`Bungohan.Bindings/Shooter`, `godot/example/shooter`, `fixtures/bungohan.json`) come from `bun run codegen:example`; never edit them by hand. `clients/fixtures/shooter-stream.*.json` are recordings (`bun apps/example-shooter/server/scripts/record-stream.ts`), not generated vectors: re-recording changes them.
 
 - **All package names are scoped `@bungohan/*`.** The previous implementation used unscoped `gungohan-*` (a typo) — never reproduce that.
 - Cross-package deps use `"workspace:*"`; shared dependency versions use the root `catalog:` protocol.
@@ -46,7 +49,12 @@ bun test                        # all tests
 bun --filter @bungohan/state test
 bun run check                   # biome check --write
 bun run lint                    # biome lint --write && tsc --noEmit
+bun run test:csharp             # dotnet run --project clients/csharp/Bungohan.Protocol.Tests
+bun run test:godot              # cd clients/godot && godot-mono --headless --script tests/run_all.gd
+bun run codegen:example         # regenerate the example bindings after a codegen or shared-module change
 ```
+
+When a change touches `clients/`, `packages/codegen`, PROTOCOL.md or the vectors, also run the C# and Godot runners (`tests/run_vectors.gd` alone runs just the vectors). `UPDATE_GOLDEN=1 bun test packages/codegen` rewrites the codegen goldens; review their diff.
 
 **Before considering any task done, run `bun test` and `bunx tsc --noEmit` and make them pass.** Writing tests without running them doesn't count as verification.
 
@@ -96,6 +104,7 @@ import { test, expect } from "bun:test"
 - **Class field initialization order.** Derived-class field initializers run *after* the base constructor returns, so a base constructor cannot see subclass fields via `Object.keys(this)`. Schema initialization is therefore lazy (spec §5.1) — do not "simplify" it into the constructor.
 - **MessagePack buffers.** In `@msgpack/msgpack` 3.1.3, `Encoder.encode()` returns a copy, so its output is safe to keep. Only `encodeSharedRef()` returns a view into the encoder's reused buffer; don't use it for anything queued or retained. Re-check this if the library is upgraded.
 - **Type binary buffers precisely.** Under TypeScript 7, `WebSocket.send` only accepts views over a regular `ArrayBuffer`, so a plain `Uint8Array` (which could be backed by a `SharedArrayBuffer`) is rejected. Functions that allocate with `new Uint8Array(n)` should declare `Uint8Array<ArrayBuffer>` as their return type, not widen it to `Uint8Array`, and should never cast.
+- **GDScript has no exceptions.** A typed function cut short by a script error returns its type's default (`""` for `-> String`), so a failing check can read as a pass. The Godot runners extend `clients/godot/tests/harness.gd`, which fails the run on any logged engine/script error; keep new suites under it. Also: `String == int` is a runtime error in Godot 4 (check `typeof` first), a Godot `String` can't hold U+0000, and Godot's own JSON/float parsing isn't correctly rounded (the runners use `tests/json_exact.gd`). PROTOCOL.md §15 has the rest.
 - **Numeric ids are never baked into generated client code.** Message-type and schema-class ids come from the join handshake and resolve by name at runtime (spec §4.2), so a stale Unity/Godot build can't silently desync.
 
 ## Example app

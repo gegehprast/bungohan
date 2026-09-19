@@ -1,0 +1,401 @@
+{
+  "format": "bungohan-codegen/1",
+  "protocol": "bungohan.v1",
+  "contracts": [
+    {
+      "name": "fixtureContract",
+      "hash": "7b655744",
+      "client": [
+        "everything",
+        "ping"
+      ],
+      "server": [
+        "point",
+        "everything"
+      ]
+    }
+  ],
+  "messages": [
+    {
+      "name": "everything",
+      "fields": [
+        [
+          "i8",
+          "int8"
+        ],
+        [
+          "i16",
+          "int16"
+        ],
+        [
+          "i32",
+          "int32"
+        ],
+        [
+          "u8",
+          "uint8"
+        ],
+        [
+          "u16",
+          "uint16"
+        ],
+        [
+          "u32",
+          "uint32"
+        ],
+        [
+          "f32",
+          "float32"
+        ],
+        [
+          "f64",
+          "float64"
+        ],
+        [
+          "fx",
+          "fixed:3"
+        ],
+        [
+          "text",
+          "string"
+        ],
+        [
+          "flag",
+          "bool"
+        ],
+        [
+          "color",
+          {
+            "enum": [
+              "red",
+              "green",
+              "dark blue"
+            ]
+          }
+        ],
+        [
+          "level",
+          {
+            "enum": [
+              1,
+              5,
+              10
+            ]
+          }
+        ],
+        [
+          "list",
+          {
+            "array": "int16"
+          }
+        ],
+        [
+          "names",
+          {
+            "map": "string"
+          }
+        ],
+        [
+          "maybe",
+          {
+            "optional": "fixed:1"
+          }
+        ],
+        [
+          "maybeFlag",
+          {
+            "optional": "bool"
+          }
+        ],
+        [
+          "maybeColor",
+          {
+            "optional": {
+              "enum": [
+                "north",
+                "south"
+              ]
+            }
+          }
+        ],
+        [
+          "maybePoint",
+          {
+            "optional": {
+              "nested": {
+                "name": "point",
+                "fields": [
+                  [
+                    "x",
+                    "fixed:2"
+                  ],
+                  [
+                    "y",
+                    "fixed:2"
+                  ]
+                ]
+              }
+            }
+          }
+        ],
+        [
+          "holes",
+          {
+            "array": {
+              "optional": "uint8"
+            }
+          }
+        ],
+        [
+          "sparse",
+          {
+            "map": {
+              "optional": "bool"
+            }
+          }
+        ],
+        [
+          "point",
+          {
+            "nested": {
+              "name": "point",
+              "fields": [
+                [
+                  "x",
+                  "fixed:2"
+                ],
+                [
+                  "y",
+                  "fixed:2"
+                ]
+              ]
+            }
+          }
+        ],
+        [
+          "path",
+          {
+            "array": {
+              "nested": {
+                "name": "point",
+                "fields": [
+                  [
+                    "x",
+                    "fixed:2"
+                  ],
+                  [
+                    "y",
+                    "fixed:2"
+                  ]
+                ]
+              }
+            }
+          }
+        ],
+        [
+          "grid",
+          {
+            "array": {
+              "array": "float64"
+            }
+          }
+        ],
+        [
+          "tagged",
+          {
+            "map": {
+              "array": {
+                "nested": {
+                  "name": "point",
+                  "fields": [
+                    [
+                      "x",
+                      "fixed:2"
+                    ],
+                    [
+                      "y",
+                      "fixed:2"
+                    ]
+                  ]
+                }
+              }
+            }
+          }
+        ],
+        [
+          "palette",
+          {
+            "array": {
+              "enum": [
+                "red",
+                "blue"
+              ]
+            }
+          }
+        ],
+        [
+          "definition",
+          "string"
+        ],
+        [
+          "encode",
+          "bool"
+        ]
+      ]
+    },
+    {
+      "name": "ping",
+      "fields": []
+    },
+    {
+      "name": "point",
+      "fields": [
+        [
+          "x",
+          "fixed:2"
+        ],
+        [
+          "y",
+          "fixed:2"
+        ]
+      ]
+    }
+  ],
+  "schemas": [
+    {
+      "name": "Everything",
+      "fields": [
+        [
+          "f64",
+          "float64"
+        ],
+        [
+          "f32",
+          "float32"
+        ],
+        [
+          "fx",
+          "fixed:2"
+        ],
+        [
+          "str",
+          "string"
+        ],
+        [
+          "flag",
+          "bool"
+        ],
+        [
+          "i8",
+          "int8"
+        ],
+        [
+          "i16",
+          "int16"
+        ],
+        [
+          "i32",
+          "int32"
+        ],
+        [
+          "u8",
+          "uint8"
+        ],
+        [
+          "u16",
+          "uint16"
+        ],
+        [
+          "u32",
+          "uint32"
+        ],
+        [
+          "pos",
+          "schema<G.Vec>"
+        ],
+        [
+          "byName",
+          "map<string,fixed:1>"
+        ],
+        [
+          "byId",
+          "map<uint32,bool>"
+        ],
+        [
+          "byF64",
+          "map<float64,string>"
+        ],
+        [
+          "ids",
+          "set<int32>"
+        ],
+        [
+          "ratios",
+          "array<float32>"
+        ],
+        [
+          "items",
+          "schemaMap<string,Item>"
+        ],
+        [
+          "itemSet",
+          "schemaSet<Item>"
+        ],
+        [
+          "itemList",
+          "schemaArray<Item>"
+        ],
+        [
+          "get_",
+          "string"
+        ],
+        [
+          "definition",
+          "float64"
+        ],
+        [
+          "class",
+          "bool"
+        ],
+        [
+          "applyField",
+          "uint8"
+        ],
+        [
+          "countChanged",
+          "float64"
+        ]
+      ]
+    },
+    {
+      "name": "G.Vec",
+      "fields": [
+        [
+          "x",
+          "fixed:3"
+        ],
+        [
+          "y",
+          "fixed:3"
+        ]
+      ]
+    },
+    {
+      "name": "Item",
+      "fields": [
+        [
+          "label",
+          "string"
+        ],
+        [
+          "count",
+          "uint16"
+        ],
+        [
+          "tags",
+          "set<string>"
+        ]
+      ]
+    }
+  ]
+}

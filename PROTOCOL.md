@@ -26,6 +26,7 @@ Contents:
 12. Numeric rules
 13. State codecs: `schema` and `messagepack`
 14. Conformance vectors
+15. Notes for implementers
 
 ---
 
@@ -1315,6 +1316,16 @@ ignored (hand-written vectors group bytes by field).
 
 **Absent values.** In a message payload, an absent `optional` is left out of
 the object at message level, and written as `null` inside an array or map.
+A map entry whose value is absent keeps its key: `{"x": null}` is a map with
+one entry, not the empty map.
+
+**Parsing the JSON.** Numbers must be read as the exactly nearest binary64
+(round half to even), as JavaScript and most standard JSON libraries do.
+Some engine parsers don't: Godot's `JSON` and `String.to_float()` put
+`3.4028234663852886e38` one ulp off and read `2.2250738585072014e-308` as 0,
+and would fail valid vectors. Compare numbers like JavaScript's `Object.is`
+(NaN equals NaN, −0 differs from 0), whatever integer or float type your
+parser gives them.
 
 Case kinds (`"kind"`):
 
@@ -1344,6 +1355,10 @@ Case kinds (`"kind"`):
   `"encode": false` marks a frame that is only decoded (a non-canonical
   form). A frame with `"error": true` has `hex` that must fail to decode,
   `ops` that must fail to encode, or both. An error ends the case.
+  Ops hold **wire values** (§12.5), not decoded ones: a `fixed:2` field
+  set to −3.25 appears as `-325`, and a `float32` one as the rounded
+  number. `message` cases are the opposite: `payload` and `decoded` are
+  what the application sends and receives (`-3.25`).
 - **`behavior`**: `{ side: "client" | "server", frames: [hex, …], expect }`:
   what a receiver must do with each frame (§9, §8.2): `"accept"` (processed,
   or legitimately ignored, and the connection stays open), `"drop"` (a client
@@ -1357,3 +1372,63 @@ A message declaration is `{ "name": string, "fields": [[name, type], …] }`,
 where a type is a string (`"int8"`, `"fixed:2"`, `"string"`, …) or an object:
 `{"enum": [values]}`, `{"array": type}`, `{"map": type}`,
 `{"optional": type}` or `{"nested": declaration}`.
+
+---
+
+## 15. Notes for implementers
+
+Pitfalls met while writing the C# (`clients/csharp`) and GDScript
+(`clients/godot`) clients, which pass every non-`behavior` vector. None
+changes a byte; each is an easy way to get one wrong.
+
+**Rounding (§12).** C#'s `Math.Round(x)` rounds half to even: use
+`Math.Round(x, MidpointRounding.AwayFromZero)`. GDScript's `roundf()`
+rounds half away from zero. A `(float)` cast (C#) or
+`PackedByteArray.encode_float` (Godot) rounds to binary32 correctly, ties to
+even, overflowing to ±Infinity.
+
+**Integers.** Varints and refIds need 32 unsigned bits: use `uint`/`long` in
+C#, and in a language with only 64-bit signed integers (GDScript) mask and
+range-check explicitly. Zigzag is simplest as arithmetic (`n ≥ 0 ? 2n :
+−2n − 1`, and back); Godot 4 refuses to shift a negative constant.
+Saturate a float to the integer range *before* truncating it (§12.1–12.2):
+converting an out-of-range float to an integer is undefined or wraps in many
+languages.
+
+**Floats.** Write floats little-endian whatever the platform, and write NaN
+as the canonical pattern of §1.4 (a NaN's payload is not portable). Read a
+MessagePack float big-endian (§4); Godot's `PackedByteArray.decode_*` are
+little-endian, so MessagePack floats are assembled from their bits.
+
+**Strings (§1.3).** Engine UTF-8 decoders are often lenient. Godot's
+`get_string_from_utf8()` replaces invalid bytes with U+FFFD, stops at a NUL
+and drops a leading byte order mark; validate the bytes yourself first and
+decode those cases by hand. .NET's `UTF8Encoding` with default settings also
+substitutes silently. A Godot `String` cannot hold U+0000 at all, so a
+GDScript client receives a NUL as U+FFFD and cannot send one; nothing else
+in the protocol depends on it.
+
+**MessagePack (§4).** Decoders keep map entries in wire order (encoders
+must write them in insertion order to be byte-exact), reject a repeated or
+non-string key, and bound every count by the bytes left. Decode integers
+into a 64-bit type and floats into binary64; an integer-valued number is
+written as an integer whatever its type in your language.
+
+**Dynamic languages.** In GDScript, `==` between a String and an int is a
+runtime error, not `false`: compare types first wherever a value may be of
+either (enum values, decoded keys).
+
+**Replica (§11).** Keep change notifications in a queue and fire them after
+the frame (§11.10), including for the root on its first snapshot; an
+instance created by the frame fires none of its own. Reset every created
+instance to zero values (§11.5): a generated class's field initializers are
+not the server's. Count holders and drop at the end of the frame (§11.6), or
+moves break. A collection that points back at the instance owning it should
+do so weakly where memory is reference counted (GDScript `RefCounted`), or
+the pair is never freed.
+
+**Generated bindings.** `@bungohan/codegen` emits message and schema classes
+for C# and GDScript, and a neutral JSON descriptor (the §14 declaration
+format) for other languages. It bakes in the contract hash but never a
+message id or class id: ids come from the handshake (§6.4) and `DEFINE`s
+(§11.2), and are resolved by name.

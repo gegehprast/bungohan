@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The Bungohan protocol core (PROTOCOL.md): frames, MessagePack, both state
+    codecs, contract messages and the state replica. It must build for Unity
+    as well as Godot .NET, hence netstandard2.1, C# 9 and no NuGet packages.
+  -->
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <LangVersion>9</LangVersion>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Bungohan.Protocol</RootNamespace>
+    <AssemblyName>Bungohan.Protocol</AssemblyName>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+</Project>
