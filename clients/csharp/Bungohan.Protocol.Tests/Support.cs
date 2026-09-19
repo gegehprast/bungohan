@@ -90,7 +90,7 @@ namespace Bungohan.Protocol.Tests
                 case JsonValueKind.Null: return null;
                 case JsonValueKind.True: return true;
                 case JsonValueKind.False: return false;
-                case JsonValueKind.String: return element.GetString();
+                case JsonValueKind.String: return StringOf(element);
                 case JsonValueKind.Number: return element.GetDouble();
                 case JsonValueKind.Array:
                 {
@@ -115,6 +115,48 @@ namespace Bungohan.Protocol.Tests
                     }
                     return map;
                 }
+            }
+        }
+
+        /// <summary>
+        /// A JSON string. System.Text.Json refuses an escaped lone surrogate
+        /// (<c>\ud800</c>), which is valid JSON and a valid C# string, so such
+        /// a string is unescaped here (PROTOCOL.md §14).
+        /// </summary>
+        private static string StringOf(JsonElement element)
+        {
+            try
+            {
+                return element.GetString()!;
+            }
+            catch (InvalidOperationException)
+            {
+                string raw = element.GetRawText();
+                var text = new StringBuilder();
+                for (int i = 1; i < raw.Length - 1; i++)
+                {
+                    char ch = raw[i];
+                    if (ch != '\\')
+                    {
+                        text.Append(ch);
+                        continue;
+                    }
+                    char escape = raw[++i];
+                    switch (escape)
+                    {
+                        case 'b': text.Append('\b'); break;
+                        case 'f': text.Append('\f'); break;
+                        case 'n': text.Append('\n'); break;
+                        case 'r': text.Append('\r'); break;
+                        case 't': text.Append('\t'); break;
+                        case 'u':
+                            text.Append((char)int.Parse(raw.Substring(i + 1, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture));
+                            i += 4;
+                            break;
+                        default: text.Append(escape); break; // " \ /
+                    }
+                }
+                return text.ToString();
             }
         }
 

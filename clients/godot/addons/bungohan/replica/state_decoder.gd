@@ -334,10 +334,22 @@ func _bind(instance: Object, binding: Dictionary, ref_id: int):
 	var local: Array = mapped.value
 
 	# A nested instance rebound to a new refId (the server replaced the
-	# nested object): forget its old block, and count holders afresh.
+	# nested object, §11.5): forget its old block, count holders afresh, and
+	# release what its collections held. Its nested fields are rebound by the
+	# SETs that follow.
 	if _ref_of.has(instance) and _ref_of[instance] != ref_id and _binding_of.has(instance):
-		_unregister(_ref_of[instance], _binding_of[instance])
+		var old: Dictionary = _binding_of[instance]
+		_unregister(_ref_of[instance], old)
 		_holders[instance] = 0
+		var held := []
+		for index in old["local_index"] if old["local_index"] != null else []:
+			if index < 0:
+				continue
+			var collection: Variant = instance.get(cls.fields[index]["member"])
+			if collection is Collection:
+				held.append_array(collection._schemas())
+		for element in held:
+			_release(element)
 	_ignored.erase(ref_id)  # a stale mark from an earlier use of this block
 	_refs[ref_id] = instance
 	_ref_of[instance] = ref_id

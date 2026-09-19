@@ -394,6 +394,11 @@ class Decoder {
     if (local.isErr()) return local
 
     const ctx = this._ctx
+    const previous = ctx.refOf.get(instance)
+    const bound = ctx.bindingOf.get(instance)
+    if (previous !== undefined && previous !== ref && bound !== undefined) {
+      this._rebind(instance, previous, bound)
+    }
     ctx.ignored.delete(ref) // stale mark from a previous use of this block
     ctx.refs.set(ref, instance)
     ctx.refOf.set(instance, ref)
@@ -423,6 +428,48 @@ class Decoder {
       }
     })
     return ok(undefined)
+  }
+
+  /**
+   * A nested object bound to a new refId: the server replaced the nested
+   * instance (PROTOCOL.md §11.5). Forget the old block, so a later reuse of
+   * it creates a new object, and release what the old instance's
+   * collections held. Nested fields are rebound by the SETs that follow.
+   */
+  private _rebind(instance: Schema, ref: number, binding: ClassBinding): void {
+    const ctx = this._ctx
+    this._unregister(ref, binding)
+    ctx.holders.set(instance, 0)
+    for (const element of this._collectionElements(instance, binding)) {
+      this._release(element)
+    }
+  }
+
+  /** Forgets `ref` and its collections' refIds. */
+  private _unregister(ref: number, binding: ClassBinding): void {
+    const ctx = this._ctx
+    ctx.refs.delete(ref)
+    let next = ref + 1
+    for (const isCollection of binding.collections) {
+      if (!isCollection) continue
+      ctx.refs.delete(next)
+      ctx.ignored.delete(next)
+      next++
+    }
+  }
+
+  /** Schema elements of `instance`'s collections that the server sends. */
+  private _collectionElements(instance: Schema, binding: ClassBinding) {
+    const elements: Schema[] = []
+    for (const name of binding.local ?? []) {
+      if (name === undefined) continue
+      const value = fieldValue(instance, name)
+      if (!(value instanceof CollectionState)) continue
+      for (const element of value._elements()) {
+        if (element instanceof Schema) elements.push(element)
+      }
+    }
+    return elements
   }
 
   /** Maps server field indices to local names, checking type agreement. */
@@ -504,29 +551,15 @@ class Decoder {
     const ref = ctx.refOf.get(instance)
     const binding = ctx.bindingOf.get(instance)
     if (ref === undefined || binding === undefined) return
-    ctx.refs.delete(ref)
+    this._unregister(ref, binding)
     ctx.refOf.delete(instance)
     ctx.bindingOf.delete(instance)
     ctx.holders.delete(instance)
 
-    let next = ref + 1
-    for (const isCollection of binding.collections) {
-      if (!isCollection) continue
-      ctx.refs.delete(next)
-      ctx.ignored.delete(next)
-      next++
-    }
-
-    const children: Schema[] = []
+    const children = this._collectionElements(instance, binding)
     for (const name of binding.local ?? []) {
-      if (name === undefined) continue
-      const value = fieldValue(instance, name)
+      const value = name === undefined ? undefined : fieldValue(instance, name)
       if (value instanceof Schema) children.push(value)
-      else if (value instanceof CollectionState) {
-        for (const element of value._elements()) {
-          if (element instanceof Schema) children.push(element)
-        }
-      }
     }
     for (const child of children) {
       const count = (ctx.holders.get(child) ?? 0) - 1

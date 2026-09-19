@@ -322,11 +322,19 @@ namespace Bungohan.Protocol
             int[] local = mapped.Value;
 
             // A nested instance rebound to a new refId (the server replaced the
-            // nested object): forget its old block, and count holders afresh.
+            // nested object, §11.5): forget its old block, count holders
+            // afresh, and release what its collections held. Its nested
+            // fields are rebound by the SETs that follow.
             if (_refOf.TryGetValue(instance, out long previous) && previous != refId && _bindingOf.TryGetValue(instance, out ClassBinding? old))
             {
                 Unregister(previous, old);
                 _holders[instance] = 0;
+                var held = new List<Schema>();
+                foreach (int index in old.LocalIndex ?? Array.Empty<int>())
+                {
+                    if (index >= 0 && instance.GetChild(index) is StateCollection collection) collection.CollectSchemas(held);
+                }
+                foreach (Schema element in held) Release(element);
             }
             _ignored.Remove(refId); // a stale mark from an earlier use of this block
             _refs[refId] = instance;

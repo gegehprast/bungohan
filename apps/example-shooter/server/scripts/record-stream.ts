@@ -14,9 +14,14 @@
  *   the join's snapshot was applied (as `room.listen` does on a joined room);
  * - `final`: a canonical dump of Alice's replica after the last frame.
  *
- * The game uses Math.random, so a new recording differs from the last one:
- * this is a recording, not a generated vector. `record-stream.test.ts`
- * replays the committed files through the TypeScript client state layer.
+ * Randomness is seeded: the game's (spawn points, loot scatter, room codes)
+ * comes from Math.random, and ids (client ids are player keys in the state)
+ * from nanoid, which draws on crypto.getRandomValues. Both are replaced by
+ * a seeded generator before anything runs, so re-recording gives identical
+ * files unless the server's behavior changed.
+ * It is still a recording, not a generated vector: a change to the game
+ * changes it. `record-stream.test.ts` replays the committed files through
+ * the TypeScript client state layer.
  *
  *     bun apps/example-shooter/server/scripts/record-stream.ts
  */
@@ -47,6 +52,39 @@ import { SERVER_FRAME_HEADERS } from "@bungohan/types"
 import { setupShooterServer } from "../src/app"
 
 const OUT = new URL("../../../../clients/fixtures/", import.meta.url)
+
+/** mulberry32: a small seeded generator of uint32s. */
+function mulberry32(seed: number): () => number {
+  let state = seed >>> 0
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0
+    let t = state
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return (t ^ (t >>> 14)) >>> 0
+  }
+}
+
+/**
+ * Makes this process's randomness reproducible: Math.random, and the
+ * crypto.getRandomValues that nanoid (ids, tokens) fills its pool from.
+ * Only for the recording script, never for a server.
+ */
+function seedRandomness(seed: number): void {
+  const next = mulberry32(seed)
+  Math.random = () => next() / 4294967296
+  crypto.getRandomValues = <T extends ArrayBufferView | null>(array: T): T => {
+    if (array !== null) {
+      const bytes = new Uint8Array(
+        array.buffer,
+        array.byteOffset,
+        array.byteLength,
+      )
+      for (let i = 0; i < bytes.length; i++) bytes[i] = next() & 0xff
+    }
+    return array
+  }
+}
 
 type Plain = null | boolean | number | string | Plain[] | { [k: string]: Plain }
 
@@ -254,6 +292,7 @@ async function write(name: string, value: unknown): Promise<void> {
 }
 
 if (import.meta.main) {
+  seedRandomness(0x5eed)
   // The full round (it ends with gameEnded), under the default codec...
   const round = GAME_CONFIG.GAME_DURATION_S * 1000 + 2000
   await write(

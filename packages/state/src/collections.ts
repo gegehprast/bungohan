@@ -87,6 +87,13 @@ export abstract class CollectionState<V, K, T> extends State<T> {
   /** @internal Drops recorded ops after a sync tick. */
   public abstract _clearChanges(): void
 
+  public override _unsend(): Iterable<unknown> {
+    const held = [...this._elements(), ...(this._removed ?? [])]
+    this._wireRef = -1
+    this._clearChanges()
+    return held
+  }
+
   /** @internal Receiver: empties the collection silently. */
   public abstract _reset(): void
 
@@ -400,6 +407,11 @@ export class SchemaMapState<
 export abstract class SetBase<T> extends CollectionState<T, T, ReadonlySet<T>> {
   /** @internal element → was it present when first touched */
   public _touched: Map<T, boolean> | undefined = undefined
+  /**
+   * @internal Schema element → its refId when first touched, which its
+   * `REMOVE` names even if it is sent anew (under another refId) this tick.
+   */
+  public _touchedRef: Map<T, number> | undefined = undefined
   /** @internal */
   public _cleared = false
   protected readonly _set: Set<T>
@@ -476,6 +488,7 @@ export abstract class SetBase<T> extends CollectionState<T, T, ReadonlySet<T>> {
 
   public _clearChanges(): void {
     this._touched = undefined
+    this._touchedRef = undefined
     this._cleared = false
     this._removed = undefined
   }
@@ -514,6 +527,10 @@ export abstract class SetBase<T> extends CollectionState<T, T, ReadonlySet<T>> {
     if (this._touched === undefined) this._touched = new Map()
     if (!this._touched.has(value)) {
       this._touched.set(value, this._set.has(value))
+      if (value instanceof Schema && value._wireRef !== -1) {
+        if (this._touchedRef === undefined) this._touchedRef = new Map()
+        this._touchedRef.set(value, value._wireRef)
+      }
     }
   }
 }

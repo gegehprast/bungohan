@@ -14,7 +14,14 @@ import type {
 import { ArrayBase, CollectionState, MapBase, SetBase } from "./collections"
 import { StateError } from "./errors"
 import { PrimitiveState } from "./primitives"
-import { type ClassInfo, fieldValue, Schema } from "./schema"
+import {
+  type ClassInfo,
+  emptyUnsent,
+  fieldValue,
+  Schema,
+  type Unsent,
+  unsend,
+} from "./schema"
 import type { State } from "./state-base"
 
 /**
@@ -343,12 +350,18 @@ class Emitter {
 
     for (const name of tree._changedKeys()) {
       const field = info.byName.get(name)
+      if (field === undefined) continue
       const value = fieldValue(instance, name)
-      if (field === undefined || !(value instanceof PrimitiveState)) continue
-      this.emit(
-        [0, ref, field.index, value._toWire()],
-        this.fieldGuard(value, "normal", guard),
-      )
+      if (value instanceof Schema) {
+        // A replaced nested field: the new instance is always sent anew.
+        const index = field.index
+        this.attach((wire) => [0, ref, index, wire], value, guard, false)
+      } else if (value instanceof PrimitiveState) {
+        this.emit(
+          [0, ref, field.index, value._toWire()],
+          this.fieldGuard(value, "normal", guard),
+        )
+      }
     }
 
     if (tree._dirtyCollections !== undefined) {
@@ -415,8 +428,10 @@ class Emitter {
           if (!had) this.attach((w) => [1, ref, w], wire(value), guard, false)
         } else if (had) {
           if (value instanceof Schema) {
-            if (value._wireRef !== -1)
-              this.emit([2, ref, value._wireRef], guard)
+            // The refId receivers know it by, even if it was sent anew
+            // this tick (moved into a nested field).
+            const sent = collection._touchedRef?.get(value) ?? value._wireRef
+            if (sent !== -1) this.emit([2, ref, sent], guard)
           } else if (
             typeof value === "number" ||
             typeof value === "string" ||
@@ -640,6 +655,10 @@ export function clearChangeTrees(root: Schema): void {
 
 function clearTree(instance: Schema, ctx: EncodeContext | undefined): void {
   const tree = instance._tree
+  if (tree._unsent !== undefined) {
+    release(tree._unsent, ctx)
+    tree._unsent = undefined
+  }
   if (tree._dirtyCollections !== undefined) {
     for (const collection of tree._dirtyCollections) {
       if (!(collection instanceof CollectionState)) continue
@@ -662,41 +681,22 @@ function clearTree(instance: Schema, ctx: EncodeContext | undefined): void {
 }
 
 function forget(instance: Schema, ctx: EncodeContext | undefined): void {
-  // Never sent (e.g. added to an instance removed in the same tick): it
-  // holds no block, and neither does anything under it.
-  if (instance._wireRef === -1) return
-  const info = instance._info
-  if (info !== undefined && ctx !== undefined && instance !== ctx.root) {
-    ctx.release(info, instance._wireRef)
+  const unsent = emptyUnsent()
+  unsend(instance, unsent)
+  release(unsent, ctx)
+}
+
+/** Frees the blocks of instances that left the wire this tick. */
+function release(unsent: Unsent, ctx: EncodeContext | undefined): void {
+  for (const [info, base] of unsent.blocks) {
+    if (base !== 0) ctx?.release(info, base) // refId 0 is the root's
   }
-  instance._wireRef = -1
-  if (info !== undefined) {
-    for (const field of info.fields) {
-      const value = fieldValue(instance, field.name)
-      if (value instanceof Schema) {
-        if (value._parent === instance) forget(value, ctx)
-        continue
-      }
-      if (
-        !(value instanceof PrimitiveState || value instanceof CollectionState)
-      )
-        continue
-      if (value._filter !== undefined) {
-        ctx?.filtered.delete(value)
-        visibility.delete(value)
-      }
-      if (value instanceof CollectionState) {
-        value._wireRef = -1
-        value._clearChanges()
-        for (const element of value._elements()) {
-          if (element instanceof Schema && element._parent === instance) {
-            forget(element, ctx)
-          }
-        }
-      }
-    }
+  for (const state of unsent.filtered) {
+    // Sent anew within the tick: it is live again under its new block.
+    if (state._owner !== undefined && state._owner._wireRef !== -1) continue
+    ctx?.filtered.delete(state)
+    visibility.delete(state)
   }
-  instance._tree.clear()
 }
 
 /** The room's class table so far (the §5.7.2 handshake contents). */

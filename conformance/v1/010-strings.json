@@ -1,0 +1,59 @@
+{
+  "description": "Strings are Unicode scalar values (§1.3): encoders write U+0000 and a lone surrogate as U+FFFD (ef bf bd), in every codec, so every client decodes the same string whatever its engine's strings can hold. Hand-written from PROTOCOL.md.",
+  "generated": false,
+  "cases": [
+    {
+      "kind": "messagepack",
+      "description": "U+0000 is written as U+FFFD",
+      "value": "a\u0000b",
+      "hex": "a5 61 efbfbd 62",
+      "decoded": "a\ufffdb"
+    },
+    {
+      "kind": "messagepack",
+      "description": "a lone surrogate is written as U+FFFD, in a short string too",
+      "value": "a\ud800b",
+      "hex": "a5 61 efbfbd 62",
+      "decoded": "a\ufffdb"
+    },
+    {
+      "kind": "messagepack",
+      "description": "in map keys too",
+      "value": { "k\u0000": "\u0000" },
+      "hex": "81 a4 6befbfbd a3 efbfbd",
+      "decoded": { "k\ufffd": "\ufffd" }
+    },
+    {
+      "kind": "message",
+      "description": "U+0000 in a contract message string",
+      "message": { "name": "say", "fields": [["s", "string"]] },
+      "payload": { "s": "\u0000" },
+      "hex": { "schema": "03 efbfbd", "messagepack": "91 a3 efbfbd" },
+      "decoded": { "s": "\ufffd" }
+    },
+    {
+      "kind": "state",
+      "description": "U+0000 in a state string (schema codec). Class S (classId 0) = s string",
+      "codec": "schema",
+      "frames": [
+        {
+          "ops": [[4, 0, "S", ["s"], ["string"]], [0, 0, 0, "x\u0000"]],
+          "hex": "80 00 01 53 01 01 73 06 737472696e67  10 04 78efbfbd",
+          "decoded": [[4, 0, "S", ["s"], ["string"]], [0, 0, 0, "x\ufffd"]]
+        }
+      ]
+    },
+    {
+      "kind": "state",
+      "description": "U+0000 in a state string (messagepack codec)",
+      "codec": "messagepack",
+      "frames": [
+        {
+          "ops": [[4, 0, "S", ["s"], ["string"]], [0, 0, 0, "x\u0000"]],
+          "hex": "92 95 04 00 a1 53 91 a1 73 91 a6 737472696e67  94 00 00 00 a4 78efbfbd",
+          "decoded": [[4, 0, "S", ["s"], ["string"]], [0, 0, 0, "x\ufffd"]]
+        }
+      ]
+    }
+  ]
+}

@@ -6,6 +6,8 @@ Authoritative multiplayer game server framework for Bun, with a language-indepen
 
 **`PROTOCOL.md` is authoritative for the wire bytes** (frames, handshake, state ops, both codecs, numeric rules); the spec keeps the rationale and points to it. Change a byte layout there first. `conformance/v1/` is its executable form, run by `bun test`: the hand-written `0xx-*` vectors must never be regenerated (fix them by hand against PROTOCOL.md); the `1xx-*` ones are regenerated with `bun run vectors`.
 
+**When an implementation differs from the reference or from PROTOCOL.md** (or two clients disagree), resolve it in PROTOCOL.md and pin it with a conformance vector that every runner (`bun test`, `test:csharp`, `test:godot`) passes. Never keep it as a local refinement in one implementation: the next client would have nothing to check against.
+
 **`reference/` holds the previous implementation (alpha 1) — read-only.** It is excluded from the workspace, from `tsc`, from Biome, and from `bun test`. Consult it when the spec is silent on some behavior; never edit it, never import from it, and don't try to fix its type or lint errors. See `reference/README.md`. Where the spec and that code disagree, the spec wins.
 
 ## Runtime: Bun, not Node

@@ -9,6 +9,7 @@ const Frames = preload("res://addons/bungohan/protocol/frames.gd")
 const MsgPack = preload("res://addons/bungohan/protocol/msgpack.gd")
 const MsgpackCodec = preload("res://addons/bungohan/protocol/msgpack_codec.gd")
 const Numeric = preload("res://addons/bungohan/protocol/numeric.gd")
+const ReplicaVectors = preload("replica_vectors.gd")
 const ByteReader = preload("res://addons/bungohan/protocol/byte_reader.gd")
 const ByteWriter = preload("res://addons/bungohan/protocol/byte_writer.gd")
 const SchemaCodec = preload("res://addons/bungohan/protocol/schema_codec.gd")
@@ -52,6 +53,8 @@ func _run() -> Checks:
 					checks.record(label, _message(c))
 				"state":
 					checks.record(label, _state(c))
+				"replica":
+					checks.record(label, ReplicaVectors.run(c))
 				"behavior":
 					checks.skip()  # needs a connection (next milestone)
 				_:

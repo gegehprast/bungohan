@@ -138,6 +138,11 @@ func _string() -> String:
 						if low >= 0xdc00 and low <= 0xdfff:
 							code = 0x10000 + ((code - 0xd800) << 10) + (low - 0xdc00)
 							_at += 6
+					# A Godot String holds neither U+0000 nor a lone surrogate:
+					# both read as U+FFFD, which is what encoders send for them
+					# (PROTOCOL.md §1.3).
+					if code == 0 or (code >= 0xd800 and code <= 0xdfff):
+						code = 0xfffd
 					out += String.chr(code)
 				_:
 					error = "bad escape at %d" % _at

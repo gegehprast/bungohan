@@ -27,6 +27,22 @@ describe("MessagePackSerializer", () => {
     expect(keyed.byteLength).toBe(11)
   })
 
+  test("strings are Unicode scalar values: U+0000 and lone surrogates become U+FFFD (PROTOCOL.md §1.3)", () => {
+    const hex = (value: unknown): string =>
+      Buffer.from(s.encode(value).unwrap()).toString("hex")
+    expect(hex("a\u0000b")).toBe("a561efbfbd62")
+    expect(hex("a\ud800b")).toBe("a561efbfbd62")
+    expect(hex("\udc00\ud83d\ude00")).toBe("a7efbfbdf09f9880")
+    // Nested values and map keys too; other values are untouched.
+    expect(
+      s.decode(s.encode({ "k\u0000": ["\u0000", 1] }).unwrap()).unwrap(),
+    ).toEqual({ "k\ufffd": ["\ufffd", 1] })
+    const bytes = Uint8Array.of(0, 1)
+    expect(hex({ b: bytes, n: null, t: true })).toBe(
+      "83a162c4020001a16ec0a174c3",
+    )
+  })
+
   test("bad input is an error result, never a throw", () => {
     const valid = encode({ a: [1, 2, 3] })
     for (const data of [

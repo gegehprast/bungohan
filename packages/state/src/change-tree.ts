@@ -1,4 +1,4 @@
-import type { Schema } from "./schema"
+import type { Schema, Unsent } from "./schema"
 import type { State } from "./state-base"
 
 /**
@@ -16,6 +16,11 @@ export class ChangeTree {
   public _dirtyCollections: Set<State> | undefined
   /** @internal */
   public _dirtyChildren: Set<ChangeTree> | undefined
+  /**
+   * @internal Wire identities this instance dropped during the tick (a
+   * replaced nested field); their blocks are freed by the commit.
+   */
+  public _unsent: Unsent | undefined
   private _parent: ChangeTree | undefined
   private _changes: Map<string, unknown> | undefined
 

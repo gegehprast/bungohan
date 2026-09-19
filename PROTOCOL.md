@@ -96,6 +96,12 @@ terminator. The empty string is the single byte `00`.
 - A string is a sequence of Unicode scalar values. An encoder whose native
   strings can contain a lone UTF-16 surrogate writes it as U+FFFD
   (`ef bf bd`).
+- Encoders write **U+0000** as U+FFFD (`ef bf bd`) too. Some engines'
+  strings can't hold it (a Godot `String`), so a NUL on the wire would
+  decode differently from one client to the next. Decoders still accept
+  `00` inside a string (it is valid UTF-8); no encoder produces it.
+- Both rules apply wherever a string is encoded: `schema` codec strings,
+  MessagePack strings and map keys (§4), in every frame body.
 - A length larger than the number of bytes remaining in the body is
   malformed.
 
@@ -776,7 +782,8 @@ and `Entity { x: fixed:2, y: fixed:2, tags: set<string> }`, the root World is
 
 ### 11.4 refId reuse
 
-When an instance leaves the tree, the server frees its block and later reuses
+When an instance leaves the tree (removed from a collection, or replaced in a
+`schema<N>` field, §11.5), the server frees its block and later reuses
 it for a new instance **of the same class**, so refIds stay bounded by the
 number of live instances. A receiver needs no bookkeeping for this: a block is
 freed only after the frame that removed the instance, and a receiver drops
@@ -808,6 +815,24 @@ A `schema<N>` field always holds an instance. Its `SET` tells the receiver the
 refId of the nested instance, and the nested instance's own full content
 follows. (A receiver whose classes create nested objects themselves binds its
 existing nested object to that refId and resets it.)
+
+**Replacing a nested instance.** The server may replace the instance a
+`schema<N>` field holds. It then sends a `SET` of that field with a ref to the
+new instance, followed by the new instance's full content. The new instance
+is always **new** (a refId the receiver doesn't know), even if it was
+attached elsewhere before: a receiver keeps its own nested object and can't
+adopt another one. The replaced instance leaves the tree like a removed one
+(§11.6): its block is freed after the frame and may be reused (§11.4).
+
+A receiver that rebinds its existing nested object to the new refId MUST
+first **forget the old binding**. The old refId and its collections' refIds
+become unknown, and every element of the object's collections loses the
+holder they had there (§11.6), so it is dropped at the end of the frame
+unless the frame places it again. The object's own holder count is
+unchanged: the field still holds it. Its nested fields are rebound by the
+`SET`s of the full content that follows. Without this, a later reuse of the
+old refIds would resolve to the nested object or its former elements
+instead of creating new instances.
 
 An instance that the receiver already knows is referenced by its ref only,
 and its later changes arrive as ops that target its refId.
@@ -1327,6 +1352,12 @@ and would fail valid vectors. Compare numbers like JavaScript's `Object.is`
 (NaN equals NaN, −0 differs from 0), whatever integer or float type your
 parser gives them.
 
+**Escaped strings.** A vector string may hold `\u0000` or an escaped lone
+surrogate (`\ud800`), which are valid JSON. Some parsers refuse the second
+(.NET's `System.Text.Json`), and an engine string may hold neither (Godot):
+unescape such a string yourself, into U+FFFD where your strings can't hold
+the character (which is what an encoder sends for it, §1.3).
+
 Case kinds (`"kind"`):
 
 - **`varint`** and **`zigzag`**: `{ value, hex }`: encode `value` to exactly
@@ -1359,6 +1390,22 @@ Case kinds (`"kind"`):
   set to −3.25 appears as `-325`, and a `float32` one as the rounded
   number. `message` cases are the opposite: `payload` and `decoded` are
   what the application sends and receives (`-3.25`).
+- **`replica`**: `{ classes, root, frames: [ { ops, expect? } … ] }`: what a
+  receiver's replica (§11) holds after each frame. `classes` declares the
+  receiver's local classes, `[{ "name": …, "fields": [[name, type], …] }, …]`
+  with §11.2 type strings, and `root` names the root's class. One stream
+  applies each frame's `ops` (tuples as in §11.1, with wire values), which
+  must all apply, then compares the tree from the root with `expect`. An
+  instance is an object holding every field of its local class; a
+  primitive field holds its decoded value (a `fixed:2` field `-3.25`), an
+  array is an array, a map an array of `[key, value]` pairs in any order,
+  and a set an array of its elements in any order. An instance may also
+  hold `"$"`, a **label**: within a case, one label always names the same
+  object and one object always carries the same label, in every frame. So
+  a label seen again checks that an object kept its identity, and a new
+  label checks that an object is a new one. An instance without a label is
+  not checked for identity (whether a receiver keeps its nested object
+  when a `schema<N>` field is replaced is its own choice, §11.5).
 - **`behavior`**: `{ side: "client" | "server", frames: [hex, …], expect }`:
   what a receiver must do with each frame (§9, §8.2): `"accept"` (processed,
   or legitimately ignored, and the connection stays open), `"drop"` (a client
@@ -1404,9 +1451,12 @@ little-endian, so MessagePack floats are assembled from their bits.
 `get_string_from_utf8()` replaces invalid bytes with U+FFFD, stops at a NUL
 and drops a leading byte order mark; validate the bytes yourself first and
 decode those cases by hand. .NET's `UTF8Encoding` with default settings also
-substitutes silently. A Godot `String` cannot hold U+0000 at all, so a
-GDScript client receives a NUL as U+FFFD and cannot send one; nothing else
-in the protocol depends on it.
+substitutes silently. A Godot `String` cannot hold U+0000 at all, which is
+why encoders write it as U+FFFD (§1.3): every client then sees the same
+string. A GDScript client that still receives a NUL (from a non-conforming
+encoder) reads it as U+FFFD. `@msgpack/msgpack` (JavaScript) writes a lone
+surrogate in a short string as invalid UTF-8 and keeps U+0000: normalize
+strings before encoding.
 
 **MessagePack (§4).** Decoders keep map entries in wire order (encoders
 must write them in insertion order to be byte-exact), reject a repeated or
@@ -1423,9 +1473,11 @@ the frame (§11.10), including for the root on its first snapshot; an
 instance created by the frame fires none of its own. Reset every created
 instance to zero values (§11.5): a generated class's field initializers are
 not the server's. Count holders and drop at the end of the frame (§11.6), or
-moves break. A collection that points back at the instance owning it should
-do so weakly where memory is reference counted (GDScript `RefCounted`), or
-the pair is never freed.
+moves break. When a `schema<N>` field's `SET` names a new refId, forget the
+nested object's old block and release its collections' elements (§11.5).
+A collection that points back at the instance owning it should do so
+weakly where memory is reference counted (GDScript `RefCounted`), or the
+pair is never freed.
 
 **Generated bindings.** `@bungohan/codegen` emits message and schema classes
 for C# and GDScript, and a neutral JSON descriptor (the §14 declaration

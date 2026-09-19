@@ -8,7 +8,8 @@ namespace Bungohan.Protocol.Tests
 {
     /// <summary>
     /// Runs every conformance vector (PROTOCOL.md §14) except the
-    /// <c>behavior</c> kind, which needs a connection. Codec cases run in both
+    /// <c>behavior</c> kind, which needs a connection (<c>replica</c> cases
+    /// run in <see cref="ReplicaVectors"/>). Codec cases run in both
     /// directions: encode → exact bytes, and bytes → decoded values.
     /// </summary>
     public static class VectorRunner
@@ -46,6 +47,7 @@ namespace Bungohan.Protocol.Tests
                         case "messagepack": suite.Run(label, () => MessagePackCase(c)); break;
                         case "message": suite.Run(label, () => MessageCase(c)); break;
                         case "state": suite.Run(label, () => StateCase(c)); break;
+                        case "replica": suite.Run(label, () => ReplicaVectors.Run(c)); break;
                         case "behavior": suite.Skip(); break; // needs a connection (next milestone)
                         default: suite.Run(label, () => throw new CheckFailed("unknown case kind " + kind)); break;
                     }

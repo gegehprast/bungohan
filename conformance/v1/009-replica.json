@@ -1,0 +1,115 @@
+{
+  "description": "Replica semantics (§11): what a receiver's tree holds after each frame, and which of its objects are the same object. Hand-written from PROTOCOL.md; the refIds are those a server allocates (§11.3, §11.4).",
+  "generated": false,
+  "cases": [
+    {
+      "kind": "replica",
+      "description": "a replaced schema field forgets its old block (§11.5): reusing the freed refIds creates new objects",
+      "classes": [
+        { "name": "Holder", "fields": [["bag", "schema<Bag>"], ["spare", "schemaMap<string,Bag>"]] },
+        { "name": "Bag", "fields": [["label", "string"], ["gems", "schemaArray<Gem>"]] },
+        { "name": "Gem", "fields": [["v", "uint8"]] }
+      ],
+      "root": "Holder",
+      "frames": [
+        {
+          "description": "snapshot. Holder 0 (spare 1), its Bag 2 (gems 3), a Gem 4",
+          "ops": [
+            [4, 0, "Holder", ["bag", "spare"], ["schema<Bag>", "schemaMap<string,Bag>"]],
+            [4, 1, "Bag", ["label", "gems"], ["string", "schemaArray<Gem>"]],
+            [4, 2, "Gem", ["v"], ["uint8"]],
+            [0, 0, 0, [1, 2]],
+            [0, 2, 0, "old"],
+            [1, 3, 0, [2, 4]],
+            [0, 4, 0, 1]
+          ],
+          "expect": { "$": "holder", "bag": { "$": "bag", "label": "old", "gems": [{ "$": "gem", "v": 1 }] }, "spare": [] }
+        },
+        {
+          "description": "the server replaces the Bag: a new block 5 (gems 6), a Gem 7, full content. Blocks 2..3 and 4 are freed after this frame. Whether the receiver keeps its nested object is its own business, so the Bag has no label",
+          "ops": [
+            [0, 0, 0, [1, 5]],
+            [0, 5, 0, "new"],
+            [1, 6, 0, [2, 7]],
+            [0, 7, 0, 2]
+          ],
+          "expect": { "$": "holder", "bag": { "label": "new", "gems": [{ "$": "gem2", "v": 2 }] }, "spare": [] }
+        },
+        {
+          "description": "a new Bag reuses block 2..3, and its Gem block 4: new objects, not the old Bag or Gem",
+          "ops": [
+            [1, 1, "k", [1, 2]],
+            [0, 2, 0, "reused"],
+            [1, 3, 0, [2, 4]],
+            [0, 4, 0, 9]
+          ],
+          "expect": {
+            "$": "holder",
+            "bag": { "label": "new", "gems": [{ "$": "gem2", "v": 2 }] },
+            "spare": [["k", { "$": "spare", "label": "reused", "gems": [{ "$": "gem3", "v": 9 }] }]]
+          }
+        },
+        {
+          "description": "the replacement and the reused instance change independently",
+          "ops": [
+            [0, 5, 0, "renamed"],
+            [0, 7, 0, 3],
+            [0, 4, 0, 10]
+          ],
+          "expect": {
+            "$": "holder",
+            "bag": { "label": "renamed", "gems": [{ "$": "gem2", "v": 3 }] },
+            "spare": [["k", { "$": "spare", "label": "reused", "gems": [{ "$": "gem3", "v": 10 }] }]]
+          }
+        }
+      ]
+    },
+    {
+      "kind": "replica",
+      "description": "a rebound schema field still has one holder (§11.6): dropping its owner drops it, so its refId can be reused",
+      "classes": [
+        { "name": "Yard", "fields": [["crates", "schemaMap<string,Crate>"], ["loose", "schemaMap<string,Bag>"]] },
+        { "name": "Crate", "fields": [["bag", "schema<Bag>"]] },
+        { "name": "Bag", "fields": [["label", "string"]] }
+      ],
+      "root": "Yard",
+      "frames": [
+        {
+          "description": "snapshot. Yard 0 (crates 1, loose 2), a Crate 3, its Bag 4",
+          "ops": [
+            [4, 0, "Yard", ["crates", "loose"], ["schemaMap<string,Crate>", "schemaMap<string,Bag>"]],
+            [4, 1, "Crate", ["bag"], ["schema<Bag>"]],
+            [4, 2, "Bag", ["label"], ["string"]],
+            [1, 1, "c", [1, 3]],
+            [0, 3, 0, [2, 4]],
+            [0, 4, 0, "first"]
+          ],
+          "expect": { "$": "yard", "crates": [["c", { "$": "crate", "bag": { "$": "bag", "label": "first" } }]], "loose": [] }
+        },
+        {
+          "description": "the Crate's Bag is replaced (block 5)",
+          "ops": [
+            [0, 3, 0, [2, 5]],
+            [0, 5, 0, "second"]
+          ],
+          "expect": { "$": "yard", "crates": [["c", { "$": "crate", "bag": { "label": "second" } }]], "loose": [] }
+        },
+        {
+          "description": "the Crate is removed; its Bag (block 5) goes with it",
+          "ops": [
+            [2, 1, "c"]
+          ],
+          "expect": { "$": "yard", "crates": [], "loose": [] }
+        },
+        {
+          "description": "a new Bag reuses block 5 (the most recently freed)",
+          "ops": [
+            [1, 2, "x", [2, 5]],
+            [0, 5, 0, "loose"]
+          ],
+          "expect": { "$": "yard", "crates": [], "loose": [["x", { "$": "loose", "label": "loose" }]] }
+        }
+      ]
+    }
+  ]
+}

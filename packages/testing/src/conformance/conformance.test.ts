@@ -32,6 +32,7 @@ import {
   type WireOp,
 } from "@bungohan/types"
 import { createServerHarness, createTestHarness } from "../harness"
+import { runReplica } from "./replica"
 import {
   difference,
   fromHex,
@@ -348,6 +349,9 @@ for (const file of files) {
           break
         case "state":
           test(label, () => state(c))
+          break
+        case "replica":
+          test(label, () => expect(runReplica(c)).toEqual([]))
           break
         case "behavior":
           if (c["side"] === "server") {

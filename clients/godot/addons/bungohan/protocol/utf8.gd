@@ -8,8 +8,8 @@ extends RefCounted
 ## a NUL or a leading BOM is decoded by hand.
 ##
 ## Engine limit: a Godot String cannot hold U+0000 (String.chr(0) is
-## U+FFFD). A valid string containing NUL decodes with U+FFFD in its place,
-## and no GDScript string can send one.
+## U+FFFD). Encoders never send one (PROTOCOL.md §1.3), but a valid string
+## containing NUL still decodes, with U+FFFD in its place.
 
 
 ## The decoded String, or null if the bytes aren't valid UTF-8.
@@ -25,8 +25,10 @@ static func decode(bytes: PackedByteArray, from: int, to: int) -> Variant:
 	return _decode_manually(slice)
 
 
-## UTF-8 bytes of a string. Godot writes an unpaired surrogate as U+FFFD
-## (ef bf bd), as the protocol requires.
+## UTF-8 bytes of a string. The protocol writes an unpaired surrogate and
+## U+0000 as U+FFFD (ef bf bd, PROTOCOL.md §1.3). Godot does the first
+## itself, and the second holds by construction: a Godot String can't hold
+## U+0000 (String.chr(0) is already U+FFFD). The 010 vectors check both.
 static func encode(text: String) -> PackedByteArray:
 	return text.to_utf8_buffer()
 

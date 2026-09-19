@@ -1,6 +1,6 @@
 import { err, ok, type Result } from "@bungohan/result"
 import { Decoder, Encoder } from "@msgpack/msgpack"
-import { decodeUtf8 } from "./bytes"
+import { decodeUtf8, wireString } from "./bytes"
 import { reason, SerializerError } from "./errors"
 import type { ISerializer } from "./serializer"
 
@@ -23,7 +23,7 @@ export class MessagePackSerializer implements ISerializer {
 
   public encode(message: unknown): Result<Uint8Array, SerializerError> {
     try {
-      return ok(this._encoder.encode(message))
+      return ok(this._encoder.encode(wireStrings(message)))
     } catch (error) {
       return err(
         new SerializerError(
@@ -62,6 +62,61 @@ export class MessagePackSerializer implements ISerializer {
   public getName(): string {
     return "messagepack"
   }
+}
+
+/**
+ * `value` with every string (and map key) as the protocol holds it
+ * (PROTOCOL.md §1.3, via {@link wireString}). `@msgpack/msgpack` writes a
+ * lone surrogate in a short string as invalid UTF-8, and keeps U+0000.
+ * Copies only what changes, so the common case allocates nothing.
+ */
+function wireStrings(value: unknown): unknown {
+  if (typeof value === "string") return wireString(value)
+  if (typeof value !== "object" || value === null) return value
+  if (Array.isArray(value)) {
+    let out: unknown[] | undefined
+    for (let i = 0; i < value.length; i++) {
+      const element: unknown = value[i]
+      const fixed = wireStrings(element)
+      if (fixed !== element) {
+        out ??= [...value]
+        out[i] = fixed
+      }
+    }
+    return out ?? value
+  }
+  if (value instanceof Map) {
+    let changed = false
+    const entries: [unknown, unknown][] = []
+    for (const [key, element] of value) {
+      const fixedKey = wireStrings(key)
+      const fixed = wireStrings(element)
+      if (fixedKey !== key || fixed !== element) changed = true
+      entries.push([fixedKey, fixed])
+    }
+    return changed ? new Map(entries) : value
+  }
+  const proto: unknown = Object.getPrototypeOf(value)
+  if (proto !== Object.prototype && proto !== null) return value
+  let out: Record<string, unknown> | undefined
+  const record = value as Record<string, unknown>
+  for (const key of Object.keys(record)) {
+    const element = record[key]
+    const fixedKey = wireString(key)
+    const fixed = wireStrings(element)
+    if (fixedKey !== key || fixed !== element) {
+      if (out === undefined) {
+        out = {}
+        // Rebuild in order, so entries keep their insertion order.
+        for (const earlier of Object.keys(record)) {
+          if (earlier === key) break
+          out[earlier] = record[earlier]
+        }
+      }
+    }
+    if (out !== undefined) out[fixedKey] = fixed
+  }
+  return out ?? value
 }
 
 /** Byte length of a big-endian unsigned integer of `size` bytes at `at`. */

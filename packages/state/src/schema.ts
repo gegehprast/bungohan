@@ -32,6 +32,61 @@ export interface ClassInfo {
 
 const classInfos = new WeakMap<SchemaConstructor, ClassInfo>()
 
+/**
+ * @internal Wire identities dropped from the tree: blocks to free and
+ * filtered fields to stop tracking, applied when the tick is committed.
+ */
+export interface Unsent {
+  readonly blocks: [ClassInfo, number][]
+  readonly filtered: State[]
+}
+
+/** @internal */
+export function emptyUnsent(): Unsent {
+  return { blocks: [], filtered: [] }
+}
+
+/**
+ * @internal Clears the wire identity of `instance` and of everything it
+ * holds (or removed this tick and still holds nowhere else), collecting
+ * their blocks into `into`. If any of them is attached again, it is sent in
+ * full under a new block.
+ */
+export function unsend(instance: Schema, into: Unsent): void {
+  if (instance._wireRef === -1) return
+  const info = instance._info
+  if (info === undefined) {
+    instance._wireRef = -1
+    return
+  }
+  into.blocks.push([info, instance._wireRef])
+  instance._wireRef = -1
+  const pending = instance._tree._unsent
+  if (pending !== undefined) {
+    into.blocks.push(...pending.blocks)
+    into.filtered.push(...pending.filtered)
+    instance._tree._unsent = undefined
+  }
+  for (const field of info.fields) {
+    const value = fieldValue(instance, field.name)
+    if (value instanceof Schema) {
+      if (value._parent === instance) unsend(value, into)
+      continue
+    }
+    if (!(value instanceof State)) continue
+    if (value._filter !== undefined) into.filtered.push(value)
+    for (const element of value._unsend()) {
+      if (
+        element instanceof Schema &&
+        (element._parent === instance || element._parent === undefined)
+      ) {
+        unsend(element, into)
+      }
+    }
+  }
+  instance._tree.clear()
+}
+
 /** Reads a field off a schema instance by name. */
 export function fieldValue(schema: Schema, name: string): unknown {
   return (schema as unknown as Record<string, unknown>)[name]
@@ -169,6 +224,7 @@ export class Schema {
         value._onBound()
       } else if (value instanceof Schema) {
         value._attachTo(this, undefined)
+        observeNested(this, field.name, value)
       }
     }
     return info
@@ -189,4 +245,59 @@ export class Schema {
     this._parentField = undefined
     this._tree.setParent(undefined)
   }
+}
+
+/**
+ * Turns a nested Schema field into an accessor, so assigning it
+ * (`holder.bag = new Bag()`) is recorded. A class field is an own data
+ * property, which a prototype setter would never see, so `_ensureInit`
+ * converts it, as it binds the wrappers.
+ */
+function observeNested(owner: Schema, name: string, initial: Schema): void {
+  let current = initial
+  Object.defineProperty(owner, name, {
+    configurable: true,
+    enumerable: true,
+    get: () => current,
+    set: (next: unknown) => {
+      if (next === current) return
+      if (!(next instanceof Schema)) {
+        console.error(
+          `[bungohan/state] ${owner.constructor.name}.${name} holds a ` +
+            "Schema instance; ignoring the assignment of a non-Schema value.",
+        )
+        return
+      }
+      const old = current
+      current = next
+      replaceNested(owner, name, old, next)
+    },
+  })
+}
+
+/**
+ * Receivers keep their own nested object and rebind it to whatever refId
+ * the field names, so an instance can't keep its wire identity through a
+ * nested field: the old one leaves the wire (its block is freed at the
+ * commit), and the new one is sent in full under a new block, even if it
+ * was known elsewhere (PROTOCOL.md §11.5).
+ */
+function replaceNested(
+  owner: Schema,
+  name: string,
+  old: Schema,
+  next: Schema,
+): void {
+  if (old._parent === owner && old._parentField === undefined) {
+    old._parent = undefined
+    old._tree.setParent(undefined)
+  }
+  const tree = owner._tree
+  if (owner._wireRef !== -1) {
+    if (tree._unsent === undefined) tree._unsent = emptyUnsent()
+    unsend(old, tree._unsent)
+    unsend(next, tree._unsent)
+    tree.markChanged(name, next)
+  }
+  next._attachTo(owner, undefined)
 }

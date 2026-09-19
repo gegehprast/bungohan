@@ -292,6 +292,14 @@ describe("byte writer", () => {
     expect([...out.toBytes()]).toEqual([5, 0x61, 0xef, 0xbf, 0xbd, 0x62])
   })
 
+  test("U+0000 is written as U+FFFD", () => {
+    const out = new ByteWriter()
+    out.string("a\u0000b\u0000")
+    expect([...out.toBytes()]).toEqual([
+      8, 0x61, 0xef, 0xbf, 0xbd, 0x62, 0xef, 0xbf, 0xbd,
+    ])
+  })
+
   test("a leading byte-order mark is data, not stripped", () => {
     const out = new ByteWriter()
     out.string("﻿x")

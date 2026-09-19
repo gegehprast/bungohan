@@ -6,7 +6,9 @@ namespace Bungohan.Protocol
     /// Strict UTF-8 (PROTOCOL.md §1.3). Decoding rejects overlong forms,
     /// encoded surrogates, truncated sequences and code points above
     /// U+10FFFF, like a "fatal" decoder; it never substitutes U+FFFD.
-    /// Encoding writes a lone UTF-16 surrogate as U+FFFD (<c>ef bf bd</c>).
+    /// Encoding writes a lone UTF-16 surrogate and U+0000 as U+FFFD
+    /// (<c>ef bf bd</c>), so every client decodes the same value, whatever
+    /// its engine's strings can hold.
     /// </summary>
     public static class Utf8
     {
@@ -14,7 +16,8 @@ namespace Bungohan.Protocol
         // into U+FFFD. Decoding only runs on validated bytes.
         private static readonly UTF8Encoding s_encoding = new UTF8Encoding(false, false);
 
-        public static byte[] Encode(string value) => s_encoding.GetBytes(value);
+        public static byte[] Encode(string value) =>
+            s_encoding.GetBytes(value.IndexOf('\0') < 0 ? value : value.Replace('\0', '\uFFFD'));
 
         /// <summary>The decoded string, or null if the bytes aren't valid UTF-8.</summary>
         public static string? Decode(byte[] bytes, int offset, int count)

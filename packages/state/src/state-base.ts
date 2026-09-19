@@ -45,6 +45,15 @@ export abstract class State<T = unknown> {
     return undefined
   }
 
+  /**
+   * @internal Clears this field's wire identity and pending changes, and
+   * returns every element it holds or removed this tick (schema elements
+   * are forgotten with it).
+   */
+  public _unsend(): Iterable<unknown> {
+    return []
+  }
+
   /** @internal Hook run right after `_bind` (links schema elements). */
   public _onBound(): void {}
 

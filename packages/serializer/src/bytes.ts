@@ -11,6 +11,23 @@ const utf8Encoder = new TextEncoder()
 // ignoreBOM keeps a leading U+FEFF as data; fatal rejects invalid UTF-8.
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
 
+// biome-ignore lint/suspicious/noControlCharactersInRegex: U+0000 is matched on purpose (PROTOCOL.md §1.3)
+const MAY_NEED_REPLACING = /[\u0000\ud800-\udfff]/
+const NOT_SCALAR =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: as above
+  /\u0000|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g
+
+/**
+ * `value` as the protocol's strings hold it (PROTOCOL.md §1.3): U+0000 and
+ * lone surrogates become U+FFFD, so every client, whatever its engine's
+ * strings can hold, decodes the same value.
+ */
+export function wireString(value: string): string {
+  return MAY_NEED_REPLACING.test(value)
+    ? value.replace(NOT_SCALAR, "\ufffd")
+    : value
+}
+
 /** Zigzag-maps an int32 to a uint32 (PROTOCOL.md §1.2). */
 export function zigzag(value: number): number {
   return ((value << 1) ^ (value >> 31)) >>> 0
@@ -117,8 +134,12 @@ export class ByteWriter {
     this._length += 4
   }
 
-  /** Varint byte length, then UTF-8 (lone surrogates become U+FFFD). */
-  public string(value: string): void {
+  /**
+   * Varint byte length, then UTF-8. U+0000 and lone surrogates become
+   * U+FFFD (PROTOCOL.md §1.3).
+   */
+  public string(text: string): void {
+    const value = wireString(text)
     // Worst case 3 bytes per UTF-16 unit, plus the length prefix.
     this._reserve(5 + value.length * 3)
     const start = this._length
