@@ -37,6 +37,14 @@ export abstract class State<T = unknown> {
     this._fieldIndex = index
   }
 
+  /**
+   * @internal Why this field can't be synchronized (a malformed declaration
+   * that got past the types), or `undefined`. Checked once per class.
+   */
+  public _declarationError(): string | undefined {
+    return undefined
+  }
+
   /** @internal Hook run right after `_bind` (links schema elements). */
   public _onBound(): void {}
 

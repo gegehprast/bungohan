@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { WireOp } from "@bungohan/types"
+import { f, type WireOp } from "@bungohan/types"
 import { applyDelta } from "./decoder"
 import { clearChangeTrees, encodeSnapshot, generateDeltas } from "./encoder"
 import {
@@ -9,7 +9,7 @@ import {
   createString,
 } from "./factories"
 import { Schema } from "./schema"
-import { type Item, item, plain } from "./test-fixtures"
+import { Item, item, plain } from "./test-fixtures"
 
 interface TestClient {
   readonly id: string
@@ -21,7 +21,7 @@ class Hand extends Schema {
   public count = createNumber()
   /** Only the owner sees the cards. */
   public cards = createFiltered(
-    createSchemaMap<string, Item>(),
+    createSchemaMap(f.string, Item),
     function (this: Hand, client: TestClient) {
       return this.ownerId.get() === client.id
     },
@@ -36,7 +36,7 @@ class Hand extends Schema {
 class Table extends Schema {
   public static override schemaName = "T.Table"
   public round = createNumber()
-  public hands = createSchemaMap<string, Hand>()
+  public hands = createSchemaMap(f.string, Hand)
 }
 
 function hand(owner: string): Hand {

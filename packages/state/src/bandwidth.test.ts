@@ -5,7 +5,7 @@
  * Measured sizes are recorded in the test names; ceilings leave ~10% slack.
  */
 import { describe, expect, test } from "bun:test"
-import type { WireOp } from "@bungohan/types"
+import { f, type WireOp } from "@bungohan/types"
 import { encode } from "@msgpack/msgpack"
 import { applyDelta } from "./decoder"
 import { clearChangeTrees, encodeSnapshot, generateDeltas } from "./encoder"
@@ -31,7 +31,7 @@ class Entity extends Schema {
 class World extends Schema {
   public static override schemaName = "B.World"
   public tick = createNumber()
-  public entities = createSchemaMap<number, Entity>()
+  public entities = createSchemaMap(f.uint32, Entity)
 }
 
 function bytes(ops: WireOp[]): number {
@@ -95,11 +95,13 @@ describe("bandwidth (MessagePack, Phase 1)", () => {
     expect(tick(w)).toBeLessThanOrEqual(480)
   })
 
-  test("initial join snapshot of 100 entities: 4006 bytes", () => {
+  test("initial join snapshot of 100 entities: 4032 bytes", () => {
     const w = new World()
     for (let i = 0; i < 100; i++) w.entities.set(i, entity(i))
     // ~40 B/entity: non-zero defaults (hp=100, alive, kind) are sent, since
-    // receivers start instances at type zero values (spec §5.7.9).
+    // receivers start instances at type zero values (spec §5.7.9). The
+    // leading DEFINEs are 145 B, including the element-typed table entry
+    // `schemaMap<uint32,B.Entity>` (spec §5.7.11).
     const size = bytes(encodeSnapshot(w).unwrap())
     expect(size).toBeLessThanOrEqual(4400)
   })

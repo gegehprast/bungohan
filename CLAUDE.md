@@ -63,8 +63,6 @@ TypeScript (`tsconfig.json`): `strict`, `noUncheckedIndexedAccess`, `noImplicitO
 - Overriding a base method requires the `override` keyword
 - **No `any`.** Use `unknown` and narrow.
 
-> The current `tsconfig.json` still sets `experimentalDecorators`, `emitDecoratorMetadata`, and `"Decorators"` in `lib`. These are leftovers from an abandoned decorator-based schema design. The rebuild uses **no decorators** (see `REBUILD_SPEC.md` §2, §5) — remove those three settings.
-
 ## Architecture rules
 
 These are non-negotiable and come from the spec:
@@ -92,7 +90,7 @@ import { test, expect } from "bun:test"
 ## Known gotchas
 
 - **Class field initialization order.** Derived-class field initializers run *after* the base constructor returns, so a base constructor cannot see subclass fields via `Object.keys(this)`. Schema initialization is therefore lazy (spec §5.1) — do not "simplify" it into the constructor.
-- **MessagePack encoder buffer aliasing.** `Encoder.encode()` returns a view into a reused internal buffer. Safe to hand to a synchronous broadcast; **copy it first** if the payload is queued or retained past the current tick.
+- **MessagePack buffers.** In `@msgpack/msgpack` 3.1.3, `Encoder.encode()` returns a copy, so its output is safe to keep. Only `encodeSharedRef()` returns a view into the encoder's reused buffer; don't use it for anything queued or retained. Re-check this if the library is upgraded.
 - **Numeric ids are never baked into generated client code.** Message-type and schema-class ids come from the join handshake and resolve by name at runtime (spec §4.2), so a stale Unity/Godot build can't silently desync.
 
 ## Example app

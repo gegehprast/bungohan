@@ -13,6 +13,7 @@ import {
   type EmptyContract,
   f,
   type Infer,
+  type MessageDef,
   type RecvMap,
   type SendMap,
 } from "./index"
@@ -247,3 +248,23 @@ export function clientSide(room: IRoom<typeof shooterContract>): void {
   // @ts-expect-error — clients do not receive client→server messages
   room.onMessage("playerMove", () => {})
 }
+
+// ---------------------------------------------------------------------------
+// Generic code over messages (what Room.send's implementation looks like)
+// ---------------------------------------------------------------------------
+
+// An unresolved message infers as an open record instead of recursing
+// forever through NestedField<MessageDef> (TS2589).
+expectType<Equal<Infer<MessageDef>, { [key: string]: unknown }>>()
+
+export function genericSend<M extends MessageDef>(
+  message: M,
+  payload: Infer<M>,
+): unknown {
+  const erased: unknown = payload
+  return [message.name, erased]
+}
+
+genericSend(Everything, {} as Infer<typeof Everything>)
+// @ts-expect-error — still checked at concrete call sites
+genericSend(PlayerMove, { x: 1 })

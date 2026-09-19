@@ -1,5 +1,8 @@
-import type { SchemaFieldType } from "@bungohan/types"
-import { COLLECTION_FIELD_TYPES } from "@bungohan/types"
+import {
+  isCollectionField,
+  parseFieldType,
+  type SchemaFieldType,
+} from "@bungohan/types"
 import { nanoid } from "nanoid"
 import { ChangeTree } from "./change-tree"
 import {
@@ -34,6 +37,13 @@ export function fieldValue(schema: Schema, name: string): unknown {
   return (schema as unknown as Record<string, unknown>)[name]
 }
 
+/**
+ * Field table of `instance`'s class. Runs once per class, so declaration
+ * checks cost nothing per instance. A malformed declaration (only reachable
+ * by getting past the types) is logged and the field left unsynchronized:
+ * this runs when a class is first used, which may be mid-game, so it must
+ * not throw (CLAUDE.md, architecture rule 1).
+ */
 function buildClassInfo(instance: Schema): ClassInfo {
   const ctor = instance.constructor as SchemaConstructor
   const fields: FieldInfo[] = []
@@ -41,14 +51,26 @@ function buildClassInfo(instance: Schema): ClassInfo {
     if (name.startsWith("_")) continue
     const value = fieldValue(instance, name)
     let type: SchemaFieldType
-    if (value instanceof State) type = value._type
-    else if (value instanceof Schema) type = "schema"
-    else continue
+    if (value instanceof State) {
+      const problem = value._declarationError()
+      if (problem !== undefined) {
+        console.error(
+          `[bungohan/state] ${ctor.name}.${name}: ${problem}; ` +
+            "the field will not be synchronized.",
+        )
+        continue
+      }
+      type = value._type
+    } else if (value instanceof Schema) {
+      const nested = value.constructor as SchemaConstructor
+      type = `schema<${schemaNameOf(nested) ?? nested.name}>`
+    } else continue
+    const parsed = parseFieldType(type)
     fields.push({
       name,
       index: fields.length,
       type,
-      isCollection: COLLECTION_FIELD_TYPES.has(type),
+      isCollection: parsed !== undefined && isCollectionField(parsed),
     })
   }
   let name = schemaNameOf(ctor)

@@ -97,24 +97,34 @@ export interface MessageDef<
 /** Flattens an intersection into one object type (readable hovers). */
 type Simplify<T> = { [K in keyof T]: T[K] }
 
-/** The TypeScript value type described by a field descriptor. */
-export type InferField<F> = F extends {
-  readonly kind: infer K extends ScalarKind
-}
-  ? ScalarTypeMap[K]
-  : F extends FixedField
-    ? number
-    : F extends EnumField<infer V>
-      ? V
-      : F extends ArrayField<infer E>
-        ? InferField<E>[]
-        : F extends MapField<infer E>
-          ? { [key: string]: InferField<E> }
-          : F extends OptionalField<infer E>
-            ? InferField<E> | undefined
-            : F extends NestedField<infer M>
-              ? Infer<M>
-              : never
+/**
+ * The TypeScript value type described by a field descriptor.
+ *
+ * The wide `Field` union (what an unresolved generic reduces to) infers as
+ * `unknown`. Without that stop, `Field` → `ArrayField<Field>` →
+ * `InferField<Field>[]` → … recurses forever, and generic code such as
+ * `function send<M extends MessageDef>(m: M, p: Infer<M>)` fails with
+ * TS2589. Concrete descriptors never reach it.
+ */
+export type InferField<F> = [Field] extends [F]
+  ? unknown
+  : F extends {
+        readonly kind: infer K extends ScalarKind
+      }
+    ? ScalarTypeMap[K]
+    : F extends FixedField
+      ? number
+      : F extends EnumField<infer V>
+        ? V
+        : F extends ArrayField<infer E>
+          ? InferField<E>[]
+          : F extends MapField<infer E>
+            ? { [key: string]: InferField<E> }
+            : F extends OptionalField<infer E>
+              ? InferField<E> | undefined
+              : F extends NestedField<infer M>
+                ? Infer<M>
+                : never
 
 type RequiredKeys<S> = {
   [K in keyof S]: S[K] extends OptionalField ? never : K
@@ -124,14 +134,20 @@ type OptionalKeys<S> = {
   [K in keyof S]: S[K] extends OptionalField ? K : never
 }[keyof S]
 
-/** Plain object type for a field shape; `f.optional` fields become `?:`. */
-export type InferShape<S extends FieldShape> = Simplify<
-  { -readonly [K in RequiredKeys<S>]: InferField<S[K]> } & {
-    -readonly [K in OptionalKeys<S>]?: S[K] extends OptionalField<infer E>
-      ? InferField<E>
-      : never
-  }
->
+/**
+ * Plain object type for a field shape; `f.optional` fields become `?:`.
+ * The wide `FieldShape` (an unresolved generic) is an open record; see
+ * {@link InferField}.
+ */
+export type InferShape<S extends FieldShape> = string extends keyof S
+  ? { [key: string]: unknown }
+  : Simplify<
+      { -readonly [K in RequiredKeys<S>]: InferField<S[K]> } & {
+        -readonly [K in OptionalKeys<S>]?: S[K] extends OptionalField<infer E>
+          ? InferField<E>
+          : never
+      }
+    >
 
 /** Payload type of a message: `Infer<typeof PlayerMove>`. */
 export type Infer<M> =

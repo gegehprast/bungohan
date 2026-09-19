@@ -1,22 +1,22 @@
 import type { FixedDecimals } from "@bungohan/types"
 import {
   ArrayState,
-  type MapKey,
   MapState,
   SchemaArrayState,
   SchemaMapState,
   SchemaSetState,
   SetState,
 } from "./collections"
+import type { KeyField, KeyOf, ValueField, ValueOf } from "./elements"
 import {
   BooleanState,
   FixedPointState,
   Float32State,
   NumberState,
-  type PrimitiveWire,
   StringState,
 } from "./primitives"
 import type { Schema } from "./schema"
+import type { SchemaConstructor } from "./schema-registry"
 import type { FilterFn, State } from "./state-base"
 
 export function createNumber(initial = 0): NumberState {
@@ -53,40 +53,71 @@ export function createBoolean(initial = false): BooleanState {
   return new BooleanState(initial)
 }
 
-export function createMap<K extends MapKey, V extends PrimitiveWire>(
-  initial?: Map<K, V>,
-): MapState<K, V> {
-  return new MapState<K, V>(initial)
+/**
+ * Map of primitives. `key` is `f.string`, `f.float64` or an integer kind
+ * (`f.uint16`, …); `value` is `f.float64`, `f.float32`, `f.fixed(n)`,
+ * `f.string` or `f.bool`. Lossy value types (`f.float32`, `f.fixed(n)`) are
+ * quantized on the wire exactly like the matching primitive fields
+ * (spec §5.7.6.1); keys never are.
+ *
+ * ```ts
+ * public scores = createMap(f.string, f.fixed(1)) // MapState<string, number>
+ * ```
+ */
+export function createMap<K extends KeyField, V extends ValueField>(
+  key: K,
+  value: V,
+  initial?: Iterable<readonly [KeyOf<K>, ValueOf<V>]>,
+): MapState<KeyOf<K>, ValueOf<V>> {
+  return new MapState(key, value, initial)
 }
 
-export function createSet<T extends PrimitiveWire>(
-  initial?: Set<T>,
-): SetState<T> {
-  return new SetState<T>(initial)
+/**
+ * Set of keys: `createSet(f.string)`, `createSet(f.uint16)`. Elements are
+ * exact (never quantized), like map keys.
+ */
+export function createSet<T extends KeyField>(
+  of: T,
+  initial?: Iterable<KeyOf<T>>,
+): SetState<KeyOf<T>> {
+  return new SetState(of, initial)
 }
 
-export function createArray<T extends PrimitiveWire>(
-  initial?: T[],
-): ArrayState<T> {
-  return new ArrayState<T>(initial)
+/** Array of primitives: `createArray(f.fixed(2))`. See {@link createMap}. */
+export function createArray<T extends ValueField>(
+  of: T,
+  initial?: Iterable<ValueOf<T>>,
+): ArrayState<ValueOf<T>> {
+  return new ArrayState(of, initial)
 }
 
-export function createSchemaMap<K extends MapKey, V extends Schema>(
-  initial?: Map<K, V>,
-): SchemaMapState<K, V> {
-  return new SchemaMapState<K, V>(initial)
+/**
+ * Map of Schema instances: `createSchemaMap(f.string, Player)`. The class
+ * table lists the element class by its `schemaName`. Elements may also be
+ * instances of a subclass (each ref carries its own class id).
+ */
+export function createSchemaMap<K extends KeyField, V extends Schema>(
+  key: K,
+  of: SchemaConstructor<V>,
+  initial?: Iterable<readonly [KeyOf<K>, V]>,
+): SchemaMapState<KeyOf<K>, V> {
+  return new SchemaMapState(key, of, initial)
 }
 
+/** Set of Schema instances: `createSchemaSet(Item)`. */
 export function createSchemaSet<T extends Schema>(
-  initial?: Set<T>,
+  of: SchemaConstructor<T>,
+  initial?: Iterable<T>,
 ): SchemaSetState<T> {
-  return new SchemaSetState<T>(initial)
+  return new SchemaSetState(of, initial)
 }
 
+/** Array of Schema instances: `createSchemaArray(Item)`. */
 export function createSchemaArray<T extends Schema>(
-  initial?: T[],
+  of: SchemaConstructor<T>,
+  initial?: Iterable<T>,
 ): SchemaArrayState<T> {
-  return new SchemaArrayState<T>(initial)
+  return new SchemaArrayState(of, initial)
 }
 
 /** Default client shape seen by filter functions (core's Client satisfies it). */

@@ -249,6 +249,7 @@ Rules that fall out of the design:
 - **`EmptyContract` has no keys**, so a room without a contract cannot call typed `send`/`broadcast`/`onMessage` at all. It uses the `*Raw` variants.
 - **Field order is `Object.keys(fields)`**, i.e. declaration order. Field names must be identifiers (codegen emits them as members) and must not be integer-like (JS would reorder them). This is enforced twice. At compile time, any numeric-looking key is a type error. At runtime, `defineMessage` checks once, when it is called, and throws a `TypeError` for keys JS actually reorders (`"0"`, `"42"`; not `"07"` or `"1.5"`). That throw is a deliberate exception to "framework code does not throw": it can only fire while the defining module loads, as a static programming error. It is never a runtime condition, and it adds nothing per message.
 - **`f.enum` values encode as their index** in `values`.
+- **[DECIDED] `Infer` stops at the wide types.** `InferField<Field>` is `unknown` and `InferShape<FieldShape>` is `{ [key: string]: unknown }`, so `Infer<MessageDef>` is an open record. Without that stop, an unresolved generic recursed forever (`NestedField<MessageDef>` → `Infer<MessageDef>` → …). Any generic implementation such as `function send<M extends MessageDef>(m: M, p: Infer<M>)` then failed with TS2589 ("type instantiation is excessively deep"), and core's `Room.send` implementation would have hit the same error. Concrete descriptors never reach the stop, so every inferred type is unchanged.
 - The guarantee is enforced by `packages/types/src/contract.test-d.ts`: `@ts-expect-error` assertions for unknown message names, wrong/missing/excess payload fields, wrong direction, and `EmptyContract` rooms, all run by `tsc --noEmit`. `Room`/`IRoom` must keep the exact generic signatures above for that test to remain representative.
 
 TypeScript clients import the same contract and get the mirrored view, with the direction inverted:
@@ -286,6 +287,7 @@ Because the builders in §4.1 produce runtime descriptors, the generator simply 
 
 ```typescript
 import { Schema, createNumber, createString, createSchemaMap } from "@bungohan/state";
+import { f } from "@bungohan/types";
 
 class Player extends Schema {
   public static override schemaName = "Player";
@@ -297,7 +299,7 @@ class Player extends Schema {
 class RoomState extends Schema {
   public static override schemaName = "RoomState";
   public score = createNumber(0);
-  public players = createSchemaMap<string, Player>();
+  public players = createSchemaMap(f.string, Player); // [DECIDED] element descriptors, §5.3
 }
 
 const state = new RoomState(); // no _init() call needed — see lazy init below
@@ -337,7 +339,7 @@ Each wrapper exposes `.get()`/`.set(value)` (or a getter/setter equivalent used 
 Two parallel families depending on whether the element type is a `Schema`:
 
 ```typescript
-// primitive-valued
+// primitive-valued — superseded by the [DECIDED] descriptor signatures below
 function createMap<K, V>(initial?: Map<K, V>): MapState<K, V>;
 function createSet<T>(initial?: Set<T>): SetState<T>;
 function createArray<T>(initial?: T[]): ArrayState<T>;
@@ -346,6 +348,14 @@ function createArray<T>(initial?: T[]): ArrayState<T>;
 function createSchemaMap<K, V extends Schema>(initial?: Map<K, V>): SchemaMapState<K, V>;
 function createSchemaSet<T extends Schema>(initial?: Set<T>): SchemaSetState<T>;
 function createSchemaArray<T extends Schema>(initial?: T[]): SchemaArrayState<T>;
+
+// [DECIDED] actual signatures (packages/state/src/factories.ts):
+function createMap<K extends KeyField, V extends ValueField>(key: K, value: V, initial?: Iterable<readonly [KeyOf<K>, ValueOf<V>]>): MapState<KeyOf<K>, ValueOf<V>>;
+function createSet<T extends KeyField>(of: T, initial?: Iterable<KeyOf<T>>): SetState<KeyOf<T>>;
+function createArray<T extends ValueField>(of: T, initial?: Iterable<ValueOf<T>>): ArrayState<ValueOf<T>>;
+function createSchemaMap<K extends KeyField, V extends Schema>(key: K, of: SchemaConstructor<V>, initial?: Iterable<readonly [KeyOf<K>, V]>): SchemaMapState<KeyOf<K>, V>;
+function createSchemaSet<T extends Schema>(of: SchemaConstructor<T>, initial?: Iterable<T>): SchemaSetState<T>;
+function createSchemaArray<T extends Schema>(of: SchemaConstructor<T>, initial?: Iterable<T>): SchemaArrayState<T>;
 ```
 
 Both families implement the native Map/Set/Array mutator methods directly on the wrapper (`get`/`set`/`delete`/`push`/`splice`/etc.), each mutator calling `_notifyChange` to mark the owning schema dirty. Listener API:
@@ -363,6 +373,23 @@ Note the tuple/argument order is **value first, then key/index** — consistent 
 - Collections expose a read-only `value` view. Collection `onChange` fires on an in-place replace (map key re-set, array index assigned) with `(newValue, oldValue, key)`. Sets have no `onChange`, because they have no replace. `clear()` fires `onRemove` per element.
 - Arrays: `set(index, v)` replaces within range (returns `false` otherwise), and `splice` follows native semantics (negative start, omitted `deleteCount`). `sort`/`reverse`/`fill` are recorded as one replace per changed index. A Schema instance must not appear twice in one array.
 - Element types are constrained: primitive collections hold `string | number | boolean`, map keys are `string | number`, and `Schema*` collections hold Schema instances.
+- **[DECIDED] Collections declare their element types at runtime** (closes the first §5.7.11 gap). The factories take the §4.1 `f.*` builders for primitive elements and keys, and the Schema class for schema elements. TypeScript infers the collection's type from them, so there are no generic arguments to write:
+
+  ```typescript
+  createMap(f.string, f.fixed(1))     // MapState<string, number>    → "map<string,fixed:1>"
+  createSet(f.uint16)                 // SetState<number>            → "set<uint16>"
+  createArray(f.float32)              // ArrayState<number>          → "array<float32>"
+  createSchemaMap(f.string, Player)   // SchemaMapState<string, Player> → "schemaMap<string,Player>"
+  createSchemaSet(Item)               // SchemaSetState<Item>        → "schemaSet<Item>"
+  createSchemaArray(Item)             // SchemaArrayState<Item>      → "schemaArray<Item>"
+  // each also takes optional initial contents last: createMap(f.string, f.float64, new Map([["a", 1]]))
+  ```
+
+  - **Values** (map values, array elements) use exactly the primitive *field* vocabulary: `f.float64`, `f.float32`, `f.fixed(n)`, `f.string`, `f.bool`. Lossy value types are quantized on the wire by the same rules as the matching fields (§5.7.6.1): the server keeps full precision, receivers hold the quantized value, and a write that doesn't change the wire value sends nothing. Integer kinds (`f.int8`…) are not value types: use `f.float64` (exact to 2^53) or `f.fixed(0)`.
+  - **Keys** (map keys, and set elements, which are keys) are exact, never quantized: `f.string`, `f.float64`, or an integer kind `f.int8`…`f.uint32` (the natural `int` key for C#/GDScript dictionaries). Receivers reject a non-integer or out-of-range integer key as `MALFORMED_OP`, so an int-keyed map must be given integer keys. Sets therefore hold strings and numbers only, never booleans or lossy numbers: set membership over quantized values would collapse distinct server elements into one client element.
+  - **Schema elements** name a class. An element may also be an instance of a subclass, because every ref on the wire carries its own `classId`. The declared class is the static element type for codegen.
+  - Directly nested Schema fields are listed with their class too (`schema<Vec>`), so the table alone describes every field.
+  - **Malformed declarations never throw.** Factories run inside field initializers, i.e. on every `new`, which may be a join or a spawn mid-game (a per-connection/per-tick path). Validation therefore happens once per class, when its field table is built (`_ensureInit`). A descriptor that got past the types (via a cast, or from plain JS) is logged with `console.error` naming `Class.field`, and that field is left out of the class table. It still works locally but is never synchronized, so nothing can mis-decode. There is no module-load hook for class fields, so "throw at module load" is not available here, unlike `defineMessage`.
 - State is a **tree**: an instance has one parent at a time. Moving it (remove here, add there) is supported; sharing it between two parents is not.
 - On the server, listeners fire synchronously on mutation. On a receiver, see §5.7.9.
 
@@ -435,8 +462,19 @@ On join, the server sends a one-time **schema handshake**: `{ classes: [{ classI
 
 **[DECIDED] Amendments** (types in `packages/types/src/wire.ts`):
 
-- Each class entry also carries **`types: SchemaFieldType[]`**, parallel to `fields`. Receivers need it to dequantize fixed-point fields, to allocate collection refIds (§5.7.9) for fields they don't have locally, and to detect type disagreements. `SchemaFieldType = "float64" | "float32" | "fixed:N" | "string" | "bool" | "schema" | "map" | "set" | "array" | "schemaMap" | "schemaSet" | "schemaArray"` (`"schema"` = a directly nested Schema field).
-- **The table is delivered in-band, as `DEFINE` ops**, and grows incrementally. "Reachable from the state tree" can't be computed at join time: the classes inside an empty `createSchemaMap<string, Player>()` are erased types. So class ids are assigned the first time an instance of that class is serialized. A snapshot starts with `DEFINE` ops for the room's entire table so far, and a patch carries an inline `DEFINE` right before the first use of a class new to the room. `DEFINE`s are never filtered. `getSchemaTable(root)` returns the table (as `SchemaTable`) for core/codegen/debugging, but receivers need nothing beyond the op stream.
+- Each class entry also carries **`types: SchemaFieldType[]`**, parallel to `fields`. Receivers need it to dequantize fixed-point fields, to allocate collection refIds (§5.7.9) for fields they don't have locally, and to detect type disagreements. **[DECIDED] Grammar** (`packages/types/src/wire.ts`, parsed by `parseFieldType`):
+
+  ```
+  field     = primitive | "schema<" Name ">"
+            | "map<" key "," primitive ">" | "set<" key ">" | "array<" primitive ">"
+            | "schemaMap<" key "," Name ">" | "schemaSet<" Name ">" | "schemaArray<" Name ">"
+  primitive = "float64" | "float32" | "fixed:" 0-9 | "string" | "bool"
+  key       = "string" | "float64" | "int8" | "int16" | "int32" | "uint8" | "uint16" | "uint32"
+  Name      = a schemaName: everything up to the final ">" (so it may contain any character)
+  ```
+
+  A type string is a plain string in the `DEFINE` op, so the op keeps its shape, and a type disagreement (including a different element type) is a single string comparison that yields `SCHEMA_MISMATCH`. A type string that doesn't parse makes the `DEFINE` `MALFORMED_OP`. Receivers parse each type once per `DEFINE`, never per op.
+- **The table is delivered in-band, as `DEFINE` ops**, and grows incrementally. "Reachable from the state tree" can't be computed at join time: the classes inside an empty `createSchemaMap<string, Player>()` are erased types. (**[DECIDED]** Since §5.3's element descriptors, the *declared* element class is known at runtime. But an element may be an instance of any subclass, so the set of classes that will actually appear still can't be enumerated up front, and the incremental design stays.) So class ids are assigned the first time an instance of that class is serialized. A snapshot starts with `DEFINE` ops for the room's entire table so far, and a patch carries an inline `DEFINE` right before the first use of a class new to the room. `DEFINE`s are never filtered. `getSchemaTable(root)` returns the table (as `SchemaTable`) for core/codegen/debugging, but receivers need nothing beyond the op stream.
 - Receivers resolve classes **by name** (`SchemaRegistry`) and fields **by name** (server field index → local field of the same name). A server field the client lacks is skipped. A class the client lacks is ignored along with everything under it. A shared field whose type differs is a hard `SCHEMA_MISMATCH` error. Receivers that never construct a class locally (e.g. `Player` only arrives inside a map) must `SchemaRegistry.register(Player)`, because auto-registration happens on first `new`.
 
 #### 5.7.3 Positional (array-based), not keyed, patch encoding
@@ -510,6 +548,19 @@ For messages, `f.fixed(n)` applies the identical encoding when the payload is wr
 
 `WebSocketTransportOptions.compression` (already present in `ServerOptions.transport.config.compression`, default `true`) enables Bun's native WebSocket `perMessageDeflate`. **Decision**: implement this as a boolean option on `WebSocketTransport` itself, not a separate `WebSocketDeflateTransport` class — it's a single toggle on Bun's native WebSocket config, not a different transport mechanism, so a second class would just duplicate the whole implementation for one flag. Because payloads are already tightly packed MessagePack (not verbose JSON), compression yields the most benefit on larger frames (initial join snapshot, big broadcasts) and negligible-to-negative benefit on tiny per-tick deltas — Bun's deflate handles this adaptively per-frame, so leave it on by default and let it self-regulate rather than hand-tuning a size threshold.
 
+**[DECIDED] Correction: Bun does not self-regulate.** Measured on Bun 1.3.13 by reading the RSV1 bit off raw frames: `perMessageDeflate: true` only *negotiates* the extension, and a frame is compressed only if `ws.send(data, true)` asks for it. Compressing every frame hurts the most common one:
+
+| MessagePack payload | Plain frame | Deflated frame |
+|---|---|---|
+| 8 B (one position delta) | 10 B | 16 B |
+| 43 B | 45 B | 48 B |
+| 57 B | 59 B | 61 B |
+| 85 B | 87 B | 82 B |
+| 125 B (churn tick) | 127 B | 76 B |
+| 703 B | 707 B | 468 B |
+
+So `WebSocketTransport` takes `compression` (default `true`: negotiate, and compress eligible frames) plus **`compressionThreshold` (default 128 B)**. Frames below the threshold go out uncompressed. Deflate breaks even at about 60–85 B of MessagePack and saves ~40% by 128 B. Bun showed no context takeover between frames (identical repeated frames compress to the same size). `ServerOptions.transport.config` should pass `compressionThreshold` through when core is built. `avgCompressionRatio` (§5.7.8) should count only the frames that were actually compressed.
+
 #### 5.7.8 Metrics
 
 Extend `RoomMetrics` (§6.6) with `avgStateDeltaBytes` (already specified) plus **[NEW]** `avgStateSnapshotBytes` and, when `transport.config.compression` is enabled, `avgCompressionRatio` — so bandwidth wins from this section are actually observable in production, not just assumed.
@@ -533,9 +584,9 @@ Both peers follow these rules on the same op stream, which is what keeps them in
 
 #### 5.7.11 Known gaps (for the serializer/codegen sessions)
 
-- **Collection element types are erased.** `createMap<string, number>()` / `createSchemaMap<string, Player>()` carry no runtime element type, so the class table can say "map" but not "map of float32" or "map of Player". Phase 1 (MessagePack) doesn't need it because values are self-describing. Phase 2 `SchemaCodec` (tag-free collection values) and codegen (typed C#/GDScript collections) will. The likely fix is an optional runtime element descriptor on the collection factories (e.g. reusing the §4.1 `f.*` builders), added to the class table. Resolve this before Phase 2.
-- `IStateCodec.encodeOps(ops, table)` should maintain its table from the `DEFINE` ops in the stream rather than receive it separately, since the table grows mid-session.
-- Bandwidth baselines are recorded in `packages/state/src/bandwidth.test.ts` (100-entity room, MessagePack: one position update 8 B, all moving 1,396 B, 10+10 churn 433 B, snapshot 4,006 B, idle 0 B). A 30,000-tick churn run (3 spawns/tick, 30-tick lifetimes) stays at exactly 138 B/tick from the first steady tick to the last, which only holds because of refId reuse.
+- ~~**Collection element types are erased.**~~ **[DECIDED] Closed.** Collections now take runtime element descriptors (§5.3), and the class table carries them (§5.7.2 grammar), e.g. `map<string,fixed:1>` or `schemaMap<uint32,Player>`. Phase 2 `SchemaCodec` and codegen can read element types straight from the table. Primitive collection elements are also quantized on the wire now (they were sent raw before, which made `createArray` of a lossy type impossible to express).
+- ~~`IStateCodec.encodeOps(ops, table)` should maintain its table from the `DEFINE` ops.~~ **[DECIDED] Closed** by the §8.1.5 codec sessions.
+- Bandwidth baselines are recorded in `packages/state/src/bandwidth.test.ts` (100-entity room, MessagePack: one position update 8 B, all moving 1,396 B, 10+10 churn 433 B, snapshot **4,032 B**, idle 0 B). The snapshot grew by 17 B, once per join, for the element-typed table entry `schemaMap<uint32,B.Entity>`. The previously recorded 4,006 B was already stale: the code before this change measured 4,015 B. Per-tick costs are unchanged. A 30,000-tick churn run (3 spawns/tick, 30-tick lifetimes) stays at exactly 138 B/tick from the first steady tick to the last, which only holds because of refId reuse.
 
 ## 6. `@bungohan/core` — Server, Room, MatchMaker
 
@@ -865,6 +916,26 @@ interface IBackplane {
 
 **[FIX]** package export consistency: every one of these packages must re-export its `*Error` class and `ErrorCode` type from its `index.ts` (the old `backplane` package inconsistently omitted this while `store` did export it — normalize this across all four).
 
+**[DECIDED] How these four packages were built** (`packages/{serializer,transport,store,backplane}`):
+
+- **Error types.** Each package exports `XError` and a *prefixed* code type: `SerializerErrorCode`, `TransportErrorCode`, `StoreErrorCode`, `BackplaneErrorCode`, like `@bungohan/state`'s `StateErrorCode`. An unprefixed `ErrorCode` from every package would collide in core, which already has its own `ErrorCode` (§6.5). Every error class has the §6.5 shape (`code`, `timestamp`, `context?`).
+- **`ISerializer` returns `Result`** (deviation from the `[KEEP]` signature above): `encode(message): Result<Uint8Array, SerializerError>` and `decode(data): Result<unknown, SerializerError>`, with codes `ENCODE_FAILED` and `DECODE_FAILED`. `decode` runs on every inbound frame of untrusted bytes, and the old signature could only report garbage by throwing, which framework code may not do on a per-message path.
+- **MessagePack buffers.** In `@msgpack/msgpack` 3.1.3, `Encoder.encode()` returns a **copy** (`bytes.slice`). Only `encodeSharedRef()` returns a view into the reused buffer. `MessagePackSerializer` reuses one `Encoder`/`Decoder` pair (with `ignoreUndefined: true`) and calls `encode()`, so every returned `Uint8Array` is owned by the caller and safe to queue or retain. The copy is one small memcpy per encode (per broadcast, not per client). CLAUDE.md's "Encoder.encode() returns a view" gotcha describes `encodeSharedRef`, which nothing uses. The decoder rejects truncated input, trailing bytes and `__proto__` keys.
+- **`JsonSerializer`** is debug-only: `TextEncoder`/`TextDecoder` (fatal on bad UTF-8) are reused, `Uint8Array` round-trips as `{__type:"Uint8Array", data:[…]}`, and a top-level `undefined` encodes as `null`.
+- **Transport** (`WebSocketTransport` on `Bun.serve`). The `on*` methods *register* the single handler for their event; a later call replaces it (core is the only consumer). Handler exceptions go to the `onError` handler, never into Bun's socket loop. Other behavior:
+  - The token comes from `?token=` or `Authorization: Bearer …` (the scheme is matched case-insensitively). `context.token` is absent when there is none.
+  - Non-upgrade HTTP requests get `426`. Text frames are passed on as their UTF-8 bytes, for the decoder to reject.
+  - `send` returns `CONNECTION_LOST` when Bun reports the frame dropped (status 0); backpressure (-1) counts as sent. `broadcast` delivers to every reachable client and returns one error that lists the failed ids in `context`.
+  - `disconnect()` stops counting the client as connected immediately, and `onDisconnect` still fires when the close completes. It fires for **every** close, server-initiated ones included.
+  - `getPort()` returns the bound port (for `listen(0)`).
+  - `close()` sends every client 1001, then stops **gracefully and without awaiting**. On Bun 1.3.13 the promise from `server.stop()` never settles once the server has initiated a WebSocket close, although the port is freed at once. `stop(true)` straight after `ws.close()` drops output Bun hasn't flushed yet (e.g. the upgrade response to a client that has only just connected); `stop(false)` flushes it.
+  - Bun's own WebSocket *client* reports a received 1001 as 1000; the bytes on the wire are correct. Keep this in mind for client-js tests run under Bun.
+- **Store.** `get` of a missing or expired key is `ok(undefined)` (JSON `null` is a real value). Deleting a missing key is not an error. A TTL is a positive whole number of seconds, otherwise `INVALID_OPTIONS`; `RedisStore` uses `SETEX`. `undefined`, cyclic and `BigInt` values are `SERIALIZATION_FAILED`, and so is a stored value that isn't JSON. A failed command is `OPERATION_FAILED`. Those two codes are additions to the `[KEEP]` list above, which only had `CONNECTION_FAILED | INVALID_OPTIONS` and used `INVALID_OPTIONS` for everything.
+- **Backplane.** A process receives its own publications on channels it subscribes to, as in Redis. `subscribe` resolves once the subscription is live. `unsubscribe` removes every callback on the channel. Non-JSON messages and throwing callbacks are logged and skipped, and don't affect the other callbacks. `RedisBackplane` issues one `SUBSCRIBE` per channel, and concurrent `subscribe` calls share the in-flight one. A failed `SUBSCRIBE` rolls back its callback so that a retry re-subscribes. `unsubscribe` during an in-flight `SUBSCRIBE` waits for it, so the channel ends up unsubscribed.
+- **Redis clients.** `new RedisClient(url)` throws on a malformed URL, and a constructor can't return a `Result`. So `RedisStore`/`RedisBackplane` construction never throws: a bad URL makes every operation return `INVALID_OPTIONS`. Both accept injected clients (`client` / `clients: { publisher, subscriber }`) typed by minimal interfaces (`RedisStoreClient`, `RedisPubSubClient`) that Bun's `RedisClient` satisfies. That is how the unit tests use in-memory fakes. `redisUrl()` URL-encodes the password (the old code didn't), and `redis` passes `RedisOptions` through.
+- **In-memory implementations ship as real exports.** `MemoryStore` (JSON copy semantics identical to Redis; injectable `now` for manual clocks) and `MemoryBackplane` plus `MemoryBus` (several backplanes on one bus simulate a cluster in one process). Delivery goes through JSON on a microtask, in publish order, and is never re-entrant. They are the single-process defaults for core and the test doubles for §2's "mock store / mock backplane".
+- **Integration tests** (`*.integration.test.ts` in store and backplane) run against a real Redis when `REDIS_URL` is set and skip otherwise. Each run uses unique key/channel prefixes and cleans up after itself.
+
 ### 8.1 Serializer strategy — **[NEW]**
 
 The old implementation used one generic serializer for everything. That's the wrong shape for bandwidth, because the two things being serialized have completely different information available:
@@ -882,11 +953,26 @@ Stays the pluggable `ISerializer`. Three implementation improvements over the ol
 
 1. **Reuse `Encoder`/`Decoder` instances.** The old code called the module-level `encode()`/`decode()` functions, which construct a fresh `Encoder` (and its internal buffer) on every call — at 20 Hz × N clients that's a lot of garbage. Instantiate `new Encoder(...)` / `new Decoder(...)` once per serializer instance and reuse.
 2. **`ignoreUndefined: true`** in encoder options — drops `undefined` fields instead of encoding them.
-3. **Encode once, send to many.** For any broadcast or unfiltered state patch, encode a single `Uint8Array` and hand that same buffer to `transport.broadcast(clientIds, data)` — never re-encode per client. (Note: `Encoder.encode()` returns a view into a reused internal buffer, so if a payload is retained beyond the current tick — queued, sent async — copy it first. Encode-once-broadcast-synchronously is safe and is the hot path.)
+3. **Encode once, send to many.** For any broadcast or unfiltered state patch, encode a single `Uint8Array` and hand that same buffer to `transport.broadcast(clientIds, data)` — never re-encode per client. (`Encoder.encode()` returns a fresh copy in `@msgpack/msgpack` 3.1.3, so the buffer is safe to queue or retain; see §8's MessagePack buffers note.)
 
 **Message-type interning** — an easy, large win the old code missed entirely: `room.send("playerMove", ...)` shipped the literal string `"playerMove"` on every single input, potentially 60×/second per client. The join handshake now includes the room's message-type table (`{ "playerMove": 1, "chat": 2, ... }`, derived from the room's contract in §4.1), and the wire carries the numeric id. Ids are assigned by the server at runtime and resolved by name on the client, never baked into generated bindings (§4.2). Messages sent through the untyped `sendRaw`/`onMessageRaw` escape hatch aren't in the table and fall back to an inline string plus MessagePack payload, so nothing breaks.
 
 Note that contract-declared messages (§4.1) have known field types, so they skip MessagePack entirely and encode through the §8.1.2 codec like state ops — tag-free. MessagePack remains the encoder only for `sendRaw`/`onMessageRaw` traffic.
+
+**[DECIDED] Phase 1 contract messages** (`packages/serializer/src/message-codec.ts`). Until `SchemaCodec` exists, contract messages go through the active `ISerializer`, but **positionally**: `packMessage(def, payload)` returns a plain array in `fieldNames` order, and `unpackMessage(def, wire)` reads one back. `PlayerMove {x: 145.5, y: -3.25}` is 7 B instead of 23 B as a keyed MessagePack map. Wire form per field:
+
+| Field | Wire value |
+|---|---|
+| `f.int8`…`f.uint32` | integer, **truncated toward zero and saturated** to the range, NaN → 0 (the §5.7.6.1 philosophy) |
+| `f.float32` | `Math.fround(value)`. Phase 1 still pays float64 width in MessagePack; the precision semantics already match Phase 2 |
+| `f.float64` / `f.string` / `f.bool` | the value |
+| `f.fixed(n)` | int32 per §5.7.6.1 |
+| `f.enum(...)` | index into `values` |
+| `f.array(X)` / `f.map(X)` | array / string-keyed map of X |
+| `f.nested(M)` | M's own positional array |
+| `f.optional(X)` | X, or `null` when absent. At message level, **trailing** absent optionals are trimmed, so an unset optional tail costs 0 bytes |
+
+Decoding is **type-directed**: each value is read as its declared kind, and a mismatch, a missing required field, too many fields, an out-of-range enum index or a non-int32 fixed value is `DECODE_FAILED`. Such a payload never reaches a handler. In Phase 1 the self-describing MessagePack value has to be checked against the declared kind as it is read. That check *is* the decoding, not a separate validation pass, and it is what makes §4.1's "a handler typed `{ x: number }` only ever receives a number" true before Phase 2. Absent optionals are omitted from the decoded object (`"key" in msg` is false). A map key `__proto__` is rejected (JSON can carry it and it would replace the prototype). Arrays are strict, with no forward-compatible extra fields: version skew is caught at join by the contract hash (§4.2). `packMessage` fails (`ENCODE_FAILED`, naming the field path) only for payloads that got past the types, e.g. an enum value not in the list.
 
 #### 8.1.2 State sync → `SchemaCodec` (new, schema-aware binary)
 
@@ -939,6 +1025,26 @@ interface ServerOptions {
 ```
 
 The browser SDK negotiates this at join: the handshake names which codec the room is using, and the client selects the matching decoder rather than being configured separately. A mismatch is a hard error at join time, not a silent decode corruption.
+
+#### 8.1.5 State codec sessions — **[DECIDED]** (`packages/serializer/src/state-codec.ts`)
+
+The §8.1.2 `IStateCodec` signature (`encodeOps(ops, table)`) is replaced by codec **sessions**, which own the table. The table grows mid-stream through `DEFINE` ops, and a tag-free decoder must know each class before the ops that use it:
+
+```typescript
+interface IStateCodec {
+  getName(): string                       // named in the join handshake
+  createSession(): IStateCodecSession     // one per stream: per room on the server, per joined room on a client
+}
+interface IStateCodecSession {
+  encodeOps(ops: readonly WireOp[]): Result<Uint8Array, SerializerError>
+  decodeOps(data: Uint8Array): Result<WireOp[], SerializerError>
+  getTable(): SchemaTable                 // a copy, maintained from the DEFINEs seen, in stream order
+}
+```
+
+- A session applies every `DEFINE` it encodes or decodes (`ClassTable`). A new class must take the next `classId`, and an existing one must be restated identically; a late joiner's snapshot replays the whole table, which is fine. A `DEFINE` that contradicts the table or skips an id is an error (`ENCODE_FAILED` / `DECODE_FAILED`). One server session per room is enough: every client's stream carries the same `DEFINE` sequence, because `DEFINE`s are never filtered.
+- `decodeOps` guarantees **well-formed ops** (`isWireOp`: op code, arity, and value types; `DEFINE` types must parse per the §5.7.2 grammar). Whether refs and field indices make sense for the receiving tree remains `applyDelta`'s job.
+- **Phase 1 `MessagePackStateCodec`** encodes the `WireOp[]` array as-is. Its output is byte-identical to `encode(ops)`, so the §5.7.11 / §11.1 baselines apply to it unchanged, and it stays inspectable without the table.
 
 ## 9. Message Flow
 
@@ -1043,6 +1149,19 @@ expect(room.state.players.get(room.sessionId)?.x.get()).toBe(10);
 ```
 
 Also expose `harness.bytesSent()` / `bytesReceived()` so §11.1's bandwidth assertions can run against a *full round trip*, not just the encoder in isolation.
+
+**[DECIDED] Building blocks** (`packages/testing`; `createTestHarness` itself waits for core and client-js):
+
+- **`LoopbackTransport`** is a complete `ITransport`, and only bytes cross it. Core and the client must encode and decode every frame exactly as over WebSocket. Frames are **copied at send time** (like a socket write), so a sender that reuses or mutates its buffer afterwards can't corrupt delivery. Its behavior:
+  - `connect(options?)` returns the client end, a `LoopbackSocket` (`send`, `close`, `onMessage`, `onClose`, `readyState`). The server's `onConnection` has already run by the time `connect()` returns.
+  - Nothing is delivered until **`await transport.flush()`**. That delivers every queued frame and close in FIFO order and lets promise continuations settle between events, so replies from async handlers are delivered by the same flush. It gives up with a `Result` error after `maxFlushEvents` (endless ping-pong).
+  - Ordering: a close queued after a frame arrives after it. Frames a client sent before the server disconnected it are dropped. A client's frames sent before its own `close()` still arrive.
+  - It mirrors `WebSocketTransport`: 1001 on `close()`, `onDisconnect` for every close, and 1009 for client frames over `maxPayloadLength`.
+  - `stats()` / `resetStats()` count bytes and frames per direction; they back `harness.bytesSent()` / `bytesReceived()`.
+- **`ManualClock`** implements `Clock` (`now`, `setTimeout`/`clearTimeout`, `setInterval`/`clearInterval`). `await clock.advance(ms)` fires due timers in due-time order (ties in scheduling order), setting `now()` to each timer's due time, and **settles promise continuations after each timer**, so a tick's async work finishes before the next tick. Delays clamp like the platform's (negative/NaN → 0; intervals ≥ 1 ms). `advance` calls made during an advance (e.g. from a timer) run after it, in order. Settling uses `setImmediate` (the next macrotask), which is not a sleep.
+- **Errors from code under test propagate.** An exception from a timer callback rejects `advance()`, and one from a *client-side* socket listener rejects `flush()`. A failed `expect()` inside a callback therefore fails the test instead of vanishing. Server-side handlers keep `ITransport` semantics (routed to `onError`), because that is what core sees in production.
+- **`Clock` lives in `@bungohan/testing` for now.** Core's tick loops must take an injected `Clock` rather than calling `setInterval`/`Date.now` directly; otherwise the harness can't drive them. When core is built it should own the `Clock` interface (testing already depends on core in the §12 build order) and ship the system implementation; `ManualClock` matches structurally.
+- `end-to-end.test.ts` wires what exists so far the way core and client-js will: state → `MessagePackStateCodec` → loopback → decode → `applyDelta`, with positionally packed contract messages going the other way, driven by `ManualClock` at 20 Hz. A two-input steer produces one 7-byte sync frame, and an idle tick produces nothing.
 
 ### 11.3 Protocol conformance vectors — **[NEW]**
 

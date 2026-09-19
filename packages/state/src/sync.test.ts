@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import type { WireOp } from "@bungohan/types"
+import { f, type WireOp } from "@bungohan/types"
+import { ArrayState, SchemaMapState } from "./collections"
 import { applyDelta } from "./decoder"
 import {
   clearChangeTrees,
@@ -7,8 +8,14 @@ import {
   generateDeltas,
   getSchemaTable,
 } from "./encoder"
-import { createNumber, createSchemaMap, createString } from "./factories"
+import {
+  createMap,
+  createNumber,
+  createSchemaMap,
+  createString,
+} from "./factories"
 import { Schema } from "./schema"
+import type { SchemaConstructor } from "./schema-registry"
 import {
   GameRoom,
   type Item,
@@ -16,7 +23,7 @@ import {
   Peer,
   type Player,
   player,
-  type Vec,
+  Vec,
 } from "./test-fixtures"
 
 function joined(setup?: (room: GameRoom) => void): Peer<GameRoom> {
@@ -65,8 +72,17 @@ describe("snapshot", () => {
       4,
       0,
       "T.GameRoom",
-      ["tick", "title", "speed", "players", "log", "bag"],
-      ["float64", "string", "float32", "schemaMap", "array", "schemaSet"],
+      ["tick", "title", "speed", "players", "log", "bag", "samples", "ranks"],
+      [
+        "float64",
+        "string",
+        "float32",
+        "schemaMap<string,T.Player>",
+        "array<string>",
+        "schemaSet<T.Item>",
+        "array<float32>",
+        "map<uint16,bool>",
+      ],
     ])
     expect(getSchemaTable(server).classes.map((c) => c.name)).toEqual([
       "T.GameRoom",
@@ -396,7 +412,7 @@ describe("deltas", () => {
     }
     class LateRoom extends Schema {
       public static override schemaName = "T.LateRoom"
-      public things = createSchemaMap<string, Late>()
+      public things = createSchemaMap(f.string, Late)
     }
     const peer = new Peer(new LateRoom(), new LateRoom())
     peer.join()
@@ -504,7 +520,7 @@ describe("receiver robustness", () => {
   class Ghostly extends Schema {
     public static override schemaName = "T.Ghostly"
     public known = createString()
-    public others = createSchemaMap<string, Vec>()
+    public others = createSchemaMap(f.string, Vec)
   }
 
   function ghostPeer(): Ghostly {
@@ -515,9 +531,9 @@ describe("receiver robustness", () => {
         0,
         "T.Ghostly",
         ["extra", "known", "others", "extraMap"],
-        ["float64", "string", "schemaMap", "map"],
+        ["float64", "string", "schemaMap<string,T.Vec>", "map<string,float64>"],
       ],
-      [4, 1, "T.NeverRegistered", ["v", "list"], ["float64", "array"]],
+      [4, 1, "T.NeverRegistered", ["v", "list"], ["float64", "array<float64>"]],
     ]
     expect(applyDelta(client, ops).isOk()).toBe(true)
     return client
@@ -589,5 +605,142 @@ describe("receiver robustness", () => {
     }
     const unknown = applyDelta(client, [[0, 999, 0, 1]])
     expect(unknown.isErr() && unknown.error.code).toBe("UNKNOWN_REF")
+  })
+})
+
+describe("element types (spec §5.7.11)", () => {
+  // GameRoom refs: root 0; players 1, log 2, bag 3, samples 4, ranks 5.
+  const SAMPLES = 4
+  const RANKS = 5
+
+  test("lossy elements are quantized on the wire, exactly like fields", () => {
+    const peer = joined((room) => room.players.set("a", player("a")))
+    const a = peer.server.players.get("a") as Player
+    a.scores.set("k", 1.26)
+    peer.server.samples.push(0.1)
+    const ops = peer.sync()
+    expect(ops).toContainEqual([1, a.scores._wireRef, "k", 13])
+    expect(ops).toContainEqual([1, SAMPLES, 0, Math.fround(0.1)])
+    // The server keeps full precision; receivers hold the quantized value.
+    expect(a.scores.get("k")).toBe(1.26)
+    expect(peer.client.players.get("a")?.scores.get("k")).toBe(1.3)
+    expect(peer.client.samples.get(0)).toBe(Math.fround(0.1))
+    peer.expectInSync()
+  })
+
+  test("a write below the wire resolution sends nothing", () => {
+    const peer = joined((room) => {
+      room.players.set("a", player("a"))
+      room.samples.push(0.5)
+    })
+    const a = peer.server.players.get("a") as Player
+    a.scores.set("k", 1.26)
+    peer.sync()
+    const changes: unknown[] = []
+    a.scores.onChange((v, old) => changes.push([old, v]))
+    a.scores.set("k", 1.27) // still 13 at 1 dp
+    peer.server.samples.set(0, 0.5 + 1e-12) // same float32
+    expect(peer.sync()).toEqual([])
+    // Server-side listeners still see the real change.
+    expect(changes).toEqual([[1.26, 1.27]])
+    a.scores.set("k", 1.36)
+    expect(peer.sync()).toEqual([[1, a.scores._wireRef, "k", 14]])
+  })
+
+  test("integer keys round-trip; malformed keys and elements are rejected", () => {
+    const peer = joined((room) => room.ranks.set(7, true))
+    expect(peer.client.ranks.get(7)).toBe(true)
+    const bad: WireOp[] = [
+      [1, RANKS, -1, true], // uint16 key out of range
+      [1, RANKS, 1.5, true], // not an integer
+      [1, RANKS, "7", true], // wrong key type
+      [1, RANKS, 8, 1], // bool element as a number
+      [2, RANKS, 65536],
+      [1, SAMPLES, 0, "x"], // float32 element as a string
+    ]
+    for (const op of bad) {
+      const result = applyDelta(peer.client, [op])
+      expect({ op, code: result.isErr() && result.error.code }).toEqual({
+        op,
+        code: "MALFORMED_OP",
+      })
+    }
+  })
+
+  test("a fixed-point element must be an integer on the wire", () => {
+    const peer = joined((room) => room.players.set("a", player("a")))
+    const ref = (peer.server.players.get("a") as Player).scores._wireRef
+    const result = applyDelta(peer.client, [[1, ref, "k", 1.5]])
+    expect(result.isErr() && result.error.code).toBe("MALFORMED_OP")
+  })
+
+  test("an element type disagreement is a SCHEMA_MISMATCH", () => {
+    class Holder extends Schema {
+      public static override schemaName = "T.Holder"
+      public values = createMap(f.string, f.float64)
+    }
+    const result = applyDelta(new Holder(), [
+      [4, 0, "T.Holder", ["values"], ["map<string,fixed:1>"]],
+    ])
+    expect(result.isErr() && result.error.code).toBe("SCHEMA_MISMATCH")
+  })
+
+  test("malformed field types in a DEFINE are rejected", () => {
+    const bad = [
+      "map",
+      "schemaMap",
+      "map<bool,string>",
+      "map<string,int8>",
+      "array<uint8>",
+      "set<float32>",
+      "schemaMap<string,>",
+      "schema<>",
+      "fixed:10",
+    ]
+    for (const type of bad) {
+      const define = [4, 0, "T.GameRoom", ["x"], [type]] as unknown as WireOp
+      const result = applyDelta(new GameRoom(), [define])
+      expect({ type, code: result.isErr() && result.error.code }).toEqual({
+        type,
+        code: "MALFORMED_OP",
+      })
+    }
+  })
+
+  test("a malformed declaration is logged once per class, never thrown", () => {
+    class Broken extends Schema {
+      public static override schemaName = "T.Broken"
+      public ok = createNumber()
+      // Only reachable by getting past the types.
+      public ints = new ArrayState({ kind: "int8" })
+      public things = new SchemaMapState(
+        f.string,
+        42 as unknown as SchemaConstructor,
+      )
+    }
+    const logged: unknown[] = []
+    const original = console.error
+    console.error = (...args: unknown[]) => logged.push(args[0])
+    try {
+      const a = new Broken()
+      const info = a._ensureInit()
+      new Broken()._ensureInit()
+      expect(info.fields.map((field) => field.name)).toEqual(["ok"])
+      expect(logged).toEqual([
+        expect.stringContaining(
+          'Broken.ints: invalid array element descriptor {"kind":"int8"}',
+        ),
+        expect.stringContaining(
+          "Broken.things: element class 42 is not a Schema subclass",
+        ),
+      ])
+      // The collection still works locally; it just never syncs.
+      a.ints.push(1)
+      expect(a.ints.value).toEqual([1])
+      const ops = encodeSnapshot(a).unwrap()
+      expect(ops).toEqual([[4, 0, "T.Broken", ["ok"], ["float64"]]])
+    } finally {
+      console.error = original
+    }
   })
 })

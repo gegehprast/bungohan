@@ -1,6 +1,14 @@
 import type { SchemaFieldType } from "@bungohan/types"
+import {
+  describe,
+  type ElementCodec,
+  INVALID_CODEC,
+  keyCodec,
+  valueCodec,
+} from "./elements"
 import type { PrimitiveWire } from "./primitives"
-import type { Schema } from "./schema"
+import { Schema } from "./schema"
+import { type SchemaConstructor, schemaNameOf } from "./schema-registry"
 import { type EventQueue, enqueue, notify, State } from "./state-base"
 
 /** `(value, key)` — maps: key; arrays: index; sets: the value again. */
@@ -18,8 +26,43 @@ export type MapKey = string | number
 export abstract class CollectionState<V, K, T> extends State<T> {
   /** @internal Schema elements removed since the last clear. */
   public _removed: Schema[] | undefined = undefined
+  /**
+   * @internal Element codec (for sets: the key codec). `undefined` for
+   * Schema-valued collections, whose elements go on the wire as refs.
+   */
+  public readonly _codec: ElementCodec | undefined
+  /** @internal Set when a descriptor failed validation. */
+  protected readonly _declError: string | undefined
   protected _addListeners: Set<AddListener<V, K>> | undefined
   protected _removeListeners: Set<RemoveListener<V, K>> | undefined
+
+  protected constructor(
+    codec: ElementCodec | undefined,
+    declError: string | undefined,
+  ) {
+    super()
+    this._codec = codec
+    this._declError = declError
+  }
+
+  public override _declarationError(): string | undefined {
+    return this._declError
+  }
+
+  /** @internal Wire form of an element; a Schema stays itself (a ref). */
+  public _toWire(value: V): unknown {
+    return this._codec === undefined ? value : this._codec.encode(value)
+  }
+
+  /** Table token of the element type (primitive collections). */
+  protected _elementType(): string {
+    return this._codec?.type ?? ""
+  }
+
+  /** @internal True if two elements look the same to receivers. */
+  public _sameWire(a: V, b: V): boolean {
+    return Object.is(this._toWire(a), this._toWire(b))
+  }
 
   public onAdd(listener: AddListener<V, K>): () => void {
     if (this._addListeners === undefined) this._addListeners = new Set()
@@ -87,6 +130,29 @@ abstract class ReplaceableCollection<V, K, T> extends CollectionState<V, K, T> {
   }
 }
 
+/** Validated codec for a primitive element or key descriptor. */
+function checked(
+  codec: ElementCodec | undefined,
+  descriptor: unknown,
+  what: string,
+): [ElementCodec, string | undefined] {
+  return codec === undefined
+    ? [INVALID_CODEC, `invalid ${what} descriptor ${describe(descriptor)}`]
+    : [codec, undefined]
+}
+
+/** Why `ctor` can't be a schema collection's element class, if it can't. */
+function elementClassError(ctor: unknown): string | undefined {
+  return typeof ctor === "function" && ctor.prototype instanceof Schema
+    ? undefined
+    : `element class ${String(ctor)} is not a Schema subclass`
+}
+
+/** Table name of an element class (own `schemaName`, else the JS name). */
+function elementName(ctor: SchemaConstructor): string {
+  return schemaNameOf(ctor) ?? ctor.name
+}
+
 function linkSchema(
   collection: State,
   value: Schema,
@@ -117,10 +183,18 @@ export abstract class MapBase<
   public _touched: Map<K, KeyRecord<V>> | undefined = undefined
   /** @internal */
   public _cleared = false
+  /** @internal Keys are exact: encoded as-is, validated on receipt. */
+  public readonly _keyCodec: ElementCodec
   protected readonly _map: Map<K, V>
 
-  public constructor(initial?: Iterable<readonly [K, V]>) {
-    super()
+  protected constructor(
+    keyCodec: ElementCodec,
+    codec: ElementCodec | undefined,
+    declError: string | undefined,
+    initial?: Iterable<readonly [K, V]>,
+  ) {
+    super(codec, declError)
+    this._keyCodec = keyCodec
     this._map = new Map(initial)
   }
 
@@ -257,11 +331,25 @@ export abstract class MapBase<
   }
 }
 
+/** Map of primitives. Create with `createMap(f.string, f.float32)`. */
 export class MapState<
   K extends MapKey = string,
   V extends PrimitiveWire = PrimitiveWire,
 > extends MapBase<K, V> {
-  public readonly _type: SchemaFieldType = "map"
+  /** Descriptors are `f.*` builders; see {@link createMap}. */
+  public constructor(
+    key: unknown,
+    value: unknown,
+    initial?: Iterable<readonly [K, V]>,
+  ) {
+    const [keys, keyError] = checked(keyCodec(key), key, "map key")
+    const [values, valueError] = checked(valueCodec(value), value, "map value")
+    super(keys, values, keyError ?? valueError, initial)
+  }
+
+  public get _type(): SchemaFieldType {
+    return `map<${this._keyCodec.type},${this._elementType()}>` as SchemaFieldType
+  }
 }
 
 /** Map of Schema instances; each element is linked under the owner. */
@@ -269,7 +357,27 @@ export class SchemaMapState<
   K extends MapKey = string,
   V extends Schema = Schema,
 > extends MapBase<K, V> {
-  public readonly _type: SchemaFieldType = "schemaMap"
+  /** @internal Declared element class. */
+  public readonly _class: SchemaConstructor<V>
+
+  /** See {@link createSchemaMap}. */
+  public constructor(
+    key: unknown,
+    of: SchemaConstructor<V>,
+    initial?: Iterable<readonly [K, V]>,
+  ) {
+    const [keys, keyError] = checked(keyCodec(key), key, "map key")
+    super(keys, undefined, keyError, initial)
+    this._class = of
+  }
+
+  public get _type(): SchemaFieldType {
+    return `schemaMap<${this._keyCodec.type},${elementName(this._class)}>` as SchemaFieldType
+  }
+
+  public override _declarationError(): string | undefined {
+    return this._declError ?? elementClassError(this._class)
+  }
 
   public override _onBound(): void {
     for (const value of this._map.values()) this._attach(value)
@@ -296,8 +404,12 @@ export abstract class SetBase<T> extends CollectionState<T, T, ReadonlySet<T>> {
   public _cleared = false
   protected readonly _set: Set<T>
 
-  public constructor(initial?: Iterable<T>) {
-    super()
+  protected constructor(
+    codec: ElementCodec | undefined,
+    declError: string | undefined,
+    initial?: Iterable<T>,
+  ) {
+    super(codec, declError)
     this._set = new Set(initial)
   }
 
@@ -406,14 +518,39 @@ export abstract class SetBase<T> extends CollectionState<T, T, ReadonlySet<T>> {
   }
 }
 
-export class SetState<
-  T extends PrimitiveWire = PrimitiveWire,
-> extends SetBase<T> {
-  public readonly _type: SchemaFieldType = "set"
+/**
+ * Set of keys (strings or numbers, never quantized). Create with
+ * `createSet(f.string)`.
+ */
+export class SetState<T extends MapKey = MapKey> extends SetBase<T> {
+  /** See {@link createSet}. */
+  public constructor(of: unknown, initial?: Iterable<T>) {
+    const [codec, error] = checked(keyCodec(of), of, "set element")
+    super(codec, error, initial)
+  }
+
+  public get _type(): SchemaFieldType {
+    return `set<${this._elementType()}>` as SchemaFieldType
+  }
 }
 
 export class SchemaSetState<T extends Schema = Schema> extends SetBase<T> {
-  public readonly _type: SchemaFieldType = "schemaSet"
+  /** @internal Declared element class. */
+  public readonly _class: SchemaConstructor<T>
+
+  /** See {@link createSchemaSet}. */
+  public constructor(of: SchemaConstructor<T>, initial?: Iterable<T>) {
+    super(undefined, undefined, initial)
+    this._class = of
+  }
+
+  public get _type(): SchemaFieldType {
+    return `schemaSet<${elementName(this._class)}>` as SchemaFieldType
+  }
+
+  public override _declarationError(): string | undefined {
+    return elementClassError(this._class)
+  }
 
   public override _onBound(): void {
     for (const value of this._set) this._attach(value)
@@ -451,8 +588,12 @@ export abstract class ArrayBase<T> extends ReplaceableCollection<
   public _ops: ArrayOp<T>[] | undefined = undefined
   protected readonly _items: T[]
 
-  public constructor(initial?: Iterable<T>) {
-    super()
+  protected constructor(
+    codec: ElementCodec | undefined,
+    declError: string | undefined,
+    initial?: Iterable<T>,
+  ) {
+    super(codec, declError)
     this._items = initial === undefined ? [] : [...initial]
   }
 
@@ -482,7 +623,8 @@ export abstract class ArrayBase<T> extends ReplaceableCollection<
     this._items[index] = value
     this._detach(old)
     this._attach(value)
-    this._log([0, index, value])
+    // A lossy element whose wire value didn't change sends nothing.
+    if (!this._sameWire(old, value)) this._log([0, index, value])
     notify(this._changeListeners, value, old, index)
     return true
   }
@@ -670,7 +812,7 @@ export abstract class ArrayBase<T> extends ReplaceableCollection<
     before.forEach((old, index) => {
       const value = this._items[index]
       if (value === undefined || Object.is(old, value)) return
-      this._log([0, index, value])
+      if (!this._sameWire(old, value)) this._log([0, index, value])
       notify(this._changeListeners, value, old, index)
     })
     return this
@@ -684,10 +826,19 @@ export abstract class ArrayBase<T> extends ReplaceableCollection<
   }
 }
 
+/** Array of primitives. Create with `createArray(f.fixed(2))`. */
 export class ArrayState<
   T extends PrimitiveWire = PrimitiveWire,
 > extends ArrayBase<T> {
-  public readonly _type: SchemaFieldType = "array"
+  /** See {@link createArray}. */
+  public constructor(of: unknown, initial?: Iterable<T>) {
+    const [codec, error] = checked(valueCodec(of), of, "array element")
+    super(codec, error, initial)
+  }
+
+  public get _type(): SchemaFieldType {
+    return `array<${this._elementType()}>` as SchemaFieldType
+  }
 
   /** Native `fill` semantics; records a replace op per changed index. */
   public fill(value: T, start?: number, end?: number): this {
@@ -706,7 +857,22 @@ export class ArrayState<
  * index; an instance must not appear twice.
  */
 export class SchemaArrayState<T extends Schema = Schema> extends ArrayBase<T> {
-  public readonly _type: SchemaFieldType = "schemaArray"
+  /** @internal Declared element class. */
+  public readonly _class: SchemaConstructor<T>
+
+  /** See {@link createSchemaArray}. */
+  public constructor(of: SchemaConstructor<T>, initial?: Iterable<T>) {
+    super(undefined, undefined, initial)
+    this._class = of
+  }
+
+  public get _type(): SchemaFieldType {
+    return `schemaArray<${elementName(this._class)}>` as SchemaFieldType
+  }
+
+  public override _declarationError(): string | undefined {
+    return elementClassError(this._class)
+  }
 
   public override _onBound(): void {
     for (const value of this._items) this._attach(value)

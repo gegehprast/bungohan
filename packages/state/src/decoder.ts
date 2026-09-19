@@ -4,7 +4,9 @@
  */
 import { err, ok, type Result } from "@bungohan/result"
 import {
-  COLLECTION_FIELD_TYPES,
+  isCollectionField,
+  type ParsedFieldType,
+  parseFieldType,
   type SchemaClassEntry,
   type SchemaFieldType,
   type WireOp,
@@ -18,6 +20,10 @@ import type { EventQueue, State } from "./state-base"
 
 interface ClassBinding {
   readonly entry: SchemaClassEntry
+  /** Per server field: owns a collection refId (parsed once, at DEFINE). */
+  readonly collections: readonly boolean[]
+  /** Per server field: is a directly nested Schema. */
+  readonly nested: readonly boolean[]
   /** Undefined if no local class has this name: instances are ignored. */
   readonly ctor: SchemaConstructor | undefined
   /** Server field index → local field name; computed on first instance. */
@@ -70,33 +76,15 @@ function isWireRef(value: unknown): value is [number, number] {
   )
 }
 
-function isPrimitive(value: unknown): value is number | string | boolean {
-  return (
-    typeof value === "number" ||
-    typeof value === "string" ||
-    typeof value === "boolean"
-  )
-}
-
-function isFieldType(value: unknown): value is SchemaFieldType {
-  return (
-    typeof value === "string" &&
-    (COLLECTION_FIELD_TYPES.has(value as SchemaFieldType) ||
-      value === "float64" ||
-      value === "float32" ||
-      value === "string" ||
-      value === "bool" ||
-      value === "schema" ||
-      /^fixed:\d$/.test(value))
-  )
-}
-
-function isSchemaCollection(collection: State): boolean {
-  return (
-    collection._type === "schemaMap" ||
-    collection._type === "schemaSet" ||
-    collection._type === "schemaArray"
-  )
+/** Parses every field type of a DEFINE; `undefined` if any is malformed. */
+function parseTypes(types: unknown[]): ParsedFieldType[] | undefined {
+  const parsed: ParsedFieldType[] = []
+  for (const type of types) {
+    const result = typeof type === "string" ? parseFieldType(type) : undefined
+    if (result === undefined) return undefined
+    parsed.push(result)
+  }
+  return parsed
 }
 
 class Decoder {
@@ -140,20 +128,24 @@ class Decoder {
 
   private _define(op: unknown[]): Result<void, StateError> {
     const [, classId, name, fields, types] = op
+    const parsed = Array.isArray(types) ? parseTypes(types) : undefined
     if (
       op.length !== 5 ||
       !isInt(classId) ||
       typeof name !== "string" ||
       !Array.isArray(fields) ||
       !Array.isArray(types) ||
+      parsed === undefined ||
       fields.length !== types.length ||
-      !fields.every((field) => typeof field === "string") ||
-      !types.every(isFieldType)
+      !fields.every((field) => typeof field === "string")
     ) {
       return malformed("bad DEFINE", op)
     }
     const binding: ClassBinding = {
-      entry: { classId, name, fields, types },
+      // parseTypes accepted every entry, so they are all SchemaFieldTypes.
+      entry: { classId, name, fields, types: types as SchemaFieldType[] },
+      collections: parsed.map(isCollectionField),
+      nested: parsed.map((type) => type.kind === "schema"),
       ctor: SchemaRegistry.get(name),
       local: undefined,
     }
@@ -186,7 +178,7 @@ class Decoder {
         return malformed(`field ${index} out of range`, op)
       }
       const name = binding.local?.[index]
-      if (type === "schema") {
+      if (binding.nested[index] === true) {
         if (!isWireRef(value)) return malformed("schema field needs a ref", op)
         if (name === undefined) return this._ignoreValue(value)
         const child = fieldValue(target, name)
@@ -245,11 +237,10 @@ class Decoder {
     const key = op[2]
 
     if (target instanceof MapBase) {
-      if (typeof key !== "string" && typeof key !== "number") {
-        return malformed("bad map key", op)
-      }
+      const mapKey = target._keyCodec.decode(key)
+      if (mapKey === undefined) return malformed("bad map key", op)
       if (element === IGNORED) return ok(undefined)
-      const old = target._rUpsert(key, element, queue)
+      const old = target._rUpsert(mapKey, element, queue)
       if (old !== element) {
         this._release(old)
         this._retain(element)
@@ -287,26 +278,26 @@ class Decoder {
     const queue = this._queueOf(target)
 
     if (target instanceof MapBase) {
-      if (typeof key !== "string" && typeof key !== "number") {
-        return malformed("bad map key", op)
-      }
-      this._release(target._rDelete(key, queue))
+      const mapKey = target._keyCodec.decode(key)
+      if (mapKey === undefined) return malformed("bad map key", op)
+      this._release(target._rDelete(mapKey, queue))
     } else if (target instanceof ArrayBase) {
       if (!isInt(key)) return malformed("bad array index", op)
       const removed = target._rRemove(key, queue)
       if (removed === undefined) return malformed("remove out of range", op)
       this._release(removed)
     } else if (target instanceof SetBase) {
-      if (isSchemaCollection(target)) {
+      const codec = target._codec
+      if (codec === undefined) {
         if (!isInt(key)) return malformed("schema set REMOVE takes a refId", op)
         const element = this._ctx.refs.get(key)
         if (element instanceof Schema && target._rDelete(element, queue)) {
           this._release(element)
         }
-      } else if (isPrimitive(key)) {
-        target._rDelete(key, queue)
       } else {
-        return malformed("bad set element", op)
+        const element = codec.decode(key)
+        if (element === undefined) return malformed("bad set element", op)
+        target._rDelete(element, queue)
       }
     }
     return ok(undefined)
@@ -340,10 +331,13 @@ class Decoder {
     value: unknown,
     op: unknown,
   ): Result<Decoded, StateError> {
-    if (!isSchemaCollection(target)) {
-      return isPrimitive(value)
-        ? ok(value)
-        : malformed("expected a primitive element", op)
+    const codec = target instanceof CollectionState ? target._codec : undefined
+    if (codec !== undefined) {
+      // Type-directed: e.g. a fixed:2 element must be an integer on the wire.
+      const element = codec.decode(value)
+      return element === undefined
+        ? malformed(`bad ${codec.type} element`, op)
+        : ok(element)
     }
     if (!isWireRef(value)) return malformed("expected [classId, refId]", op)
     const [classId, ref] = value
@@ -395,8 +389,8 @@ class Decoder {
     }
 
     let next = ref + 1
-    binding.entry.types.forEach((type, index) => {
-      if (!COLLECTION_FIELD_TYPES.has(type)) return
+    binding.collections.forEach((isCollection, index) => {
+      if (!isCollection) return
       const collectionRef = next++
       const name = local.value[index]
       const value = name === undefined ? undefined : fieldValue(instance, name)
@@ -441,8 +435,8 @@ class Decoder {
   private _ignore(binding: ClassBinding, ref: number): void {
     this._ctx.ignored.add(ref)
     let next = ref + 1
-    for (const type of binding.entry.types) {
-      if (COLLECTION_FIELD_TYPES.has(type)) this._ctx.ignored.add(next++)
+    for (const isCollection of binding.collections) {
+      if (isCollection) this._ctx.ignored.add(next++)
     }
   }
 
@@ -485,8 +479,8 @@ class Decoder {
     ctx.holders.delete(instance)
 
     let next = ref + 1
-    for (const type of binding.entry.types) {
-      if (!COLLECTION_FIELD_TYPES.has(type)) continue
+    for (const isCollection of binding.collections) {
+      if (!isCollection) continue
       ctx.refs.delete(next)
       ctx.ignored.delete(next)
       next++

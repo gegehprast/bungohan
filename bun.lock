@@ -10,9 +10,28 @@
         "typescript": "^5.9.3",
       },
     },
+    "packages/backplane": {
+      "name": "@bungohan/backplane",
+      "version": "0.0.0",
+      "dependencies": {
+        "@bungohan/result": "workspace:*",
+      },
+    },
     "packages/result": {
       "name": "@bungohan/result",
       "version": "0.0.0",
+    },
+    "packages/serializer": {
+      "name": "@bungohan/serializer",
+      "version": "0.0.0",
+      "dependencies": {
+        "@bungohan/result": "workspace:*",
+        "@bungohan/types": "workspace:*",
+        "@msgpack/msgpack": "catalog:",
+      },
+      "devDependencies": {
+        "@bungohan/state": "workspace:*",
+      },
     },
     "packages/state": {
       "name": "@bungohan/state",
@@ -24,6 +43,34 @@
       },
       "devDependencies": {
         "@msgpack/msgpack": "catalog:",
+      },
+    },
+    "packages/store": {
+      "name": "@bungohan/store",
+      "version": "0.0.0",
+      "dependencies": {
+        "@bungohan/result": "workspace:*",
+      },
+    },
+    "packages/testing": {
+      "name": "@bungohan/testing",
+      "version": "0.0.0",
+      "dependencies": {
+        "@bungohan/result": "workspace:*",
+        "@bungohan/transport": "workspace:*",
+      },
+      "devDependencies": {
+        "@bungohan/serializer": "workspace:*",
+        "@bungohan/state": "workspace:*",
+        "@bungohan/types": "workspace:*",
+      },
+    },
+    "packages/transport": {
+      "name": "@bungohan/transport",
+      "version": "0.0.0",
+      "dependencies": {
+        "@bungohan/result": "workspace:*",
+        "nanoid": "catalog:",
       },
     },
     "packages/types": {
@@ -61,9 +108,19 @@
 
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.14", "", { "os": "win32", "cpu": "x64" }, "sha512-oJWmBhoHsnhUKIke+0gXDX0mltJrWHA1UyHsrTlXwX0TL64ilVZAo+TYZm97baecV0esBdpzy3k96q+09JaZUQ=="],
 
+    "@bungohan/backplane": ["@bungohan/backplane@workspace:packages/backplane"],
+
     "@bungohan/result": ["@bungohan/result@workspace:packages/result"],
 
+    "@bungohan/serializer": ["@bungohan/serializer@workspace:packages/serializer"],
+
     "@bungohan/state": ["@bungohan/state@workspace:packages/state"],
+
+    "@bungohan/store": ["@bungohan/store@workspace:packages/store"],
+
+    "@bungohan/testing": ["@bungohan/testing@workspace:packages/testing"],
+
+    "@bungohan/transport": ["@bungohan/transport@workspace:packages/transport"],
 
     "@bungohan/types": ["@bungohan/types@workspace:packages/types"],
 

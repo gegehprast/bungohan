@@ -316,17 +316,18 @@ class Emitter {
     deep: boolean,
   ): void {
     const ref = collection._wireRef
+    const wire = (value: unknown): unknown => collection._toWire(value)
     if (collection instanceof MapBase) {
       for (const [key, value] of collection) {
-        this.attach((wire) => [1, ref, key, wire], value, guard, deep)
+        this.attach((w) => [1, ref, key, w], wire(value), guard, deep)
       }
     } else if (collection instanceof SetBase) {
       for (const value of collection) {
-        this.attach((wire) => [1, ref, wire], value, guard, deep)
+        this.attach((w) => [1, ref, w], wire(value), guard, deep)
       }
     } else if (collection instanceof ArrayBase) {
       collection.forEach((value, index) => {
-        this.attach((wire) => [1, ref, index, wire], value, guard, deep)
+        this.attach((w) => [1, ref, index, w], wire(value), guard, deep)
       })
     }
   }
@@ -382,6 +383,7 @@ class Emitter {
     guard: Guard | undefined,
   ): void {
     const ref = collection._wireRef
+    const wire = (value: unknown): unknown => collection._toWire(value)
     if (collection instanceof MapBase) {
       if (collection._cleared) {
         this.emit([3, ref], guard)
@@ -395,8 +397,10 @@ class Emitter {
           continue
         }
         const value = collection.get(key)
-        if (!record.had || !Object.is(record.prev, value)) {
-          this.attach((wire) => [1, ref, key, wire], value, guard, false)
+        // Coalesced: send the key's final value, unless receivers already
+        // have it (same element, or same quantized wire value).
+        if (!record.had || !collection._sameWire(record.prev, value)) {
+          this.attach((w) => [1, ref, key, w], wire(value), guard, false)
         }
       }
     } else if (collection instanceof SetBase) {
@@ -408,7 +412,7 @@ class Emitter {
       if (collection._touched === undefined) return
       for (const [value, had] of collection._touched) {
         if (collection.has(value)) {
-          if (!had) this.attach((wire) => [1, ref, wire], value, guard, false)
+          if (!had) this.attach((w) => [1, ref, w], wire(value), guard, false)
         } else if (had) {
           if (value instanceof Schema) {
             if (value._wireRef !== -1)
@@ -427,10 +431,10 @@ class Emitter {
       for (const op of collection._ops) {
         if (op[0] === 0) {
           const [, index, value] = op
-          this.attach((wire) => [0, ref, index, wire], value, guard, false)
+          this.attach((w) => [0, ref, index, w], wire(value), guard, false)
         } else if (op[0] === 1) {
           const [, index, value] = op
-          this.attach((wire) => [1, ref, index, wire], value, guard, false)
+          this.attach((w) => [1, ref, index, w], wire(value), guard, false)
         } else if (op[0] === 2) {
           this.emit([2, ref, op[1]], guard)
         } else {

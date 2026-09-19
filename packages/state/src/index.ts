@@ -17,6 +17,7 @@ export {
   SetState,
 } from "./collections"
 export { applyDelta } from "./decoder"
+export type { KeyField, KeyOf, ValueField, ValueOf } from "./elements"
 export {
   clearChangeTrees,
   encodeSnapshot,

@@ -2,6 +2,8 @@
  * State-sync wire vocabulary (spec §5.7). `WireOp[]` is the stable interface
  * between `@bungohan/state` and whichever codec encodes it (§8.1).
  */
+import type { IntKind } from "./contract"
+import type { FixedDecimals } from "./fixed"
 
 /** Op codes, as the first element of every {@link WireOp}. */
 export const WireOpCode = {
@@ -20,33 +22,138 @@ export type WireRef = [classId: number, refId: number]
 
 export type WireValue = number | string | boolean | WireRef
 
-/**
- * Per-field type in the class table. Collection element types are erased by
- * TypeScript and therefore not described here (see spec §5.7.9).
- */
-export type SchemaFieldType =
+/** A primitive field's type (also map values and array elements). */
+export type PrimitiveFieldType =
   | "float64"
   | "float32"
-  | `fixed:${number}`
+  | `fixed:${FixedDecimals}`
   | "string"
   | "bool"
-  | "schema"
-  | "map"
-  | "set"
-  | "array"
-  | "schemaMap"
-  | "schemaSet"
-  | "schemaArray"
 
-/** Field types that own a collection refId (allocated implicitly). */
-export const COLLECTION_FIELD_TYPES: ReadonlySet<SchemaFieldType> = new Set([
-  "map",
-  "set",
-  "array",
-  "schemaMap",
-  "schemaSet",
-  "schemaArray",
+/**
+ * A map key's (or set element's) type. Keys are exact: never quantized, and
+ * integer kinds reject non-integers and out-of-range values on receipt.
+ */
+export type KeyFieldType = "string" | "float64" | IntKind
+
+/**
+ * Per-field type in the class table (spec §5.7.2, §5.7.11). Collections and
+ * nested schemas carry their element types, so the table alone is enough to
+ * decode a field or to generate a typed client class for it:
+ *
+ * | Declaration                              | Table entry                  |
+ * |------------------------------------------|------------------------------|
+ * | `createNumber()`                         | `float64`                    |
+ * | `createFixedPoint(2)`                    | `fixed:2`                    |
+ * | `new Vec()` (nested schema field)        | `schema<Vec>`                |
+ * | `createMap(f.string, f.float32)`         | `map<string,float32>`        |
+ * | `createSet(f.uint16)`                    | `set<uint16>`                |
+ * | `createArray(f.fixed(2))`                | `array<fixed:2>`             |
+ * | `createSchemaMap(f.string, Player)`      | `schemaMap<string,Player>`   |
+ * | `createSchemaSet(Item)`                  | `schemaSet<Item>`            |
+ * | `createSchemaArray(Item)`                | `schemaArray<Item>`          |
+ *
+ * Schema names are the classes' `schemaName`s. They may contain any
+ * character: a name always runs to the closing `>` at the end of the string.
+ */
+export type SchemaFieldType =
+  | PrimitiveFieldType
+  | `schema<${string}>`
+  | `map<${KeyFieldType},${PrimitiveFieldType}>`
+  | `set<${KeyFieldType}>`
+  | `array<${PrimitiveFieldType}>`
+  | `schemaMap<${KeyFieldType},${string}>`
+  | `schemaSet<${string}>`
+  | `schemaArray<${string}>`
+
+/** A {@link SchemaFieldType} broken into its parts. */
+export type ParsedFieldType =
+  | { readonly kind: "primitive"; readonly type: PrimitiveFieldType }
+  | { readonly kind: "schema"; readonly schema: string }
+  | {
+      readonly kind: "map"
+      readonly key: KeyFieldType
+      readonly element: PrimitiveFieldType
+    }
+  | { readonly kind: "set"; readonly element: KeyFieldType }
+  | { readonly kind: "array"; readonly element: PrimitiveFieldType }
+  | {
+      readonly kind: "schemaMap"
+      readonly key: KeyFieldType
+      readonly schema: string
+    }
+  | { readonly kind: "schemaSet"; readonly schema: string }
+  | { readonly kind: "schemaArray"; readonly schema: string }
+
+const KEY_TYPES: ReadonlySet<string> = new Set<KeyFieldType>([
+  "string",
+  "float64",
+  "int8",
+  "int16",
+  "int32",
+  "uint8",
+  "uint16",
+  "uint32",
 ])
+
+export function isPrimitiveFieldType(type: string): type is PrimitiveFieldType {
+  return (
+    type === "float64" ||
+    type === "float32" ||
+    type === "string" ||
+    type === "bool" ||
+    /^fixed:\d$/.test(type)
+  )
+}
+
+export function isKeyFieldType(type: string): type is KeyFieldType {
+  return KEY_TYPES.has(type)
+}
+
+/**
+ * Parses a class-table field type; `undefined` if it isn't one. Receivers
+ * run this once per DEFINE, never per op.
+ */
+export function parseFieldType(type: string): ParsedFieldType | undefined {
+  if (isPrimitiveFieldType(type)) return { kind: "primitive", type }
+  const open = type.indexOf("<")
+  if (open <= 0 || !type.endsWith(">")) return undefined
+  const head = type.slice(0, open)
+  const inner = type.slice(open + 1, -1)
+  const comma = inner.indexOf(",")
+  const key = inner.slice(0, comma)
+  const rest = inner.slice(comma + 1)
+  switch (head) {
+    case "schema":
+    case "schemaSet":
+    case "schemaArray":
+      return inner === "" ? undefined : { kind: head, schema: inner }
+    case "set":
+      return isKeyFieldType(inner) ? { kind: "set", element: inner } : undefined
+    case "array":
+      return isPrimitiveFieldType(inner)
+        ? { kind: "array", element: inner }
+        : undefined
+    case "map":
+      return comma > 0 && isKeyFieldType(key) && isPrimitiveFieldType(rest)
+        ? { kind: "map", key, element: rest }
+        : undefined
+    case "schemaMap":
+      return comma > 0 && isKeyFieldType(key) && rest !== ""
+        ? { kind: "schemaMap", key, schema: rest }
+        : undefined
+    default:
+      return undefined
+  }
+}
+
+/**
+ * True for the collection kinds, i.e. the fields that own an implicit
+ * collection refId (spec §5.7.9).
+ */
+export function isCollectionField(parsed: ParsedFieldType): boolean {
+  return parsed.kind !== "primitive" && parsed.kind !== "schema"
+}
 
 /**
  * - `SET`    on a schema instance: `fieldIndex`; on an array: replace at index.

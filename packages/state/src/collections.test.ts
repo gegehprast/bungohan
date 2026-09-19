@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from "bun:test"
+import { f } from "@bungohan/types"
 import {
   createArray,
   createBoolean,
@@ -10,7 +11,7 @@ import {
   createSet,
   createString,
 } from "./factories"
-import { item } from "./test-fixtures"
+import { Item, item } from "./test-fixtures"
 
 describe("primitive wrappers", () => {
   test("get / set / value, with defaults", () => {
@@ -72,7 +73,7 @@ describe("primitive wrappers", () => {
 
 describe("MapState", () => {
   test("native-like API", () => {
-    const m = createMap<string, number>(new Map([["a", 1]]))
+    const m = createMap(f.string, f.float64, new Map([["a", 1]]))
     m.set("b", 2)
     expect(m.get("b")).toBe(2)
     expect(m.has("a")).toBe(true)
@@ -89,7 +90,7 @@ describe("MapState", () => {
   })
 
   test("onAdd / onChange / onRemove: value first, then key", () => {
-    const m = createMap<string, number>()
+    const m = createMap(f.string, f.float64)
     const events: unknown[] = []
     m.onAdd((v, k) => events.push(["add", v, k]))
     m.onChange((v, old, k) => events.push(["change", v, old, k]))
@@ -112,7 +113,7 @@ describe("MapState", () => {
 
 describe("SetState", () => {
   test("add / delete / clear with (value, value) listeners", () => {
-    const s = createSet<string>()
+    const s = createSet(f.string)
     const events: unknown[] = []
     s.onAdd((v, k) => events.push(["add", v, k]))
     s.onRemove((v, k) => events.push(["remove", v, k]))
@@ -132,7 +133,7 @@ describe("SetState", () => {
 
 describe("ArrayState", () => {
   test("mutators match native semantics", () => {
-    const a = createArray<number>([1, 2, 3])
+    const a = createArray(f.float64, [1, 2, 3])
     const native = [1, 2, 3]
     const both = (fn: (x: { push: (...i: number[]) => number }) => void) => {
       fn(a)
@@ -149,7 +150,7 @@ describe("ArrayState", () => {
   })
 
   test("set replaces in range only", () => {
-    const a = createArray<number>([1, 2])
+    const a = createArray(f.float64, [1, 2])
     expect(a.set(1, 5)).toBe(true)
     expect(a.set(2, 5)).toBe(false)
     expect(a.set(-1, 5)).toBe(false)
@@ -157,7 +158,7 @@ describe("ArrayState", () => {
   })
 
   test("sort / reverse / fill report replaced indices", () => {
-    const a = createArray<number>([3, 1, 2])
+    const a = createArray(f.float64, [3, 1, 2])
     const changes: unknown[] = []
     a.onChange((v, old, i) => changes.push([i, old, v]))
     a.sort((x, y) => x - y)
@@ -178,7 +179,7 @@ describe("ArrayState", () => {
   })
 
   test("add/remove listeners carry indices", () => {
-    const a = createArray<string>()
+    const a = createArray(f.string)
     const events: unknown[] = []
     a.onAdd((v, i) => events.push(["add", v, i]))
     a.onRemove((v, i) => events.push(["remove", v, i]))
@@ -194,7 +195,7 @@ describe("ArrayState", () => {
   })
 
   test("read-only helpers", () => {
-    const a = createSchemaArray([item("a", 1), item("b", 2)])
+    const a = createSchemaArray(Item, [item("a", 1), item("b", 2)])
     expect(a.length).toBe(2)
     expect(a.map((i) => i.name.get())).toEqual(["a", "b"])
     expect(a.find((i) => i.qty.get() === 2)?.name.get()).toBe("b")

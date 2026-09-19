@@ -2,7 +2,7 @@
  * Shared fixtures for this package's tests (not exported from the package).
  */
 import { expect } from "bun:test"
-import type { WireOp } from "@bungohan/types"
+import { f, type WireOp } from "@bungohan/types"
 import { ArrayBase, CollectionState, MapBase, SetBase } from "./collections"
 import { applyDelta } from "./decoder"
 import { clearChangeTrees, encodeSnapshot, generateDeltas } from "./encoder"
@@ -42,9 +42,10 @@ export class Player extends Schema {
   public hp = createNumber(100)
   public alive = createBoolean(true)
   public pos = new Vec()
-  public items = createSchemaArray<Item>()
-  public tags = createSet<string>()
-  public scores = createMap<string, number>()
+  public items = createSchemaArray(Item)
+  public tags = createSet(f.string)
+  /** Lossy values: quantized to 1 dp on the wire. */
+  public scores = createMap(f.string, f.fixed(1))
 }
 
 export class GameRoom extends Schema {
@@ -52,9 +53,13 @@ export class GameRoom extends Schema {
   public tick = createNumber()
   public title = createString()
   public speed = createFloat32()
-  public players = createSchemaMap<string, Player>()
-  public log = createArray<string>()
-  public bag = createSchemaSet<Item>()
+  public players = createSchemaMap(f.string, Player)
+  public log = createArray(f.string)
+  public bag = createSchemaSet(Item)
+  /** Lossy elements: sent at float32 precision. */
+  public samples = createArray(f.float32)
+  /** Integer keys. */
+  public ranks = createMap(f.uint16, f.bool)
 }
 
 export function player(name: string, x = 0): Player {
@@ -85,18 +90,23 @@ export function plain(value: unknown): unknown {
     return value._toWire()
   }
   if (value instanceof PrimitiveState) return value.get()
-  if (value instanceof MapBase) {
-    const out: Record<string, unknown> = {}
-    for (const [key, v] of value) out[String(key)] = plain(v)
-    return out
+  if (value instanceof CollectionState) {
+    // Elements, too, are compared as they go on the wire.
+    const element = (v: unknown): unknown =>
+      v instanceof Schema ? plain(v) : value._toWire(v)
+    if (value instanceof MapBase) {
+      const out: Record<string, unknown> = {}
+      for (const [key, v] of value) out[`${typeof key}:${key}`] = element(v)
+      return out
+    }
+    if (value instanceof SetBase) {
+      return [...value]
+        .map(element)
+        .sort((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1))
+    }
+    if (value instanceof ArrayBase) return value.map(element)
+    return "?"
   }
-  if (value instanceof SetBase) {
-    return [...value]
-      .map(plain)
-      .sort((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1))
-  }
-  if (value instanceof ArrayBase) return value.map(plain)
-  if (value instanceof CollectionState) return "?"
   return value
 }
 

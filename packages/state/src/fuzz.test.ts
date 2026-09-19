@@ -145,7 +145,8 @@ function run(seed: number, ticks: number): number {
     },
     () => pick(players())?.tags.add(`t${int(5)}`),
     () => pick(players())?.tags.delete(`t${int(5)}`),
-    () => pick(players())?.scores.set(`k${int(4)}`, int(10)),
+    // Fractional: fixed:1 quantization decides whether anything is sent.
+    () => pick(players())?.scores.set(`k${int(4)}`, int(1000) / 37),
     () => pick(players())?.scores.delete(`k${int(4)}`),
     () => server.log.push(`l${int(20)}`),
     () => server.log.splice(int(server.log.length + 1), int(2), `x${int(9)}`),
@@ -164,6 +165,25 @@ function run(seed: number, ticks: number): number {
       if (random() < 0.5) looseItems.push(it)
     },
     () => pick([...server.bag])?.qty.set(int(20)),
+    // float32 elements, including rewrites below the wire resolution
+    () => server.samples.push(random() * 10),
+    () => {
+      const i = int(server.samples.length)
+      const v = server.samples.get(i)
+      if (v !== undefined) server.samples.set(i, v + 1e-12)
+    },
+    () => {
+      if (server.samples.length > 0)
+        server.samples.set(int(server.samples.length), random())
+    },
+    () => server.samples.splice(int(server.samples.length + 1), int(2)),
+    () => server.samples.sort((a, b) => a - b),
+    // integer keys
+    () => server.ranks.set(int(20), random() < 0.5),
+    () => server.ranks.delete(int(20)),
+    () => {
+      if (random() < 0.1) server.ranks.clear()
+    },
   ]
 
   for (let t = 0; t < ticks; t++) {

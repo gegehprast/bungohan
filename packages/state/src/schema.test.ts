@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import { f } from "@bungohan/types"
 import { createNumber, createSchemaMap, createString } from "./factories"
 import { Schema } from "./schema"
 import { SchemaRegistry } from "./schema-registry"
@@ -19,10 +20,10 @@ describe("lazy initialization (spec §5.1)", () => {
       ["x", "fixed:2"],
       ["hp", "float64"],
       ["alive", "bool"],
-      ["pos", "schema"],
-      ["items", "schemaArray"],
-      ["tags", "set"],
-      ["scores", "map"],
+      ["pos", "schema<T.Vec>"],
+      ["items", "schemaArray<T.Item>"],
+      ["tags", "set<string>"],
+      ["scores", "map<string,fixed:1>"],
     ])
   })
 
@@ -93,7 +94,7 @@ describe("SchemaRegistry", () => {
   test("an inherited schemaName does not count", () => {
     class Base extends Schema {
       public static override schemaName = "T.Base"
-      public children = createSchemaMap<string, Base>()
+      public children = createSchemaMap(f.string, Base)
     }
     class Derived extends Base {}
     SchemaRegistry.register(Derived)

@@ -1,0 +1,19 @@
+{
+  "name": "@bungohan/transport",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@bungohan/result": "workspace:*",
+    "nanoid": "catalog:"
+  },
+  "engines": {
+    "bun": ">=1.3.3"
+  },
+  "license": "MIT"
+}
