@@ -268,6 +268,17 @@ function observeNested(owner: Schema, name: string, initial: Schema): void {
         )
         return
       }
+      const held = attachment(next, owner)
+      if (held !== undefined) {
+        console.error(
+          `[bungohan/state] ${owner.constructor.name}.${name}: refusing to ` +
+            `assign a ${next.constructor.name} that ${held}; the field keeps ` +
+            "its current value. An instance has one parent at a time: to " +
+            "move it, remove it first (delete it from its collection, or " +
+            "assign something else to the field holding it), then assign it.",
+        )
+        return
+      }
       const old = current
       current = next
       replaceNested(owner, name, old, next)
@@ -276,11 +287,37 @@ function observeNested(owner: Schema, name: string, initial: Schema): void {
 }
 
 /**
+ * Where `next` is already attached, if it is: in a collection, in another
+ * nested field, or as a room's state (a root is the only server instance
+ * with refId 0). Receivers rebind a nested field to a new object, so taking
+ * an instance from elsewhere would orphan the receivers' copy of it there.
+ * Refusing keeps both sides on the old value. Also refuses `owner` or one
+ * of its ancestors, which would make the tree a cycle.
+ */
+function attachment(next: Schema, owner: Schema): string | undefined {
+  const parent = next._parent
+  if (parent !== undefined) {
+    const field = next._parentField
+    const where =
+      field === undefined
+        ? `a nested field of ${parent.constructor.name}`
+        : `${parent.constructor.name}.${field._fieldName}`
+    return `is already attached (held by ${where})`
+  }
+  if (next._wireRef === 0) return "is a room's state"
+  for (let at: Schema | undefined = owner; at !== undefined; at = at._parent) {
+    if (at === next) return "contains this field (it would hold itself)"
+  }
+  return undefined
+}
+
+/**
  * Receivers keep their own nested object and rebind it to whatever refId
  * the field names, so an instance can't keep its wire identity through a
  * nested field: the old one leaves the wire (its block is freed at the
  * commit), and the new one is sent in full under a new block, even if it
- * was known elsewhere (PROTOCOL.md §11.5).
+ * was known elsewhere and removed this tick (PROTOCOL.md §11.5). That is
+ * why `attachment` refuses one that is still attached.
  */
 function replaceNested(
   owner: Schema,

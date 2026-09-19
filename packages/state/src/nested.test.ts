@@ -249,3 +249,132 @@ describe("rebinding a nested object (receiver)", () => {
     expect(stale.isErr() && stale.error.code).toBe("UNKNOWN_REF")
   })
 })
+
+class Unit extends Schema {
+  public static override schemaName = "N.Unit"
+  public v = createInt(f.uint8)
+}
+
+class Slot extends Schema {
+  public static override schemaName = "N.Slot"
+  public nested = new Unit()
+}
+
+class Owner extends Schema {
+  public static override schemaName = "N.Owner"
+  public nested = new Unit()
+  public items = createSchemaMap(f.string, Unit)
+  public slots = createSchemaMap(f.string, Slot)
+}
+
+SchemaRegistry.register(Unit, Slot, Owner)
+
+function unit(v: number): Unit {
+  const u = new Unit()
+  u.v.set(v)
+  return u
+}
+
+/** Runs `body` with `console.error` captured; returns the messages. */
+function capturingErrors(body: () => void): string[] {
+  const logged: string[] = []
+  const original = console.error
+  console.error = (...args: unknown[]) => logged.push(String(args[0]))
+  try {
+    body()
+  } finally {
+    console.error = original
+  }
+  return logged
+}
+
+describe("a nested field only takes an unattached instance", () => {
+  test("assigning an element still in a map doesn't orphan the client's copy", () => {
+    const peer = new Peer(new Owner(), new Owner())
+    peer.join()
+    const shared = unit(5)
+    peer.server.items.set("k", shared)
+    peer.sync()
+    capturingErrors(() => {
+      peer.server.nested = shared
+    })
+    peer.sync()
+    shared.v.set(7)
+    peer.sync()
+    expect(peer.client.items.get("k")?.v.get()).toBe(7)
+    peer.expectInSync()
+  })
+
+  test("refuses the assignment, keeps the server value and logs why", () => {
+    const peer = new Peer(new Owner(), new Owner())
+    peer.join()
+    const shared = unit(5)
+    peer.server.items.set("k", shared)
+    peer.sync()
+    const original = peer.server.nested
+    const logged = capturingErrors(() => {
+      peer.server.nested = shared
+    })
+    expect(peer.server.nested).toBe(original)
+    expect(shared._parent).toBe(peer.server)
+    expect(logged.length).toBe(1)
+    expect(logged[0]).toContain("Owner.nested")
+    expect(logged[0]).toContain("Owner.items")
+    expect(logged[0]).toContain("remove it first")
+    expect(peer.sync()).toEqual([])
+    peer.expectInSync()
+  })
+
+  test("refuses one held by another nested field, the room state, or itself", () => {
+    const peer = new Peer(new Owner(), new Owner())
+    peer.join()
+    const slot = new Slot()
+    peer.server.slots.set("s", slot)
+    peer.sync()
+    const before = peer.server.nested
+    const logged = capturingErrors(() => {
+      peer.server.nested = slot.nested
+      // The root isn't a Unit, but the check comes before any typing.
+      ;(slot as unknown as { nested: Schema }).nested = peer.server
+      const loose = Schema.create(Slot)
+      ;(loose as unknown as { nested: Schema }).nested = loose
+    })
+    expect(logged.length).toBe(3)
+    expect(logged[0]).toContain("a nested field of Slot")
+    expect(logged[1]).toContain("room's state")
+    expect(logged[2]).toContain("hold itself")
+    expect(peer.server.nested).toBe(before)
+    expect(slot.nested).toBeInstanceOf(Unit)
+    expect(peer.sync()).toEqual([])
+    peer.expectInSync()
+  })
+
+  test("removing it and assigning it in the same tick moves it", () => {
+    const peer = new Peer(new Owner(), new Owner())
+    peer.join()
+    const shared = unit(5)
+    const slot = new Slot()
+    peer.server.items.set("k", shared)
+    peer.server.slots.set("s", slot)
+    peer.sync()
+    const inSlot = slot.nested
+
+    const logged = capturingErrors(() => {
+      peer.server.items.delete("k")
+      peer.server.nested = shared
+      slot.nested = unit(1)
+      peer.server.items.set("k2", inSlot)
+    })
+    expect(logged).toEqual([])
+    expect(peer.server.nested).toBe(shared)
+    peer.sync()
+    peer.expectInSync()
+
+    shared.v.set(7)
+    inSlot.v.set(8)
+    peer.sync()
+    expect(peer.client.nested.v.get()).toBe(7)
+    expect(peer.client.items.get("k2")?.v.get()).toBe(8)
+    peer.expectInSync()
+  })
+})
