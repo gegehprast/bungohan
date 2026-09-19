@@ -1,5 +1,6 @@
 export * from "./contract"
 export * from "./fixed"
 export * from "./ints"
+export * from "./layout"
 export * from "./protocol"
 export * from "./wire"

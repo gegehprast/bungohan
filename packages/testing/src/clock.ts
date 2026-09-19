@@ -1,19 +1,7 @@
+import type { Clock, TimerId } from "@bungohan/core"
 import { settle } from "./settle"
 
-export type TimerId = number
-
-/**
- * Time source and timers, injectable so tests control time. This is the
- * shape core's tick loops will consume; `ManualClock` implements it, and a
- * system clock is `Date.now` plus the global timers.
- */
-export interface Clock {
-  now(): number
-  setTimeout(callback: () => void, ms: number): TimerId
-  clearTimeout(id: TimerId): void
-  setInterval(callback: () => void, ms: number): TimerId
-  clearInterval(id: TimerId): void
-}
+export type { Clock, TimerId }
 
 interface Timer {
   readonly id: TimerId

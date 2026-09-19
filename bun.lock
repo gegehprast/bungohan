@@ -17,6 +17,20 @@
         "@bungohan/result": "workspace:*",
       },
     },
+    "packages/core": {
+      "name": "@bungohan/core",
+      "version": "0.0.0",
+      "dependencies": {
+        "@bungohan/backplane": "workspace:*",
+        "@bungohan/result": "workspace:*",
+        "@bungohan/serializer": "workspace:*",
+        "@bungohan/state": "workspace:*",
+        "@bungohan/store": "workspace:*",
+        "@bungohan/transport": "workspace:*",
+        "@bungohan/types": "workspace:*",
+        "nanoid": "catalog:",
+      },
+    },
     "packages/result": {
       "name": "@bungohan/result",
       "version": "0.0.0",
@@ -56,13 +70,15 @@
       "name": "@bungohan/testing",
       "version": "0.0.0",
       "dependencies": {
+        "@bungohan/core": "workspace:*",
         "@bungohan/result": "workspace:*",
-        "@bungohan/transport": "workspace:*",
-      },
-      "devDependencies": {
         "@bungohan/serializer": "workspace:*",
         "@bungohan/state": "workspace:*",
+        "@bungohan/transport": "workspace:*",
         "@bungohan/types": "workspace:*",
+      },
+      "devDependencies": {
+        "@bungohan/store": "workspace:*",
       },
     },
     "packages/transport": {
@@ -109,6 +125,8 @@
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.14", "", { "os": "win32", "cpu": "x64" }, "sha512-oJWmBhoHsnhUKIke+0gXDX0mltJrWHA1UyHsrTlXwX0TL64ilVZAo+TYZm97baecV0esBdpzy3k96q+09JaZUQ=="],
 
     "@bungohan/backplane": ["@bungohan/backplane@workspace:packages/backplane"],
+
+    "@bungohan/core": ["@bungohan/core@workspace:packages/core"],
 
     "@bungohan/result": ["@bungohan/result@workspace:packages/result"],
 

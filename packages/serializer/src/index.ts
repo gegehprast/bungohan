@@ -1,6 +1,18 @@
 export { SerializerError, type SerializerErrorCode } from "./errors"
+export {
+  decodeFrame,
+  encodeFrame,
+  type Frame,
+  readVarint,
+  varintSize,
+  writeVarint,
+} from "./frame"
 export { JsonSerializer } from "./json"
-export { packMessage, unpackMessage } from "./message-codec"
+export {
+  packMessage,
+  packUnknownMessage,
+  unpackMessage,
+} from "./message-codec"
 export { MessagePackSerializer } from "./messagepack"
 export type { ISerializer } from "./serializer"
 export {

@@ -389,7 +389,7 @@ Note the tuple/argument order is **value first, then key/index** — consistent 
   - **Keys** (map keys, and set elements, which are keys) are exact, never quantized: `f.string`, `f.float64`, or an integer kind `f.int8`…`f.uint32` (the natural `int` key for C#/GDScript dictionaries). Receivers reject a non-integer or out-of-range integer key as `MALFORMED_OP`, so an int-keyed map must be given integer keys. Sets therefore hold strings and numbers only, never booleans or lossy numbers: set membership over quantized values would collapse distinct server elements into one client element.
   - **Schema elements** name a class. An element may also be an instance of a subclass, because every ref on the wire carries its own `classId`. The declared class is the static element type for codegen.
   - Directly nested Schema fields are listed with their class too (`schema<Vec>`), so the table alone describes every field.
-  - **Malformed declarations never throw.** Factories run inside field initializers, i.e. on every `new`, which may be a join or a spawn mid-game (a per-connection/per-tick path). Validation therefore happens once per class, when its field table is built (`_ensureInit`). A descriptor that got past the types (via a cast, or from plain JS) is logged with `console.error` naming `Class.field`, and that field is left out of the class table. It still works locally but is never synchronized, so nothing can mis-decode. There is no module-load hook for class fields, so "throw at module load" is not available here, unlike `defineMessage`.
+  - **Malformed declarations never throw.** Factories run inside field initializers, i.e. on every `new`, which may be a join or a spawn mid-game (a per-connection/per-tick path). Validation therefore happens once per class, when its field table is built (`_ensureInit`). A descriptor that got past the types (via a cast, or from plain JS) is logged with `console.error` naming `Class.field`, and that field is left out of the class table. It still works locally but is never synchronized, so nothing can mis-decode. There is no module-load hook for class fields, so "throw at module load" is not available here, unlike `defineMessage`. **[DECIDED]** For room state, core supplies that hook. `defineRoomType` runs `validateSchemaClass` over every reachable class and throws (§6.8.4), so this log-and-skip path is only a fallback for element subclasses first seen mid-game.
 - State is a **tree**: an instance has one parent at a time. Moving it (remove here, add there) is supported; sharing it between two parents is not.
 - On the server, listeners fire synchronously on mutation. On a receiver, see §5.7.9.
 
@@ -590,7 +590,7 @@ Both peers follow these rules on the same op stream, which is what keeps them in
 
 ## 6. `@bungohan/core` — Server, Room, MatchMaker
 
-**[KEEP]** signatures below are exact, verified against the working implementation, except where marked **[NEW]**/**[FIX]**.
+**[KEEP]** signatures below are exact, verified against the working implementation, except where marked **[NEW]**/**[FIX]**. **[DECIDED]** The wire protocol is specified in §6.7, and what was actually built (including the deviations from the signatures below) is in §6.8.
 
 ### 6.1 Server
 
@@ -765,6 +765,235 @@ class BungohanError<T = unknown> extends Error {
 ### 6.6 Metrics
 
 Off by default (`metrics.enabled: false`). When enabled, `ServerMetrics`/`RoomMetrics`/`ClientMetrics` shapes match the original SPEC.md's definitions (uptime, message/byte counters, avg tick/sync duration, per-room state size) — reproduce those interfaces as originally specified since they were never contradicted by the actual code, just not verified in this pass. Expose via `server.getServerMetrics()` / `getAllRoomMetrics()` / `getAllClientMetrics()`, and optionally via the built-in HTTP metrics endpoint when `http.enabled` and `http.enableMetrics` are true.
+
+### 6.7 Wire protocol and join handshake — **[DECIDED]**
+
+This is the protocol every client (client-js, Unity, Godot, …) implements. It supersedes the loose descriptions in §4, §4.2 (envelope compaction), §5.5 (join handshake) and §8.1.1 (message-type table). Constants live in `packages/types/src/protocol.ts`; the frame codec in `packages/serializer/src/frame.ts`.
+
+#### 6.7.1 Frames
+
+One transport message (one WebSocket binary message) is one frame:
+
+```
+frame  = type:u8  header:varint{N(type)}  body:bytes
+varint = unsigned LEB128, at most 5 bytes, value ≤ 0xFFFFFFFF
+```
+
+`N(type)`, the number of header varints, is fixed per frame type (tables below). The body is the rest of the frame. It is one of:
+
+- **ser**: one value encoded with the connection's `ISerializer` (MessagePack by default; not negotiated, both ends are configured with the same one).
+- **codec**: bytes produced by the room's state codec session (§8.1.5), carried as-is. No second encoding layer, no `bin` header.
+- **empty**: zero bytes.
+
+Why a binary header instead of the §4.2 MessagePack envelope array: the header costs exactly `1 + Σ varint` bytes (usually 2–3), a state frame's codec bytes aren't wrapped in a MessagePack `bin` (saving 2–3 more bytes per patch), and the header parses the same way in any language, whatever serializer the body uses. A one-SET position patch is **9 bytes** on the wire (2 header + 7 ops) instead of the 12 an array envelope would cost. The §4 string enums stay for readability. Only these numeric ids are sent.
+
+A frame that doesn't parse is a protocol violation (§6.7.6).
+
+**Client → server** (`ClientFrameType`):
+
+| id | Frame | Header varints | Body |
+|---|---|---|---|
+| 0 | `ROOM_MESSAGE` | `roomRef`, `messageId` | ser: the positionally packed payload (§8.1.1 Phase 1 table) |
+| 1 | `ROOM_MESSAGE_RAW` | `roomRef` | ser: `[type: string, payload: any]` |
+| 2 | `JOIN` | `requestId` | ser: `[mode, target, options, contractHash]` (§6.7.3) |
+| 3 | `LEAVE` | `roomRef` | empty |
+| 4 | `PING` | `nonce`, `rtt` | empty. `rtt` is the client's last measured round trip in whole ms (sub-ms rounds up to 1), or `0` if it has none yet |
+
+**Server → client** (`ServerFrameType`):
+
+| id | Frame | Header varints | Body |
+|---|---|---|---|
+| 0 | `ROOM_MESSAGE` | `roomRef`, `messageId` | ser: packed payload |
+| 1 | `ROOM_MESSAGE_RAW` | `roomRef` | ser: `[type: string, payload: any]` |
+| 2 | `STATE_SNAPSHOT` | `roomRef` | codec: the full-state ops (§5.7.10) |
+| 3 | `STATE_PATCH` | `roomRef` | codec: one sync tick's ops |
+| 4 | `JOIN_SUCCESS` | `requestId`, `roomRef` | ser: the handshake (§6.7.4) |
+| 5 | `JOIN_ERROR` | `requestId` | ser: `[code: string, message: string]` |
+| 6 | `CLIENT_JOINED` | `roomRef` | ser: `sessionId` |
+| 7 | `CLIENT_LEFT` | `roomRef` | ser: `sessionId` |
+| 8 | `LEAVE` | `roomRef`, `code` | empty, or ser: `reason` |
+| 9 | `ERROR` | `roomRef` (`0` = the connection) | ser: `[code: string, message: string]` |
+| 10 | `PONG` | `nonce` | empty |
+
+- **`roomRef`** is the per-connection room handle (§4.2 envelope compaction). The server assigns it in `JOIN_SUCCESS`, counting up from `1` per connection, and **never reuses one on that connection**. Reuse would let a message the client sent to a room it had just been kicked from reach whichever room took the handle next. A reconnect is a new connection and starts again at `1`. Every frame for a room is scoped by its `roomRef`, so one connection can be in several rooms at once.
+- **`messageId`** indexes the room's message tables from the handshake: client→server ids index `clientMessages`, server→client ids index `serverMessages`. The two directions are separate id spaces.
+- **Raw messages** (`sendRaw`/`broadcastRaw`/`onMessageRaw`) carry their type name inline and a MessagePack payload with no contract. They are never in the tables.
+
+#### 6.7.2 Sequence
+
+```
+client                                        server
+  │ ── transport connect ───────────────────▶ │ Connection created, server.onConnect
+  │ ── JOIN(requestId, [mode, target, …]) ──▶ │ 1. decode + shape check
+  │                                            │ 2. contract hash check (before any hook)
+  │                                            │ 3. matchmaking: find / create room, take a seat
+  │                                            │    (create: static onAuth → room.onCreate)
+  │                                            │ 4. instance onAuth (joining an existing room)
+  │                                            │ 5. room.onJoin(client, options, auth)
+  │ ◀── JOIN_SUCCESS(requestId, roomRef, hs) ─ │ 6. handshake; then any frames onJoin queued
+  │ ◀── ROOM_MESSAGE …  (allowed from here) ── │    CLIENT_JOINED → the other members
+  │                                            │    server.onJoin
+  │ ◀── STATE_SNAPSHOT(roomRef, ops) ──────── │ 7. at the room's next sync boundary
+  │ ◀── STATE_PATCH(roomRef, ops) … ───────── │    every later sync tick that changed something
+  │ ── ROOM_MESSAGE / PING … ───────────────▶ │
+  │ ── LEAVE(roomRef) ──────────────────────▶ │ room.onLeave(client, true)
+  │ ◀── LEAVE(roomRef, 1000) ──────────────── │ CLIENT_LEFT → the others; server.onLeave
+```
+
+- **The seat is taken before the first `await`** (step 3), so concurrent joins can't overfill a room. A room counts connected clients, clients still joining, clients awaiting reconnection and unconsumed reservations against `maxClients`. A room being created is registered at once, so a concurrent `joinOrCreate` waits for it rather than creating a second one.
+- **Auth.** The static `onAuth` runs only when the join creates the room, before `onCreate`. The instance `onAuth` runs only when joining an existing room (including through a reservation). A truthy object becomes `client.auth`, and `true` becomes `{}`. `false` (or any other falsy value) refuses the join with `AUTH_FAILED`.
+- **Frames for a joining client are queued** from the moment it has a seat, and released right after its `JOIN_SUCCESS`. So `send(client, …)` inside `onJoin`, or a `broadcast` during it, reaches the joiner *after* the handshake. If the join fails, the queue is dropped.
+- **The snapshot is admitted at a sync boundary** (§5.7.10), not immediately. On its next sync tick the room generates and sends patches to the clients that already have a snapshot, calls `clearChangeTrees`, and then encodes one snapshot per waiting client (`encodeSnapshot(state, client)`, so filtered fields are per client). The wait is at most one sync interval (50 ms at 20 Hz), and it never costs the other clients an extra frame. A client has no state before its snapshot, and gets no `STATE_PATCH` before it. Clients should consider a join complete when the first `STATE_SNAPSHOT` arrives. `ROOM_MESSAGE`s may arrive between `JOIN_SUCCESS` and the snapshot.
+- **Every `STATE_SNAPSHOT` starts a fresh stream.** The client discards its replica and codec session and starts new ones, and the snapshot replays the whole class table as `DEFINE`s. Most snapshots follow a `JOIN_SUCCESS` (including a reconnect). A room that *replaces* its state object mid-game also re-sends every client a snapshot at the next boundary, so clients must handle a snapshot at any time, not only after a join.
+- **If the connection closes mid-join**, the seat is released with no further hooks if `onJoin` hadn't completed. If it had, the close is handled like any disconnect (§6.7.5).
+
+#### 6.7.3 `JOIN` request
+
+Body: `[mode: uint, target: string, options: any, contractHash: string | null]`.
+
+| mode | Name | `target` | Behavior |
+|---|---|---|---|
+| 0 | `JOIN_OR_CREATE` | room type | join the first available public room of the type, else create one |
+| 1 | `CREATE` | room type | always create |
+| 2 | `JOIN` | room type | join an available public room; `ROOM_NOT_FOUND` if none |
+| 3 | `JOIN_BY_ID` | room id | join that room (private rooms included) |
+| 4 | `RECONNECT` | reconnection token | resume a held seat (§6.7.5); `options` is ignored |
+| 5 | `CONSUME_RESERVATION` | reservation id | take a reserved seat; `options` are the reservation's |
+
+"Available" means public, unlocked, not full and not being disposed.
+
+`options` is passed to `onCreate`/`onAuth`/`onJoin` as-is (`null` → `{}`). **`contractHash`** is the hash of the client's contract (§6.7.4). When it is a string that differs from the room type's, the join fails with `CONTRACT_MISMATCH` before any hook runs, and before a room is created. `null` skips the check, which is for raw-only clients and debugging tools. The check is strict: any change to any message of the contract changes the hash. That is what Phase 1's strict positional arrays need (§8.1.1: "version skew is caught at join by the contract hash"). Per-message compatibility (an old client staying compatible after the server *adds* a message) would be a later, additive change. The handshake already resolves ids by name, so the wire allows it.
+
+`requestId` is echoed in `JOIN_SUCCESS`/`JOIN_ERROR`, so a client can run several joins concurrently. It should be unique among a connection's in-flight joins.
+
+#### 6.7.4 `JOIN_SUCCESS` handshake
+
+Header: `requestId`, `roomRef`. Body:
+
+```
+[roomId: string, roomType: string, sessionId: string, reconnectionToken: string | null,
+ contractHash: string, stateCodec: string, clientMessages: string[], serverMessages: string[]]
+```
+
+- **`sessionId`** identifies the seat. It is stable across reconnection, and is the id other clients see in `CLIENT_JOINED`/`CLIENT_LEFT`.
+- **`reconnectionToken`** is an opaque secret, or `null` when the room doesn't allow reconnection. It is **replaced on every successful (re)join**, and the old one stops working.
+- **`stateCodec`** names the room's `IStateCodec` (`"messagepack"` in Phase 1). A client that has no decoder for it must `LEAVE` and fail the join locally (`CODEC_MISMATCH`). The server never falls back to another codec.
+- **`clientMessages` / `serverMessages`** are the message-type tables (§8.1.1): message names in the contract's key order, and a message's id is its index. Clients resolve ids **by name** at runtime and never bake them in (§4.2). A received `ROOM_MESSAGE` whose id the client can't map is dropped (and logged).
+- **`contractHash`** is the room type's contract hash, even for a room with `EmptyContract`. A client that sent `null` can still compare it.
+
+**Contract hash** (`contractHash(contract)` in `@bungohan/types`): FNV-1a 32-bit over the UTF-8 bytes of the canonical layout string, as 8 lowercase hex digits. The layout string is built like this (`messageLayout`, `contractLayout`):
+
+```
+contract = "client{" messages "}server{" messages "}"      messages sorted by name (UTF-16 code unit order), joined by ";"
+message  = name "(" field ("," field)* ")"                 fields in declaration (wire) order; "()" if none
+field    = fieldName ":" type
+type     = "int8" | "int16" | "int32" | "uint8" | "uint16" | "uint32" | "float32" | "float64"
+         | "string" | "bool" | "fixed:" digit
+         | "enum[" value ("|" value)* "]"                  value: JSON.stringify of the literal
+         | "array<" type ">" | "map<" type ">" | "optional<" type ">" | "nested<" message ">"
+```
+
+Only TypeScript computes hashes (the server, and `@bungohan/codegen`, which bakes the client's hash into generated bindings). Other clients just compare strings, so the canonical form never needs porting. Sorting by name makes the hash independent of key order. Ids *do* follow key order, which is fine, because they are resolved by name.
+
+#### 6.7.5 Leaving, reconnection and reservations
+
+- **Consented leave.** The client sends `LEAVE(roomRef)`. The server releases the seat: `onLeave(client, true)`, `LEAVE(roomRef, 1000)` to that client (an acknowledgement; no frame for that `roomRef` follows it), `CLIENT_LEFT` to the others, `server.onLeave`. The client may treat itself as having left as soon as it sends the frame.
+- **Server-initiated leave.** `room.disconnectClient(client, code = 4000, reason?)` (kick) or `room.leave(client, consented)` send `LEAVE(roomRef, code[, reason])`, release the seat and call `onLeave`. It removes the client from **this room only**, not from the connection. Closing the whole connection is `transport.disconnect`. Codes (`LeaveCode`): `1000 CONSENTED`, `4000 KICKED`, `4001 SERVER_SHUTDOWN`, **`4002 ROOM_DISPOSED` [new]**.
+- **Unconsented disconnect** (the transport closed). If the room has `allowReconnection` and `reconnectionTimeout > 0` (seconds), and the server isn't shutting down, the seat is **held**. The `Client` stays in `room.clients` with `client.connected === false`, frames addressed to it are dropped, and it is left out of state sync. `onLeave` is deferred. Otherwise the seat is released at once with `onLeave(client, false)` and `CLIENT_LEFT`.
+  - When the last *connected* client of a room with held seats drops, the room **pauses** (`onPause`): both loops stop. The first reconnect **resumes** it (`onResume`), before the reconnected client is admitted.
+  - When the timeout expires, the seat is released: `onLeave(client, false)`, `CLIENT_LEFT`, `server.onLeave`.
+- **Reconnect.** `JOIN` with mode `RECONNECT` and the token as `target`. It fails with `INVALID_TOKEN` if the token is unknown, or its seat is no longer held (expired, or already reconnected). On success, the *same* `Client` (same `sessionId`) is bound to the new connection with a new `roomRef` and a new token. No `onAuth`/`onJoin` runs. `JOIN_SUCCESS` follows, and a **full `STATE_SNAPSHOT` at the next sync boundary, always**. Nothing is replayed: messages sent while it was away are lost, and the snapshot restores state. `CLIENT_JOINED` is not re-sent, because the seat never left.
+- **Reservations.** `matchMaker.reserve(type, options)` finds or creates a room and holds a seat under a pre-assigned `sessionId` until `expiresAt` (default 60 s; the server's clock). `JOIN` with mode `CONSUME_RESERVATION` consumes it. The instance `onAuth` and `onJoin` run with the reservation's options. An expired reservation frees its seat and may auto-dispose an empty room.
+
+#### 6.7.6 Errors a client can receive
+
+`JOIN_ERROR` codes (string, the join failed and nothing about it remains on the server):
+
+| Code | When |
+|---|---|
+| `INVALID_OPTIONS` | the `JOIN` body has the wrong shape, or an unknown `mode` |
+| `SERVER_SHUTTING_DOWN` | the server has begun graceful shutdown **[new]** |
+| `ROOM_TYPE_NOT_DEFINED` | no room type of that name (modes 0–2) |
+| `CONTRACT_MISMATCH` | the client's `contractHash` differs from the room type's **[new]** |
+| `ROOM_NOT_FOUND` | mode 2: no available room; mode 3: no such room, or it is being disposed |
+| `ROOM_LOCKED` | mode 3: the room is locked |
+| `ROOM_FULL` | mode 3: the room is at `maxClients` |
+| `ALREADY_JOINED` | this connection already has a seat in that room **[new]** |
+| `AUTH_FAILED` | `onAuth` (static or instance) returned a falsy value |
+| `JOIN_FAILED` | `onAuth`, `onCreate` or `onJoin` threw. The error goes to `server.onError`, and the client gets no details **[new]** |
+| `INVALID_TOKEN` | mode 4: unknown token, or the seat is no longer held |
+| `RESERVATION_NOT_FOUND` / `RESERVATION_EXPIRED` | mode 5 |
+
+**Protocol violations** close the connection. The server sends `ERROR(0, ["INVALID_MESSAGE", why])`, then closes it with `1008 POLICY_VIOLATION`, and logs the reason. They are: an unparseable frame, an unknown frame type, a body the serializer can't decode, a `JOIN` whose body isn't an array, a `ROOM_MESSAGE` with a `messageId` outside the room's table, and a payload that `unpackMessage` rejects (§4.1: malformed frames never reach a handler). A `ROOM_MESSAGE`/`LEAVE` for a `roomRef` the connection doesn't hold is **dropped silently**, not a violation: it can legitimately race a kick. A well-formed message with no registered handler is dropped with a server-side warning (a server bug, not the client's).
+
+Other close codes: `1001 GOING_AWAY` when the server shuts down (after every room has sent `LEAVE(…, 4001)`).
+
+`PING(nonce, rtt)` is answered at once with `PONG(nonce)`. The client measures the round trip. The server records the reported `rtt` into `ClientMetrics.avgLatency` (when metrics are on) for every seat of that connection. It's metrics only, and never trusted for game logic.
+
+### 6.8 Core, single-process — **[DECIDED]** (`packages/core`)
+
+This is how §6.1–6.3, §6.5 and §6.6 were built. Cluster mode (§6.4: `RoomProxy`, backplane routing, `getAllProcesses` aggregation) is the next milestone. Its seams are in place, but every cross-process path returns `CLUSTER_NOT_IMPLEMENTED` (below).
+
+#### 6.8.1 Clients, connections, rooms
+
+- **`Client` is a seat in one room, not a connection.** It has a stable `sessionId` (and `id`, the same value, which is what `createFiltered` filters receive), `auth` (what `onAuth` returned), a free `userData` slot, `status` (`joining` / `joined` / `reconnecting` / `left`), `connected`, `room` and `connection`. The same object survives a reconnection, so game code keyed by `client.sessionId` keeps working. A **`Connection`** is one transport connection (`id`, `context`, `connectedAt`, `getClients()`). It can hold seats in several rooms. **Deviation:** `server.onConnect` receives the `Connection`, since no seat exists yet when a connection opens. `onJoin`/`onLeave` receive the `Client`.
+- **Room classes take no constructor arguments.** The server wires a room up after `new` (`_setup`). This lets `defineRoomType` construct a *probe* instance to find the state class for validation, and makes `new MyRoom()` safe in unit tests: a room no server set up has a detached host that logs and drops, and never throws.
+- **The contract travels as `static contract`**, because a TypeScript type parameter doesn't exist at runtime. `defineRoomType` enforces it at compile time. A room typed `Room<S, C>` must declare `public static override contract = c` with `typeof c` equal to `C`, or the `defineRoomType` call is a type error (`RoomClass<R>`, proven in `room.test-d.ts`). A room without a contract declares nothing.
+- **`state`** is assigned as a field initializer or in `onCreate`. A room with no state still completes joins with an empty `STATE_SNAPSHOT`. **Replacing** `this.state` later is supported: at the next sync boundary the room validates the new class, starts a new codec session, and re-sends every client a full snapshot (§6.7.2).
+- **Deviations from the §6.2 signatures**, to satisfy CLAUDE.md rule 1:
+  - `loadState(): Promise<Result<TState | undefined, BungohanError>>`, and `saveState(state = this.state): Promise<Result<void, BungohanError>>`. The key comes from an overridable `protected stateKey()` (default `room:<type>:<id>:state`). Values are stored as `toPlain`/`fromPlain` data (`@bungohan/state`): a JSON tree with `"$class"` on every schema object, full-precision primitives, maps as `[key, value][]`. A room without a store gets `ok(undefined)`.
+  - `start()`/`stop()` return `Result<void, BungohanError>`.
+  - `send`/`broadcast`/`sendRaw`/`broadcastRaw` stay `void`, as typed in §4.1. A payload that got past the types, or a name not in the contract, goes to `server.onError` (`source: "send"`).
+- **Other room API decisions:**
+  - `disconnectClient(client, code = 4000, reason?)` removes the client from *this room* (`LEAVE` frame). It does not close the connection.
+  - `join(client, options)` seats a connectionless client (bots, tests) through the instance `onAuth` and `onJoin`. `leave(client, consented = true)` sends `LEAVE(1000 | 4000)`.
+  - Additions: `dispose()` (sends `LEAVE(4002)`), `getSeatCount()` (clients plus open reservations), `isAvailable()`, and `protected get clock()`, the server's clock, for game timers that tests can drive.
+  - `clients` includes joining and held seats.
+- **Hooks never crash a room.** Every hook, message handler (sync throw or rejected promise) and server callback is caught and routed to `server.onError(error, context)`. The context is `{ source, room?, client?, connection?, messageType? }`, where `source` is one of the hook names, `"send"`, `"sync"`, `"transport"`, `"protocol"` or `"callback"`. Without an `onError` callback, errors are logged. Handlers are not awaited, so a slow async handler doesn't block the next message. `onJoin` throwing → `JOIN_FAILED`, with the seat released and no `onLeave` (the join never completed). `onLeave` throwing still releases the seat. `server.onJoin` does not fire on a reconnect (the seat never left).
+- **`autoDispose`** fires when the last seat *and* the last reservation are gone. A room created by `matchMaker.createRoom` that nobody ever joins lives until disposed, as before.
+
+#### 6.8.2 Loops and time
+
+- **`ServerOptions.clock`** (default `SystemClock`: `performance.timeOrigin + performance.now()`, with sub-ms precision so tick durations mean something) drives everything. Nothing else in core reads wall-clock time. `BungohanError` takes its `timestamp` as a constructor argument, `(code, message, timestamp, context?)`, supplied from the clock.
+- **Simulation**: `SimulationLoop`, a fixed timestep with an accumulator. A timer wakes it about once per step, and each wake adds the real elapsed time and runs as many whole steps as fit, each `onTick(stepMs)`. A wake runs at most **`simulation.maxCatchUpSteps` (default 5)** steps, and any backlog beyond that is dropped (counted in `RoomMetrics.droppedSimulationMs`), so one slow tick can't snowball into ever-longer catch-ups. A 1e-6 ms tolerance keeps float error in timer due times from skipping or doubling a step.
+- **Sync**: `IntervalLoop` at `sync.tickRate` (default 20 Hz), independent of the simulation rate. `setSimulationTickRate`/`setStateSyncTickRate` restart the corresponding loop.
+- A paused room (§6.7.5) stops both loops.
+
+#### 6.8.3 Sync boundary
+
+Each sync tick runs this sequence: `onBeforeSync` → adopt a replaced state → `generateDeltas(state, clientsWithSnapshots)` → group clients by the returned op array (clients with identical visibility share one array, §5.6) → **encode each distinct array once** with the room's single codec session → group again by `roomRef` (in practice every client uses `1`) → one frame per group through `transport.broadcast` → `clearChangeTrees` → one snapshot per waiting client. An idle tick sends nothing. A single position update is **9 bytes on the wire** (2-byte header, then the 7-byte MessagePack op). Clients awaiting reconnection are left out of `generateDeltas`. Their snapshot on return resets their filter-visibility memory.
+
+#### 6.8.4 Startup validation
+
+`defineRoomType` (and `matchMaker.registerRoomType`) validates, then **throws one `TypeError` listing every problem**. This is the definition-time exception of CLAUDE.md rule 1. It checks:
+
+- the contract, with `validateContract` (`@bungohan/types`): every entry is a message whose name equals its key, field names are identifiers, fixed decimals are 0–9, enums are non-empty, distinct and made of strings or finite numbers, there is no optional-in-optional, and nested messages are well formed;
+- the state, with `validateSchemaClass` (`@bungohan/state`): every Schema class reachable from the probe's state (nested fields, declared collection element classes, and the classes of initial elements) has its own `schemaName`, and no two reachable classes share one. It also checks every collection descriptor. It runs once per class. A constructor that throws is reported, not propagated;
+- a duplicate room type name.
+
+A state first assigned in `onCreate` isn't visible to the probe. It is validated when the room is created, and a failure is a `Result` error (the join gets `JOIN_FAILED`), never a throw. Either way, **the state package's log-and-skip path never fires for a registered room**. Only an element *subclass* first seen mid-game can still reach it, because subclasses can't be enumerated up front.
+
+#### 6.8.5 Server, matchmaker, errors
+
+- **New `ServerOptions`:** `clock`, `stateCodec` (§8.1.4), `simulation.maxCatchUpSteps`, `transport.config.compressionThreshold` (passed through to `WebSocketTransport`), and `gracefulShutdown.handleSignals` (default true; the test harness turns it off). The **default port is 6060**, not alpha 1's 6000, which browsers refuse to connect to (Chrome's restricted-ports list). A store is used only if `store.provider` or `store.config` (→ `RedisStore`) is given, and one the server created is closed on `stop()`.
+- **Graceful shutdown.** `stop()` refuses new joins (`SERVER_SHUTTING_DOWN`), disposes every room (`LEAVE(4001)`, then `onLeave(client, false)`, then `onDispose`), and closes the transport (1001) and the HTTP server. On SIGTERM/SIGINT the server runs `stop()`, then `onShutdown`, then `process.exit(0)`, or `exit(1)` if that takes longer than `gracefulShutdown.timeout` (default 30 s). The handlers are installed by `start()` and removed by `stop()`.
+- **Cluster seams.** `start()` with `cluster.enabled` returns `CLUSTER_NOT_IMPLEMENTED`. `getAllProcesses()` returns this process only. A `ProcessSelector` is called with that one-element list. Picking this process works; picking any other returns `CLUSTER_NOT_IMPLEMENTED`.
+- **`DefineRoomOptions`** defaults: `maxClients` unlimited, `autoDispose` true, `allowReconnection` true, `reconnectionTimeout` 30 s, `visibility` public, `locked` false. There is a new `reservationTimeout` (60 s). An expired reservation is remembered for one more timeout, so a late client hears `RESERVATION_EXPIRED` rather than `RESERVATION_NOT_FOUND`.
+- **`matchMaker.query`** returns ready, undisposed rooms of the type. It skips private rooms unless `includePrivate: true` (new). `removeRoom(id)` disposes the room.
+- **`ErrorCode`** = the §6.5 codes, plus the §6.7.6 join codes, plus `ROOM_CREATE_FAILED`, `STORE_FAILED`, `CLUSTER_NOT_IMPLEMENTED` and `INVALID_STATE`.
+- **`getMatchMaker()`** throws if no server exists, as §6.3 says. This is a setup error.
+
+#### 6.8.6 Metrics and HTTP
+
+- **Off by default and free when off.** With metrics disabled there is no `MetricsCollector`, and rooms and clients hold no stats objects. Every recording site is an optional call on `undefined`, so nothing is counted or allocated. The getters return `METRICS_DISABLED`.
+- `ServerMetrics`: uptime, connections, rooms, messages, bytes in/out, errors, memory. `RoomMetrics`: messages, sync count, simulation ticks, average tick/sync duration, `avgStateDeltaBytes`, `avgStateSnapshotBytes`, `droppedSimulationMs`. `ClientMetrics`: frames and bytes each way, `avgLatency` (the mean of the `rtt` values reported in `PING`, §6.7.6), `lastMessageAt`. **`avgCompressionRatio` stays undefined**: Bun doesn't expose a frame's deflated size, so it can't be measured through `ITransport`.
+- **HTTP** (`http.enabled`): a separate `Bun.serve` with `GET /health`, `/metrics` (404 when metrics are off) and `/rooms`, each switchable, plus CORS.
+
+#### 6.8.7 Testing
+
+- `@bungohan/testing` depends on core. Core's own unit tests (`loop.test.ts`, `room.test.ts`, `room.test-d.ts`) use no harness. **Core's end-to-end suites live in `packages/testing/src/core/`**, which avoids a core ↔ testing dependency cycle.
+- `ServerHarness` / `createServerHarness({ define, server, transport })` is the server half of §11.2: a real `BungohanServer` on `LoopbackTransport` + `ManualClock`, with `connect()`, `tick(ms)` (advance, then flush), `flush()`, `flushSync()` (a sync boundary in every room now), `bytesSent()`/`bytesReceived()`. `createTestHarness` (with client-js) comes in session 4.
+- `TestClient` / `TestRoom` is a wire-level driver. It builds and parses frames byte by byte, keeps a replica with `applyDelta` (a fresh one per snapshot), decodes contract messages, and records raw frames for byte assertions. It stands in for client-js now and serves as an executable reference for non-JS client authors.
 
 ## 7. `@bungohan/client-js` — Reference Client Implementation
 
@@ -1160,7 +1389,7 @@ Also expose `harness.bytesSent()` / `bytesReceived()` so §11.1's bandwidth asse
   - `stats()` / `resetStats()` count bytes and frames per direction; they back `harness.bytesSent()` / `bytesReceived()`.
 - **`ManualClock`** implements `Clock` (`now`, `setTimeout`/`clearTimeout`, `setInterval`/`clearInterval`). `await clock.advance(ms)` fires due timers in due-time order (ties in scheduling order), setting `now()` to each timer's due time, and **settles promise continuations after each timer**, so a tick's async work finishes before the next tick. Delays clamp like the platform's (negative/NaN → 0; intervals ≥ 1 ms). `advance` calls made during an advance (e.g. from a timer) run after it, in order. Settling uses `setImmediate` (the next macrotask), which is not a sleep.
 - **Errors from code under test propagate.** An exception from a timer callback rejects `advance()`, and one from a *client-side* socket listener rejects `flush()`. A failed `expect()` inside a callback therefore fails the test instead of vanishing. Server-side handlers keep `ITransport` semantics (routed to `onError`), because that is what core sees in production.
-- **`Clock` lives in `@bungohan/testing` for now.** Core's tick loops must take an injected `Clock` rather than calling `setInterval`/`Date.now` directly; otherwise the harness can't drive them. When core is built it should own the `Clock` interface (testing already depends on core in the §12 build order) and ship the system implementation; `ManualClock` matches structurally.
+- ~~`Clock` lives in `@bungohan/testing` for now.~~ **[DECIDED] `Clock` now lives in `@bungohan/core`** (`packages/core/src/clock.ts`, with `SystemClock`), and testing re-exports it. Every loop, timeout and timestamp in core goes through the injected `ServerOptions.clock` (§6.8).
 - `end-to-end.test.ts` wires what exists so far the way core and client-js will: state → `MessagePackStateCodec` → loopback → decode → `applyDelta`, with positionally packed contract messages going the other way, driven by `ManualClock` at 20 Hz. A two-input steer produces one 7-byte sync frame, and an idle tick produces nothing.
 
 ### 11.3 Protocol conformance vectors — **[NEW]**

@@ -84,6 +84,7 @@ Colocated `*.test.ts` next to the module under test, using `bun:test`.
 import { test, expect } from "bun:test"
 ```
 
+- Core's end-to-end suites live in `packages/testing/src/core/` (testing depends on core, so this avoids a cycle). They run a real server via `createServerHarness` and speak the wire protocol through the `TestClient` driver.
 - Use `@bungohan/testing`'s loopback transport + manual clock for integration tests — advance time with `await harness.tick(16)`, never `setTimeout`/sleep. Tests must be deterministic.
 - Bandwidth assertions (spec §11.1) and protocol conformance vectors (§11.3) are real test suites, not documentation.
 

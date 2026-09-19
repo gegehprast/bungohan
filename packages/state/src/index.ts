@@ -40,6 +40,7 @@ export {
   createString,
   type FilterClient,
 } from "./factories"
+export { fromPlain, toPlain } from "./plain"
 export {
   BooleanState,
   type ChangeListener,
@@ -53,3 +54,4 @@ export {
 export { type ClassInfo, type FieldInfo, Schema } from "./schema"
 export { type SchemaConstructor, SchemaRegistry } from "./schema-registry"
 export { State } from "./state-base"
+export { validateSchemaClass } from "./validate"

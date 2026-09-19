@@ -9,6 +9,8 @@ export type StateErrorCode =
   | "UNKNOWN_CLASS"
   /** A local class disagrees with the server's on a shared field's type. */
   | "SCHEMA_MISMATCH"
+  /** `fromPlain` data doesn't fit the schema (spec §6.8). */
+  | "INVALID_DATA"
 
 export class StateError<T = unknown> extends Error {
   public readonly code: StateErrorCode

@@ -157,6 +157,18 @@ export function packMessage<M extends MessageDef>(
   return packAny(def, input)
 }
 
+/**
+ * {@link packMessage} for callers holding a payload the types have already
+ * checked elsewhere (core's `Room.send`, whose signature is the typed one).
+ * Same encoding; a payload that doesn't match is `ENCODE_FAILED`.
+ */
+export function packUnknownMessage(
+  def: MessageDef,
+  payload: unknown,
+): Result<Packed[], SerializerError> {
+  return packAny(def, payload)
+}
+
 function packAny(
   def: MessageDef,
   payload: unknown,

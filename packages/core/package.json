@@ -1,5 +1,5 @@
 {
-  "name": "@bungohan/testing",
+  "name": "@bungohan/core",
   "version": "0.0.0",
   "type": "module",
   "main": "./src/index.ts",
@@ -9,18 +9,17 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@bungohan/core": "workspace:*",
+    "@bungohan/backplane": "workspace:*",
     "@bungohan/result": "workspace:*",
     "@bungohan/serializer": "workspace:*",
     "@bungohan/state": "workspace:*",
+    "@bungohan/store": "workspace:*",
     "@bungohan/transport": "workspace:*",
-    "@bungohan/types": "workspace:*"
+    "@bungohan/types": "workspace:*",
+    "nanoid": "catalog:"
   },
   "engines": {
     "bun": ">=1.3.3"
   },
-  "license": "MIT",
-  "devDependencies": {
-    "@bungohan/store": "workspace:*"
-  }
+  "license": "MIT"
 }

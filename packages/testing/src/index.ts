@@ -1,5 +1,18 @@
 export { type Clock, ManualClock, type TimerId } from "./clock"
 export {
+  type DriverOptions,
+  JoinFailure,
+  type JoinOptions,
+  type ReceivedMessage,
+  TestClient,
+  TestRoom,
+} from "./driver"
+export {
+  createServerHarness,
+  ServerHarness,
+  type ServerHarnessOptions,
+} from "./harness"
+export {
   type LoopbackConnectOptions,
   type LoopbackReadyState,
   LoopbackSocket,
