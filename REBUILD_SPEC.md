@@ -979,6 +979,33 @@ for value, over all four kinds; every case fails if the encoding is put
 back to JSON. Frame bytes ride along as MessagePack `bin`, so relaying
 costs no base64 either.
 
+**[DECIDED] A cluster's serializer must carry binary, and that is checked
+at startup.** Since relayed frames travel *inside* a backplane message, as
+a `Uint8Array` property, a custom `ServerOptions.serializer` that flattens
+binary breaks frame relay — at runtime, in cluster mode only, with no error
+anywhere. The symptom would be that clients whose room happens to live on
+another process stop receiving state, which is about the worst way to
+learn it. So `ClusterNode.start()` encodes and decodes a short probe
+(`00 01 7f 80 c3 a9 ff`, nested in an object, as frames really travel)
+through the configured serializer before it subscribes to anything, and
+refuses to start if the bytes don't come back identical, naming the
+serializer by `getName()` and saying how it failed. It runs **once, on the
+`start()` path** — never per tick, per message or per connection — and
+reports through `start()`'s existing `Result` (`INVALID_OPTIONS`), beside
+the "cluster.enabled needs a backplane" check, rather than throwing: two
+adjacent configuration checks in one function should fail the same way.
+The probe deliberately covers what a text-oriented serializer gets wrong:
+a NUL, the `0x80` boundary, a valid UTF-8 sequence (`c3 a9`) that must not
+be folded into one character, and `0xff`, which is not valid UTF-8 at all.
+The check is about the guarantee, not about being MessagePack:
+`JsonSerializer` wraps a `Uint8Array` rather than flattening it, so it
+passes. `packages/testing/src/cluster/serializer.test.ts` covers a
+serializer that loses the type, one that mangles the bytes, one that is
+neither MessagePack nor broken, and that **nothing fires without cluster
+mode** — a single-process server never puts frame bytes inside another
+encoding, so its serializer is its own business. That the check isn't
+vacuous was verified by bypassing it: a cross-process join then fails.
+
 **Known limitations, deliberately:** a value must be one MessagePack can
 carry, so anything that isn't — a `Map`, a `Set`, a class instance — still
 arrives as a plain object, and `-0` arrives as `0` (PROTOCOL.md §4). This

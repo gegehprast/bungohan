@@ -17,6 +17,7 @@ import type { ProcessInfo, RoomListingInfo } from "../types"
 import {
   allChannel,
   asClusterMessage,
+  binaryRoundTripProblem,
   CLUSTER_PROTOCOL,
   type ClusterPayload,
   type JoinForwardRequest,
@@ -167,6 +168,24 @@ export class ClusterNode {
   // ==========================================================================
 
   public async start(): Promise<Result<void, BungohanError>> {
+    // Before anything else, and exactly once: a serializer that can't
+    // carry binary would break frame relay at runtime, in cluster mode
+    // only, with no other symptom (spec §6.4.1).
+    const { serializer } = this._options
+    const problem = binaryRoundTripProblem(serializer)
+    if (problem !== undefined) {
+      return err(
+        new BungohanError(
+          "INVALID_OPTIONS",
+          `cluster mode relays client frames as binary inside backplane ` +
+            `messages, but the "${serializer.getName()}" serializer does ` +
+            `not round-trip a Uint8Array: ${problem}. Use the default ` +
+            `MessagePackSerializer, or a serializer whose encode/decode ` +
+            `preserves binary exactly (ServerOptions.serializer).`,
+          this._options.clock.now(),
+        ),
+      )
+    }
     const { backplane } = this._options
     const receive = (data: Uint8Array): void => this._receive(data)
     const own = await backplane.subscribe(this._own, receive)

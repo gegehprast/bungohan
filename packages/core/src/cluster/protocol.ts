@@ -17,6 +17,7 @@
  * and identical game code would behave differently depending on where the
  * room happened to live.
  */
+import type { ISerializer } from "@bungohan/serializer"
 import type { ConnectionContext } from "@bungohan/transport"
 import type { JoinMode, Reservation } from "@bungohan/types"
 import type { ErrorCode } from "../errors"
@@ -319,6 +320,63 @@ export interface ViolationRelay extends Envelope {
   t: "violation"
   connectionId: string
   why: string
+}
+
+/**
+ * Whether the server's serializer carries binary through a round trip, or
+ * a description of how it failed.
+ *
+ * Cluster mode relays **finished client frames** inside backplane
+ * messages, as a `Uint8Array` property (see {@link FrameRelay} and
+ * {@link SeatMessage}). A serializer that flattens binary — a naive JSON
+ * one, say — turns every relayed frame into an object on the way, and the
+ * only symptom is that clients whose room happens to live on another
+ * process stop receiving state. So it is checked once, when cluster mode
+ * starts (`ClusterNode.start`), and never again: this runs on a lifecycle
+ * path, never per tick, per message or per connection.
+ *
+ * The probe covers what a text-oriented serializer gets wrong: a NUL, the
+ * `0x80` boundary, a valid UTF-8 sequence (`c3 a9`) that must *not* be
+ * folded into one character, and `0xff`, which is not valid UTF-8 at all.
+ * It is nested in an object, because that is how frames actually travel.
+ */
+export function binaryRoundTripProblem(
+  serializer: ISerializer,
+): string | undefined {
+  const probe = new Uint8Array([0x00, 0x01, 0x7f, 0x80, 0xc3, 0xa9, 0xff])
+  const encoded = serializer.encode({ probe })
+  if (encoded.isErr()) return `encoding it failed (${encoded.error.message})`
+  const decoded = serializer.decode(encoded.value)
+  if (decoded.isErr()) return `decoding it failed (${decoded.error.message})`
+  const value = decoded.value
+  const back =
+    typeof value === "object" && value !== null
+      ? (value as Record<string, unknown>)["probe"]
+      : undefined
+  if (!(back instanceof Uint8Array)) {
+    return `it came back as ${describeValue(back)}, not a Uint8Array`
+  }
+  if (back.length !== probe.length || probe.some((b, i) => back[i] !== b)) {
+    return (
+      `the bytes came back as [${[...back].join(", ")}] ` +
+      `instead of [${[...probe].join(", ")}]`
+    )
+  }
+  return undefined
+}
+
+function describeValue(value: unknown): string {
+  if (value === null) return "null"
+  if (value === undefined) return "nothing"
+  if (Array.isArray(value)) return "an array"
+  if (typeof value === "object") {
+    const name: unknown = (value as { constructor?: { name?: unknown } })
+      .constructor?.name
+    return typeof name === "string" && name !== "Object"
+      ? `a ${name}`
+      : "a plain object"
+  }
+  return `a ${typeof value}`
 }
 
 export type ClusterMessage =
