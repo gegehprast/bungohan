@@ -1,6 +1,10 @@
 import { err, ok, type Result } from "@bungohan/result"
 import type { Clock, Reservation, TimerId } from "@bungohan/types"
+import type { ClusterNode } from "./cluster/node"
+import type { RoomInfo } from "./cluster/protocol"
+import { RoomProxy } from "./cluster/proxy"
 import { BungohanError, type ErrorCode } from "./errors"
+import type { Logger } from "./logger"
 import type { Room } from "./room"
 import type { RoomManager } from "./room-manager"
 import { createRoomType, type RoomTypeDef } from "./room-type"
@@ -24,8 +28,11 @@ interface ReservationEntry {
 export interface MatchMakerDeps {
   readonly manager: RoomManager
   readonly clock: Clock
+  readonly logger: Logger
   readonly processId: string
   readonly clusterEnabled: boolean
+  /** The running cluster node, once `start()` built one (spec §6.4). */
+  readonly cluster: () => ClusterNode | undefined
   readonly createId: (size: number) => string
 }
 
@@ -48,9 +55,13 @@ export function setMatchMaker(matchMaker: MatchMaker): void {
 }
 
 /**
- * Finds, creates and reserves rooms (spec §6.3). Single-process: the
- * cross-process paths (a `ProcessSelector` choosing another process) return
- * `CLUSTER_NOT_IMPLEMENTED` until cluster mode (§6.4) is built.
+ * Finds, creates and reserves rooms (spec §6.3).
+ *
+ * With cluster mode on (§6.4) every lookup is local first and cluster-wide
+ * second: a room found on another process comes back as a {@link RoomProxy}
+ * with the same `Room` type. Without it, a `ProcessSelector` that picks a
+ * process other than this one is `CLUSTER_NOT_IMPLEMENTED`, since there is
+ * no cluster to route to.
  */
 export class MatchMaker {
   private readonly _deps: MatchMakerDeps
@@ -88,30 +99,52 @@ export class MatchMaker {
     options?: unknown,
     processSelector?: ProcessSelector,
   ): Promise<Result<Room, BungohanError>> {
+    const cluster = this._deps.cluster()
+    if (cluster !== undefined && processSelector !== undefined) {
+      const chosen = await this._select(cluster, processSelector)
+      if (chosen.isErr()) return chosen
+      if (chosen.value !== this._deps.processId) {
+        const info = await cluster.createRoom(chosen.value, roomType, options)
+        return info.isErr() ? info : ok(this._proxy(info.value))
+      }
+    } else {
+      const local = this._selectLocal(processSelector)
+      if (local.isErr()) return local
+    }
     const type = this._type(roomType)
     if (type.isErr()) return type
-    const local = this._selectLocal(processSelector)
-    if (local.isErr()) return local
     return this._deps.manager._createReady(type.value, options)
   }
 
-  /** An available room of the type (public, unlocked, not full); doesn't seat anyone. */
+  /**
+   * An available room of the type (public, unlocked, not full); doesn't
+   * seat anyone. Looks on this process first, then across the cluster.
+   */
   public async joinRoom(
     roomType: string,
     _options?: unknown,
   ): Promise<Result<Room, BungohanError>> {
-    const type = this._type(roomType)
-    if (type.isErr()) return type
-    const room = this._findAvailable(roomType)
-    if (room === undefined) {
+    const known = this._types.has(roomType)
+    const room = known ? this._findAvailable(roomType) : undefined
+    if (room !== undefined) return this._whenReady(room)
+    const cluster = this._deps.cluster()
+    if (cluster !== undefined) {
+      const found = await cluster.findAvailable(roomType)
+      if (found !== undefined) {
+        return this._proxyFor(cluster, found.processId, found.roomId)
+      }
+    }
+    if (!known) {
       return err(
         this._error(
-          "ROOM_NOT_FOUND",
-          `no available room of type "${roomType}"`,
+          "ROOM_TYPE_NOT_DEFINED",
+          `room type "${roomType}" is not defined`,
         ),
       )
     }
-    return this._whenReady(room)
+    return err(
+      this._error("ROOM_NOT_FOUND", `no available room of type "${roomType}"`),
+    )
   }
 
   public async joinOrCreate(
@@ -130,32 +163,43 @@ export class MatchMaker {
     _options?: unknown,
   ): Promise<Result<Room, BungohanError>> {
     const room = this._deps.manager.getRoom(roomId)
-    if (room === undefined || room.isDisposed) {
-      return err(this._error("ROOM_NOT_FOUND", `room "${roomId}" not found`))
+    if (room !== undefined && !room.isDisposed) return this._whenReady(room)
+    const cluster = this._deps.cluster()
+    if (cluster !== undefined && room === undefined) {
+      const owner = await cluster.locate("room", roomId)
+      if (owner !== undefined) return this._proxyFor(cluster, owner, roomId)
     }
-    return this._whenReady(room)
+    return err(this._error("ROOM_NOT_FOUND", `room "${roomId}" not found`))
   }
 
+  /**
+   * Ready, undisposed rooms of the type, from this process and (in cluster
+   * mode) every process that answers within the collection window. Custom
+   * `filters` run here, over the merged list, since a filter is a function
+   * this process holds; `metadata` is matched on each process.
+   */
   public async query(
     options: MatchMakerQueryOptions,
   ): Promise<Result<RoomListingInfo[], BungohanError>> {
+    const includePrivate = options.includePrivate === true
+    const listings = this._listLocal(
+      options.type,
+      options.metadata,
+      includePrivate,
+    )
+    const cluster = this._deps.cluster()
+    if (cluster !== undefined) {
+      listings.push(
+        ...(await cluster.query(
+          options.type,
+          options.metadata,
+          includePrivate,
+        )),
+      )
+    }
     const out: RoomListingInfo[] = []
-    for (const room of this._deps.manager.getRooms()) {
-      if (room.roomType !== options.type || room.isDisposed) continue
-      if (!room._isReady) continue
-      if (room.visibility !== "public" && options.includePrivate !== true) {
-        continue
-      }
-      if (options.metadata !== undefined) {
-        const wanted = Object.entries(options.metadata)
-        if (wanted.some(([key, value]) => room.metadata[key] !== value)) {
-          continue
-        }
-      }
-      const listing = this._listing(room)
-      if (options.filters?.some((filter) => !filter(listing)) === true) {
-        continue
-      }
+    for (const listing of listings) {
+      if (options.filters?.some((filter) => !filter(listing)) === true) continue
       out.push(listing)
       if (options.limit !== undefined && out.length >= options.limit) break
     }
@@ -165,7 +209,9 @@ export class MatchMaker {
   /**
    * Holds a seat in an available (or new) room of the type under a new
    * `sessionId`, until `expiresAt`. A client takes it with a `JOIN` in mode
-   * `CONSUME_RESERVATION` (spec §6.7.5).
+   * `CONSUME_RESERVATION` (spec §6.7.5), **on any process**: the reservation
+   * is held where the room is, and whichever process the client connects to
+   * locates it (spec §6.4).
    */
   public async reserve(
     roomType: string,
@@ -175,38 +221,20 @@ export class MatchMaker {
     const found = await this.joinOrCreate(roomType, options, processSelector)
     if (found.isErr()) return found
     const room = found.value
-    if (!room.isAvailable()) {
-      return err(this._error("ROOM_FULL", "the room filled up"))
+    if (room instanceof RoomProxy) {
+      const cluster = this._deps.cluster()
+      if (cluster === undefined) {
+        return err(this._error("INVALID_STATE", "cluster mode is not running"))
+      }
+      return cluster.reserve(room.processId, room.id, options)
     }
-    const type = this._types.get(roomType)
-    const seconds = type?.options.reservationTimeout ?? 60
-    const { clock, createId } = this._deps
-    const reservation: Reservation = {
-      id: createId(21),
-      roomId: room.id,
-      roomType,
-      sessionId: createId(12),
-      expiresAt: clock.now() + seconds * 1000,
-    }
-    const entry: ReservationEntry = {
-      reservation,
-      room,
-      expired: false,
-      // Keep an expired entry around for another timeout, so a late client
-      // hears RESERVATION_EXPIRED rather than RESERVATION_NOT_FOUND.
-      cleanup: clock.setTimeout(
-        () => this._reservations.delete(reservation.id),
-        seconds * 2000,
-      ),
-    }
-    this._reservations.set(reservation.id, entry)
-    room._hold(reservation, options, seconds * 1000)
-    return ok(reservation)
+    return this._reserveIn(room, options)
   }
 
   /**
    * Consumes a reservation without seating anyone (the seat is freed).
-   * Clients consume theirs with a `JOIN` frame instead.
+   * Clients consume theirs with a `JOIN` frame instead. Local only: a
+   * reservation is consumed where its room lives.
    */
   public consumeReservation(
     reservationId: string,
@@ -240,17 +268,67 @@ export class MatchMaker {
     return ok({ reservation, room, options })
   }
 
+  /** @internal True while this process remembers that reservation. */
+  public _hasReservation(reservationId: string): boolean {
+    return this._reservations.has(reservationId)
+  }
+
+  /** @internal Holds a seat in a room this process owns. */
+  public _reserveIn(
+    room: Room,
+    options: unknown,
+  ): Result<Reservation, BungohanError> {
+    if (!room.isAvailable()) {
+      return err(this._error("ROOM_FULL", "the room filled up"))
+    }
+    const type = this._types.get(room.roomType)
+    const seconds = type?.options.reservationTimeout ?? 60
+    const { clock, createId } = this._deps
+    const reservation: Reservation = {
+      id: createId(21),
+      roomId: room.id,
+      roomType: room.roomType,
+      sessionId: createId(12),
+      expiresAt: clock.now() + seconds * 1000,
+    }
+    const entry: ReservationEntry = {
+      reservation,
+      room,
+      expired: false,
+      // Keep an expired entry around for another timeout, so a late client
+      // hears RESERVATION_EXPIRED rather than RESERVATION_NOT_FOUND.
+      cleanup: clock.setTimeout(
+        () => this._reservations.delete(reservation.id),
+        seconds * 2000,
+      ),
+    }
+    this._reservations.set(reservation.id, entry)
+    room._hold(reservation, options, seconds * 1000)
+    return ok(reservation)
+  }
+
+  /** Rooms **this process** owns; a cluster's other rooms aren't here. */
   public getAllRooms(): Room[] {
     return this._deps.manager.getRooms()
   }
 
+  /** A room **this process** owns; use `joinById` for a cluster-wide look. */
   public getRoom(id: string): Room | undefined {
     return this._deps.manager.getRoom(id)
   }
 
-  /** Disposes the room (its clients get `LEAVE(4002)`). */
+  /** Disposes the room (its clients get `LEAVE(4002)`), wherever it is. */
   public removeRoom(id: string): void {
-    void this._deps.manager.getRoom(id)?.dispose()
+    const room = this._deps.manager.getRoom(id)
+    if (room !== undefined) {
+      void room.dispose()
+      return
+    }
+    const cluster = this._deps.cluster()
+    if (cluster === undefined) return
+    void cluster.locate("room", id).then((owner) => {
+      if (owner !== undefined) void cluster.roomOp(owner, id, { op: "dispose" })
+    })
   }
 
   public getProcessId(): string {
@@ -269,32 +347,117 @@ export class MatchMaker {
     return count
   }
 
-  /** This process only; cluster aggregation (§6.4) is not built yet. */
+  /**
+   * Every process in the cluster (spec §6.4): a `PROCESS_INFO` request goes
+   * out on the backplane, answers are collected for a short window, and
+   * this process is included without a round trip. Outside cluster mode it
+   * is this process alone.
+   */
   public async getAllProcesses(): Promise<
     Result<ProcessInfo[], BungohanError>
   > {
-    if (this._deps.clusterEnabled) {
-      return err(
-        this._error(
-          "CLUSTER_NOT_IMPLEMENTED",
-          "cross-process aggregation is not implemented yet",
-        ),
-      )
-    }
-    return ok([this._localProcess()])
+    const cluster = this._deps.cluster()
+    if (cluster === undefined) return ok([this._localProcess()])
+    return ok(await cluster.processes())
   }
 
   /** @internal An available room of the type, ready or still being created. */
-  public _findAvailable(roomType: string): Room | undefined {
+  public _findAvailable(
+    roomType: string,
+    exclude: readonly string[] = [],
+  ): Room | undefined {
     for (const room of this._deps.manager.getRooms()) {
-      if (room.roomType === roomType && room.isAvailable()) return room
+      if (room.roomType !== roomType || !room.isAvailable()) continue
+      if (exclude.includes(room.id)) continue
+      return room
     }
     return undefined
+  }
+
+  /** @internal This process's listings, for a peer's `query`. */
+  public _listLocal(
+    roomType: string,
+    metadata: Record<string, unknown> | undefined,
+    includePrivate: boolean,
+  ): RoomListingInfo[] {
+    const out: RoomListingInfo[] = []
+    for (const room of this._deps.manager.getRooms()) {
+      if (room.roomType !== roomType || room.isDisposed) continue
+      if (!room._isReady) continue
+      if (room.visibility !== "public" && !includePrivate) continue
+      if (metadata !== undefined) {
+        const wanted = Object.entries(metadata)
+        if (wanted.some(([key, value]) => room.metadata[key] !== value)) {
+          continue
+        }
+      }
+      out.push(this._listing(room))
+    }
+    return out
+  }
+
+  /** @internal How another process sees a room this one owns (spec §6.4). */
+  public _roomInfo(room: Room): RoomInfo {
+    return {
+      id: room.id,
+      roomType: room.roomType,
+      processId: this._deps.processId,
+      maxClients: room.maxClients,
+      autoDispose: room.autoDispose,
+      allowReconnection: room.allowReconnection,
+      reconnectionTimeout: room.reconnectionTimeout,
+      visibility: room.visibility,
+      locked: room.locked,
+      metadata: { ...room.metadata },
+      clientCount: room.getClientCount(),
+      seatCount: room.getSeatCount(),
+      disposed: room.isDisposed,
+    }
+  }
+
+  /** @internal */
+  public _localProcess(): ProcessInfo {
+    return {
+      id: this._deps.processId,
+      roomCount: this.getRoomCount(),
+      clientCount: this.getClientCount(),
+    }
   }
 
   /** @internal */
   public _error(code: ErrorCode, message: string): BungohanError {
     return new BungohanError(code, message, this._deps.clock.now())
+  }
+
+  /** @internal A handle on a room another process owns. */
+  public _proxy(info: RoomInfo): RoomProxy {
+    const cluster = this._deps.cluster()
+    return new RoomProxy(
+      {
+        clock: this._deps.clock,
+        logger: this._deps.logger,
+        call: async (processId, roomId, op) => {
+          if (cluster === undefined) {
+            return err(
+              this._error("INVALID_STATE", "cluster mode is not running"),
+            )
+          }
+          return cluster.roomOp(processId, roomId, op)
+        },
+      },
+      info,
+    )
+  }
+
+  private async _proxyFor(
+    cluster: ClusterNode,
+    processId: string,
+    roomId: string,
+  ): Promise<Result<Room, BungohanError>> {
+    const info = await cluster.roomOp(processId, roomId, { op: "info" })
+    if (info.isErr()) return info
+    // The owning process answered an `info` op with its own `RoomInfo`.
+    return ok(this._proxy(info.value as RoomInfo))
   }
 
   private _type(name: string): Result<RoomTypeDef, BungohanError> {
@@ -315,7 +478,33 @@ export class MatchMaker {
     return ok(room)
   }
 
-  /** Runs a selector over the (single-process) list; it must pick us. */
+  /** Runs a selector over the real cluster list and checks what it picked. */
+  private async _select(
+    cluster: ClusterNode,
+    selector: ProcessSelector,
+  ): Promise<Result<string, BungohanError>> {
+    const processes = await cluster.processes()
+    let chosen: ProcessInfo
+    try {
+      chosen = selector(processes)
+    } catch (error) {
+      return err(
+        this._error("INVALID_OPTIONS", `process selector threw: ${error}`),
+      )
+    }
+    if (!processes.some((process) => process.id === chosen?.id)) {
+      return err(
+        this._error(
+          "INVALID_OPTIONS",
+          `the process selector picked "${chosen?.id}", which is not one of ` +
+            `the ${processes.length} processes it was given`,
+        ),
+      )
+    }
+    return ok(chosen.id)
+  }
+
+  /** Without cluster mode there is only this process, and it must be picked. */
   private _selectLocal(
     selector: ProcessSelector | undefined,
   ): Result<void, BungohanError> {
@@ -334,17 +523,10 @@ export class MatchMaker {
       : err(
           this._error(
             "CLUSTER_NOT_IMPLEMENTED",
-            "creating rooms on another process needs cluster mode",
+            "creating rooms on another process needs cluster mode " +
+              "(ServerOptions.cluster.enabled)",
           ),
         )
-  }
-
-  private _localProcess(): ProcessInfo {
-    return {
-      id: this._deps.processId,
-      roomCount: this.getRoomCount(),
-      clientCount: this.getClientCount(),
-    }
   }
 
   private _listing(room: Room): RoomListingInfo {

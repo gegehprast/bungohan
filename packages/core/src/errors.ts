@@ -16,7 +16,11 @@ export type ErrorCode =
   | "ROOM_CREATE_FAILED"
   /** A store operation behind `loadState`/`saveState` failed. */
   | "STORE_FAILED"
-  /** Cluster mode (spec §6.4) is the next milestone; not built yet. */
+  /**
+   * An operation that needs a cluster on a server without one, e.g. a
+   * `ProcessSelector` picking another process while `cluster.enabled` is
+   * off (spec §6.4).
+   */
   | "CLUSTER_NOT_IMPLEMENTED"
   /** A lifecycle call made in the wrong state (e.g. `start()` twice). */
   | "INVALID_STATE"

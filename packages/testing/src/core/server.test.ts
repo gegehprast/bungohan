@@ -173,14 +173,16 @@ describe("HTTP server", () => {
   })
 })
 
-describe("cluster mode is a later milestone", () => {
-  test("start() refuses cluster.enabled with a clear error", async () => {
+describe("without cluster mode", () => {
+  test("start() refuses cluster.enabled without a backplane", async () => {
     const { ServerHarness } = await import("../harness")
     const h = new ServerHarness({ server: { cluster: { enabled: true } } })
     const started = await h.server.start()
-    expect(started.isErr() && started.error.code).toBe(
-      "CLUSTER_NOT_IMPLEMENTED",
+    expect(started.isErr() && started.error.code).toBe("INVALID_OPTIONS")
+    expect(started.isErr() && started.error.message).toContain(
+      "cluster.backplane.provider",
     )
+    expect(h.server.isRunning()).toBe(false)
   })
 
   test("a process selector choosing another process is refused", async () => {

@@ -198,6 +198,14 @@ export abstract class Room<
     return this._paused
   }
 
+  /**
+   * True when this object is a `RoomProxy` for a room on another process
+   * (spec §6.4). A room this process owns is always local.
+   */
+  public get isRemote(): boolean {
+    return false
+  }
+
   /** The server's clock: use it for game timers so tests can drive them. */
   protected get clock(): Clock {
     return this._requireHost().clock
@@ -351,6 +359,34 @@ export abstract class Room<
     except?: Client,
   ): void {
     this.broadcast(type, message, except)
+  }
+
+  /**
+   * @internal `broadcast` by name, for a `RoomProxy` on another process
+   * (spec §6.4). The payload is checked against the contract by
+   * `_encodeMessage`, which reports an unknown name to `server.onError`.
+   */
+  public _broadcastByName(
+    type: string,
+    message: unknown,
+    except?: Client,
+  ): void {
+    const body = this._encodeMessage(type, message)
+    if (body === undefined) return
+    const [id, bytes] = body
+    this._deliverAll(ServerFrameType.ROOM_MESSAGE, [id], bytes, except)
+  }
+
+  /** @internal `broadcastRaw` by name (spec §6.4). */
+  public _broadcastRawByName(
+    type: string,
+    message: unknown,
+    except?: Client,
+  ): void {
+    const body = this._encodeRaw(type, message)
+    if (body !== undefined) {
+      this._deliverAll(ServerFrameType.ROOM_MESSAGE_RAW, [], body, except)
+    }
   }
 
   /** Untyped send: the type name travels inline, the payload as MessagePack. */
@@ -709,6 +745,7 @@ export abstract class Room<
     client: Client,
     connection: Connection | undefined,
     reserved: boolean,
+    ref?: number,
   ): Result<void, BungohanError> {
     if (this._disposing !== undefined) {
       return err(this._error("ROOM_NOT_FOUND", "the room is being disposed"))
@@ -729,7 +766,7 @@ export abstract class Room<
     if (this._host?.metrics !== undefined) {
       client._stats = new ClientStats(this._host.clock.now())
     }
-    this._bind(client, connection)
+    this._bind(client, connection, ref)
     this.clients.set(client.sessionId, client)
     return ok(undefined)
   }
@@ -860,11 +897,15 @@ export abstract class Room<
   }
 
   /** @internal Binds a held seat to a new connection (spec §6.7.5). */
-  public _reconnect(client: Client, connection: Connection): void {
+  public _reconnect(
+    client: Client,
+    connection: Connection,
+    ref?: number,
+  ): void {
     const timer = this._reconnectTimers.get(client)
     if (timer !== undefined) this._requireHost().clock.clearTimeout(timer)
     this._reconnectTimers.delete(client)
-    this._bind(client, connection)
+    this._bind(client, connection, ref)
     client._status = "joined"
     client._synced = false
     this._updatePause()
@@ -1221,10 +1262,20 @@ export abstract class Room<
   // Internals: frames
   // ==========================================================================
 
-  private _bind(client: Client, connection: Connection | undefined): void {
+  /**
+   * Binds a seat to a connection and gives it a `roomRef`. A clustered
+   * join passes `ref`: the handle the *edge* process already allocated on
+   * the real connection, so every frame this room builds is addressed with
+   * the handle that goes on the wire (spec §6.4, PROTOCOL.md §3.1).
+   */
+  private _bind(
+    client: Client,
+    connection: Connection | undefined,
+    ref?: number,
+  ): void {
     client._connection = connection
     if (connection === undefined) return
-    client._roomRef = connection._nextRoomRef++
+    client._roomRef = ref ?? connection._nextRoomRef++
     connection._seats.set(client._roomRef, client)
   }
 

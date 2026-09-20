@@ -25,10 +25,37 @@ export interface ServerOptions {
     provider?: IStore
     config?: { url?: string; host?: string; port?: number; password?: string }
   }
-  /** Cluster mode (spec §6.4) is not built yet: `enabled: true` makes `start()` fail. */
+  /**
+   * Cluster mode (spec §6.4). With `enabled`, rooms may live on any
+   * process: matchmaking looks across the cluster, and a client connected
+   * here can sit in a room that runs elsewhere. It needs a backplane.
+   *
+   * Every timing is measured on {@link ServerOptions.clock}, never on
+   * wall-clock time, so tests drive them with a manual clock.
+   */
   cluster?: {
     enabled?: boolean
+    /** This process's id in the cluster. Default: a random nanoid. */
     processId?: string
+    /**
+     * Channel prefix, so unrelated clusters (or test runs) can share one
+     * Redis. Default `"bungohan"`.
+     */
+    namespace?: string
+    /** How often this process announces itself. Default 2,000 ms. */
+    heartbeatInterval?: number
+    /**
+     * How long a process may be silent before peers drop it and end what
+     * depended on it. Default 6,000 ms (three heartbeats).
+     */
+    peerTimeout?: number
+    /** How long a directed request waits for its reply. Default 5,000 ms. */
+    requestTimeout?: number
+    /**
+     * How long a broadcast (process info, room lookup, query) collects
+     * answers. Default 200 ms.
+     */
+    gatherTimeout?: number
     backplane?: {
       provider?: IBackplane
       config?: { url?: string; host?: string; port?: number; password?: string }

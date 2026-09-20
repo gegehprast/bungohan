@@ -3,6 +3,18 @@ import type { ClientStats } from "./metrics"
 import type { Room } from "./room"
 
 /**
+ * A seat this connection holds in a room owned by **another** process
+ * (spec §6.4). There is no local `Client` for it: the owning process holds
+ * that, and this process only relays bytes.
+ */
+export interface RemoteSeat {
+  /** The process the room runs on. */
+  readonly processId: string
+  readonly roomId: string
+  readonly sessionId: string
+}
+
+/**
  * One transport connection. A connection can hold seats in several rooms
  * at once, each addressed on the wire by its `roomRef` (spec §6.7.1).
  */
@@ -13,6 +25,14 @@ export class Connection {
   public readonly connectedAt: number
   /** @internal Seats of this connection by roomRef. */
   public readonly _seats = new Map<number, Client>()
+  /** @internal Seats in rooms on other processes, by roomRef (spec §6.4). */
+  public readonly _remoteSeats = new Map<number, RemoteSeat>()
+  /**
+   * @internal Every process this connection has ever taken a seat on. Kept
+   * after the seats end, so the close is still reported and the owning
+   * process can forget the connection (spec §6.4).
+   */
+  public readonly _remoteOwners = new Set<string>()
   /** @internal Next roomRef; handles are never reused (spec §6.7.1). */
   public _nextRoomRef = 1
   /** @internal */

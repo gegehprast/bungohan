@@ -1,6 +1,20 @@
 // Defined in @bungohan/types (shared with client-js); re-exported here.
 export { type Clock, SystemClock, type TimerId } from "@bungohan/types"
-export { Client, type ClientStatus, Connection } from "./client"
+export {
+  Client,
+  type ClientStatus,
+  Connection,
+  type RemoteSeat,
+} from "./client"
+export {
+  type ClusterHandlers,
+  ClusterNode,
+  type ClusterTimings,
+  DEFAULT_CLUSTER_TIMINGS,
+} from "./cluster/node"
+export type { RoomInfo, RoomOp } from "./cluster/protocol"
+export { RoomProxy } from "./cluster/proxy"
+export { RemoteConnection } from "./cluster/remote"
 export { BungohanError, type ErrorCode } from "./errors"
 export { HttpServer, type HttpServerOptions } from "./http"
 export { Logger, type LoggerOptions, type LogLevel } from "./logger"

@@ -9,6 +9,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@bungohan/backplane": "workspace:*",
     "@bungohan/client-js": "workspace:*",
     "@bungohan/core": "workspace:*",
     "@bungohan/result": "workspace:*",

@@ -47,6 +47,11 @@ export interface ServerHarnessOptions {
   /** Anything but transport and clock, which the harness provides. */
   server?: Omit<ServerOptions, "transport" | "clock">
   transport?: LoopbackTransportOptions
+  /**
+   * A clock to share with other harnesses. A {@link ClusterHarness} passes
+   * one, so every process in the cluster runs on the same time.
+   */
+  clock?: ManualClock
 }
 
 /** What both harnesses share: server, loopback, clock and their controls. */
@@ -54,9 +59,17 @@ abstract class HarnessBase {
   public readonly server: BungohanServer
   public readonly transport: LoopbackTransport
   public readonly clock: ManualClock
+  /**
+   * How `flush()` delivers frames. By default this harness's own
+   * transport; a {@link ClusterHarness} replaces it with one that covers
+   * every process, since a frame may be produced on another one.
+   */
+  protected _network: () => Promise<void> = async () => {
+    ;(await this.transport.flush()).unwrap()
+  }
 
   public constructor(options: ServerHarnessOptions = {}) {
-    this.clock = new ManualClock()
+    this.clock = options.clock ?? new ManualClock()
     this.transport = new LoopbackTransport(options.transport)
     this.server = new BungohanServer({
       logger: { level: "silent" },
@@ -86,9 +99,14 @@ abstract class HarnessBase {
     return this
   }
 
+  /** @internal Replaces how frames are delivered (a cluster harness). */
+  public _setNetwork(network: () => Promise<void>): void {
+    this._network = network
+  }
+
   /** Delivers every queued frame and close (both directions). */
   public async flush(): Promise<void> {
-    ;(await this.transport.flush()).unwrap()
+    await this._network()
   }
 
   /**
@@ -322,12 +340,12 @@ export class TestHarness extends HarnessBase {
   private _pumpJoins(): void {
     this._pumping = this._pumping.then(async () => {
       const limit = this.clock.now() + JOIN_DELIVERY_LIMIT_MS
-      ;(await this.transport.flush()).unwrap()
+      await this._network()
       while ([...this._joins].some((joins) => joins.pending)) {
         const due = this.clock.nextDue()
         if (due === undefined || due > limit) break
         await this.clock.advanceTo(due)
-        ;(await this.transport.flush()).unwrap()
+        await this._network()
       }
     })
   }

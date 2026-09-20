@@ -1,3 +1,4 @@
+import { type IBackplane, RedisBackplane } from "@bungohan/backplane"
 import { err, ok, type Result } from "@bungohan/result"
 import {
   decodeFrame,
@@ -22,12 +23,29 @@ import {
   type JoinRequest,
   LeaveCode,
   PROTOCOL_VERSION,
+  type Reservation,
+  SERVER_FRAME_HEADERS,
   ServerFrameType,
   SystemClock,
   type TimerId,
 } from "@bungohan/types"
 import { nanoid } from "nanoid"
 import { Client, Connection } from "./client"
+import {
+  type ClusterHandlers,
+  ClusterNode,
+  type ClusterTimings,
+  DEFAULT_CLUSTER_TIMINGS,
+} from "./cluster/node"
+import {
+  type JoinForwardRequest,
+  type JoinTarget,
+  packContext,
+  type RoomInfo,
+  type RoomOp,
+  unpackContext,
+} from "./cluster/protocol"
+import { isRemoteConnection, RemoteConnection } from "./cluster/remote"
 import { BungohanError, type ErrorCode } from "./errors"
 import { HttpServer } from "./http"
 import { Logger } from "./logger"
@@ -58,8 +76,56 @@ interface Joined {
   readonly reconnected: boolean
 }
 
+/**
+ * Where a `JOIN` ended up. A `remote` join is finished by the process that
+ * owns the room: it seats the client and sends every frame itself, and this
+ * process only relays bytes (spec §6.4).
+ */
+type Routed =
+  | { readonly kind: "local"; readonly joined: Joined }
+  | { readonly kind: "remote" }
+
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error))
+}
+
+/** Wraps a local join outcome as a {@link Routed}. */
+async function local(
+  joining: Promise<Result<Joined, BungohanError>>,
+): Promise<Result<Routed, BungohanError>> {
+  const joined = await joining
+  return joined.isErr() ? joined : ok({ kind: "local", joined: joined.value })
+}
+
+/** Rooms this connection already holds a seat in, here or elsewhere. */
+function seatedRooms(connection: Connection): string[] {
+  const ids: string[] = []
+  for (const client of connection._seats.values()) {
+    const id = client._room?.id
+    if (id !== undefined && client._status !== "left") ids.push(id)
+  }
+  for (const seat of connection._remoteSeats.values()) ids.push(seat.roomId)
+  return ids
+}
+
+/**
+ * True when a forwarded join failed because the room it was sent to can no
+ * longer take the client, rather than because the client was refused. Only
+ * these are worth retrying locally (spec §6.4).
+ */
+function raceLost(forwarded: Result<Routed, BungohanError>): boolean {
+  if (forwarded.isOk()) return false
+  switch (forwarded.error.code) {
+    case "ROOM_NOT_FOUND":
+    case "ROOM_FULL":
+    case "ROOM_LOCKED":
+    case "SERVER_SHUTTING_DOWN":
+    case "TIMEOUT":
+    case "CONNECTION_LOST":
+      return true
+    default:
+      return false
+  }
 }
 
 /**
@@ -102,6 +168,12 @@ export class BungohanServer {
   private readonly _matchMaker: MatchMaker
   private readonly _host: RoomHost
   private readonly _connections = new Map<string, Connection>()
+  /** Connections of *other* processes holding seats in rooms here (§6.4). */
+  private readonly _remoteConnections = new Map<string, RemoteConnection>()
+  private readonly _clusterTimings: ClusterTimings
+  private _backplane: IBackplane | undefined
+  private _ownsBackplane = false
+  private _cluster: ClusterNode | undefined
   private readonly _onConnect = new Set<Callback<[Connection]>>()
   private readonly _onJoin = new Set<Callback<[Client, Room]>>()
   private readonly _onLeave = new Set<Callback<[Client, Room, boolean]>>()
@@ -150,6 +222,16 @@ export class BungohanServer {
         ? new MetricsCollector(this._clock)
         : undefined
     this._processId = options.cluster?.processId ?? nanoid(10)
+    const cluster = options.cluster ?? {}
+    this._clusterTimings = {
+      heartbeatInterval:
+        cluster.heartbeatInterval ?? DEFAULT_CLUSTER_TIMINGS.heartbeatInterval,
+      peerTimeout: cluster.peerTimeout ?? DEFAULT_CLUSTER_TIMINGS.peerTimeout,
+      requestTimeout:
+        cluster.requestTimeout ?? DEFAULT_CLUSTER_TIMINGS.requestTimeout,
+      gatherTimeout:
+        cluster.gatherTimeout ?? DEFAULT_CLUSTER_TIMINGS.gatherTimeout,
+    }
     this._host = this._createHost()
     this._manager = new RoomManager(this._host, (error) =>
       this._report(error, { source: "callback" }),
@@ -157,8 +239,10 @@ export class BungohanServer {
     this._matchMaker = new MatchMaker({
       manager: this._manager,
       clock: this._clock,
+      logger: this._logger,
       processId: this._processId,
       clusterEnabled: options.cluster?.enabled === true,
+      cluster: () => this._cluster,
       createId: (size) => nanoid(size),
     })
     setMatchMaker(this._matchMaker)
@@ -186,12 +270,8 @@ export class BungohanServer {
       return err(this._error("INVALID_STATE", "already running"))
     }
     if (this._options.cluster?.enabled === true) {
-      return err(
-        this._error(
-          "CLUSTER_NOT_IMPLEMENTED",
-          "cluster mode (spec §6.4) is not implemented yet",
-        ),
-      )
+      const started = await this._startCluster()
+      if (started.isErr()) return started
     }
     const transport = this._transport
     transport.acceptProtocols([PROTOCOL_VERSION])
@@ -204,6 +284,7 @@ export class BungohanServer {
     const port = this._options.transport?.config?.port ?? DEFAULT_PORT
     const listening = await transport.listen(port)
     if (listening.isErr()) {
+      await this._stopCluster()
       return err(
         this._error(
           "CONNECTION_FAILED",
@@ -257,6 +338,7 @@ export class BungohanServer {
       const started = this._http.start()
       if (started.isErr()) {
         await transport.close()
+        await this._stopCluster()
         this._http = undefined
         return err(
           this._error(
@@ -288,12 +370,16 @@ export class BungohanServer {
     await Promise.all(this._manager.getRooms().map((room) => room.dispose()))
     const closed = await this._transport.close()
     if (closed.isErr()) this._report(closed.error, { source: "transport" })
+    // After the rooms disposed, so their LEAVE(4001) frames were published
+    // to the processes holding those connections before we say goodbye.
+    await this._stopCluster()
     await this._http?.stop()
     this._http = undefined
     if (this._ownsStore) await this._store?.close()
     process.off("SIGTERM", this._onSignal)
     process.off("SIGINT", this._onSignal)
     this._connections.clear()
+    this._remoteConnections.clear()
     this._running = false
     this._shuttingDown = false
     return ok(undefined)
@@ -473,6 +559,17 @@ export class BungohanServer {
     for (const client of [...connection._seats.values()]) {
       client._room?._connectionLost(client)
     }
+    // Seats this connection held in rooms on other processes: those
+    // processes hold (or release) them, exactly as if the socket were
+    // theirs (spec §6.4).
+    const cluster = this._cluster
+    if (cluster !== undefined && connection._remoteOwners.size > 0) {
+      connection._remoteSeats.clear()
+      for (const owner of connection._remoteOwners) {
+        cluster.notifyConnectionClosed(owner, id)
+      }
+      connection._remoteOwners.clear()
+    }
   }
 
   private _handleFrame(id: string, data: Uint8Array): void {
@@ -493,12 +590,27 @@ export class BungohanServer {
     switch (type) {
       case ClientFrameType.ROOM_MESSAGE:
       case ClientFrameType.ROOM_MESSAGE_RAW: {
+        const raw = type === ClientFrameType.ROOM_MESSAGE_RAW
         const client = connection._seats.get(ref)
-        if (client?._room === undefined || client._status !== "joined") return
-        const received =
-          type === ClientFrameType.ROOM_MESSAGE
-            ? client._room._receive(client, header[1] ?? 0, body)
-            : client._room._receiveRaw(client, body)
+        if (client === undefined) {
+          const seat = connection._remoteSeats.get(ref)
+          if (seat !== undefined) {
+            this._cluster?.forwardMessage(
+              seat.processId,
+              seat.roomId,
+              seat.sessionId,
+              connection.id,
+              raw,
+              header[1] ?? 0,
+              body,
+            )
+          }
+          return
+        }
+        if (client._room === undefined || client._status !== "joined") return
+        const received = raw
+          ? client._room._receiveRaw(client, body)
+          : client._room._receive(client, header[1] ?? 0, body)
         if (received.isErr()) {
           this._violation(connection, received.error.message)
         }
@@ -511,7 +623,18 @@ export class BungohanServer {
         return
       case ClientFrameType.LEAVE: {
         const client = connection._seats.get(ref)
-        if (client?._room === undefined || client._status !== "joined") return
+        if (client === undefined) {
+          const seat = connection._remoteSeats.get(ref)
+          if (seat !== undefined) {
+            this._cluster?.forwardLeave(
+              seat.processId,
+              seat.roomId,
+              seat.sessionId,
+            )
+          }
+          return
+        }
+        if (client._room === undefined || client._status !== "joined") return
         void client._room._release(client, true, LeaveCode.CONSENTED)
         return
       }
@@ -541,6 +664,16 @@ export class BungohanServer {
    */
   private _violation(connection: Connection, why: string): void {
     this._logger.warn(`protocol violation from ${connection.id}: ${why}`)
+    if (isRemoteConnection(connection)) {
+      // The socket is another process's; it sends the ERROR and closes.
+      connection._open = false
+      this._cluster?.sendViolation(
+        connection.processId,
+        connection.connectionId,
+        why,
+      )
+      return
+    }
     const body = this._serializer.encode(["INVALID_MESSAGE", why])
     if (body.isOk()) {
       const frame = encodeFrame(ServerFrameType.ERROR, [0], body.value)
@@ -578,17 +711,34 @@ export class BungohanServer {
       )
       return
     }
-    const joined = await this._join(connection, request)
-    if (joined.isErr()) {
+    const routed = await this._route(connection, requestId, request)
+    if (routed.isErr()) {
       this._joinError(
         connection,
         requestId,
-        joined.error.code,
-        joined.error.message,
+        routed.error.code,
+        routed.error.message,
       )
       return
     }
-    const { room, client, reconnected } = joined.value
+    // A remote join is completed by the process that owns the room: it
+    // sends `JOIN_SUCCESS` itself, on this connection's `roomRef`.
+    if (routed.value.kind === "local") {
+      this._completeJoin(connection, requestId, routed.value.joined)
+    }
+  }
+
+  /**
+   * Sends `JOIN_SUCCESS` and admits the client (spec §6.7.2). The
+   * `connection` may be a `RemoteConnection`, in which case every frame
+   * built here is relayed to the process holding the socket (§6.4).
+   */
+  private _completeJoin(
+    connection: Connection,
+    requestId: number,
+    joined: Joined,
+  ): void {
+    const { room, client, reconnected } = joined
     if (!connection._open) {
       // Closed while joining. onJoin ran, so onLeave will too; without a
       // token the seat isn't held.
@@ -635,46 +785,126 @@ export class BungohanServer {
     if (frame.isOk()) this._host.sendFrame(connection, frame.value)
   }
 
-  private async _join(
+  /**
+   * Resolves a `JOIN` to a room and seats the client, here or on the
+   * process that owns the room (spec §6.4). Every lookup is **local
+   * first**: only when this process has nothing does it ask the cluster,
+   * so an unclustered server behaves exactly as before.
+   */
+  private async _route(
     connection: Connection,
+    requestId: number,
     [mode, target, options, hash]: JoinRequest,
-  ): Promise<Result<Joined, BungohanError>> {
+  ): Promise<Result<Routed, BungohanError>> {
     if (this._shuttingDown || !this._running) {
       return err(
         this._error("SERVER_SHUTTING_DOWN", "the server is shutting down"),
       )
     }
     switch (mode) {
-      case JoinMode.RECONNECT:
-        return this._reconnect(connection, target, hash)
-      case JoinMode.CONSUME_RESERVATION:
-        return this._joinReservation(connection, target, hash)
-      case JoinMode.JOIN_BY_ID: {
-        const room = this._manager.getRoom(target)
-        if (room === undefined || room.isDisposed) {
-          return err(
-            this._error("ROOM_NOT_FOUND", `room "${target}" not found`),
+      case JoinMode.RECONNECT: {
+        // The token names its room (`<roomId>.<secret>`), so a client may
+        // reconnect to any process in the cluster (spec §6.4).
+        const roomId = target.slice(0, Math.max(0, target.indexOf(".")))
+        if (this._manager.getRoom(roomId) !== undefined) {
+          return local(this._reconnect(connection, target, hash))
+        }
+        const owner = await this._cluster?.locate("room", roomId)
+        if (owner !== undefined) {
+          return this._forwardJoin(
+            connection,
+            requestId,
+            owner,
+            options,
+            hash,
+            {
+              kind: "reconnect",
+              token: target,
+            },
           )
         }
-        const checked = this._checkRoom(connection, room, hash)
-        if (checked.isErr()) return checked
-        const client = new Client(nanoid(12), connection)
-        return this._joinExisting(connection, room, client, options, false)
+        return err(this._error("INVALID_TOKEN", "unknown or expired token"))
+      }
+      case JoinMode.CONSUME_RESERVATION: {
+        if (this._matchMaker._hasReservation(target)) {
+          return local(this._joinReservation(connection, target, hash))
+        }
+        const owner = await this._cluster?.locate("reservation", target)
+        if (owner !== undefined) {
+          return this._forwardJoin(
+            connection,
+            requestId,
+            owner,
+            options,
+            hash,
+            {
+              kind: "reservation",
+              reservationId: target,
+            },
+          )
+        }
+        return err(this._error("RESERVATION_NOT_FOUND", "unknown reservation"))
+      }
+      case JoinMode.JOIN_BY_ID: {
+        const room = this._manager.getRoom(target)
+        if (room !== undefined) {
+          if (room.isDisposed) {
+            return err(
+              this._error("ROOM_NOT_FOUND", `room "${target}" not found`),
+            )
+          }
+          const checked = this._checkRoom(connection, room, hash)
+          if (checked.isErr()) return checked
+          const client = new Client(nanoid(12), connection)
+          return local(
+            this._joinExisting(connection, room, client, options, false),
+          )
+        }
+        const owner = await this._cluster?.locate("room", target)
+        if (owner !== undefined) {
+          return this._forwardJoin(
+            connection,
+            requestId,
+            owner,
+            options,
+            hash,
+            {
+              kind: "room",
+              roomId: target,
+              mode,
+            },
+          )
+        }
+        return err(this._error("ROOM_NOT_FOUND", `room "${target}" not found`))
       }
       default:
-        return this._joinByType(connection, mode, target, options, hash)
+        return this._routeByType(
+          connection,
+          requestId,
+          mode,
+          target,
+          options,
+          hash,
+        )
     }
   }
 
-  private async _joinByType(
+  private async _routeByType(
     connection: Connection,
+    requestId: number,
     mode: JoinMode,
     typeName: string,
     options: unknown,
     hash: string | null,
-  ): Promise<Result<Joined, BungohanError>> {
+  ): Promise<Result<Routed, BungohanError>> {
     const type = this._matchMaker._getType(typeName)
-    if (type === undefined) {
+    if (type !== undefined) {
+      const contract = this._checkContract(type, hash)
+      if (contract.isErr()) return contract
+    } else if (mode === JoinMode.CREATE || this._cluster === undefined) {
+      // A clustered server may not define every room type: a join can
+      // still land on a process that does, so the check waits until the
+      // cluster has been asked.
       return err(
         this._error(
           "ROOM_TYPE_NOT_DEFINED",
@@ -682,8 +912,6 @@ export class BungohanServer {
         ),
       )
     }
-    const contract = this._checkContract(type, hash)
-    if (contract.isErr()) return contract
     if (mode !== JoinMode.CREATE) {
       const room = this._manager
         .getRooms()
@@ -695,7 +923,33 @@ export class BungohanServer {
         )
       if (room !== undefined) {
         const client = new Client(nanoid(12), connection)
-        return this._joinExisting(connection, room, client, options, false)
+        return local(
+          this._joinExisting(connection, room, client, options, false),
+        )
+      }
+      const found = await this._cluster?.findAvailable(
+        typeName,
+        seatedRooms(connection),
+      )
+      if (found !== undefined) {
+        const forwarded = await this._forwardJoin(
+          connection,
+          requestId,
+          found.processId,
+          options,
+          hash,
+          { kind: "room", roomId: found.roomId, mode },
+        )
+        // A room can fill up or vanish between answering and being joined.
+        // `JOIN_OR_CREATE` then creates one here, as it would locally;
+        // anything else is the client's answer.
+        if (
+          forwarded.isOk() ||
+          mode === JoinMode.JOIN ||
+          !raceLost(forwarded)
+        ) {
+          return forwarded
+        }
       }
       if (mode === JoinMode.JOIN) {
         return err(
@@ -705,6 +959,14 @@ export class BungohanServer {
           ),
         )
       }
+    }
+    if (type === undefined) {
+      return err(
+        this._error(
+          "ROOM_TYPE_NOT_DEFINED",
+          `room type "${typeName}" is not defined`,
+        ),
+      )
     }
 
     // Create: the static onAuth decides before the room exists.
@@ -727,18 +989,25 @@ export class BungohanServer {
       return err(this._error("JOIN_FAILED", "the room could not be created"))
     }
     const joined = await room._runJoin(client, options, auth.value)
-    return joined.isErr() ? joined : ok({ room, client, reconnected: false })
+    return joined.isErr()
+      ? joined
+      : ok({ kind: "local", joined: { room, client, reconnected: false } })
   }
 
-  /** Seat, wait for the room, instance onAuth, onJoin. */
+  /**
+   * Seat, wait for the room, instance onAuth, onJoin. `ref` is set for a
+   * clustered join: the `roomRef` the edge process already allocated on
+   * the client's connection (spec §6.4).
+   */
   private async _joinExisting(
     connection: Connection,
     room: Room,
     client: Client,
     options: unknown,
     reserved: boolean,
+    ref?: number,
   ): Promise<Result<Joined, BungohanError>> {
-    const seated = room._seat(client, connection, reserved)
+    const seated = room._seat(client, connection, reserved, ref)
     if (seated.isErr()) return seated
     const ready = await room._readyPromise
     if (ready?.isErr()) {
@@ -762,6 +1031,7 @@ export class BungohanServer {
     connection: Connection,
     reservationId: string,
     hash: string | null,
+    ref?: number,
   ): Promise<Result<Joined, BungohanError>> {
     const taken = this._matchMaker._consume(reservationId)
     if (taken.isErr()) return taken
@@ -769,13 +1039,14 @@ export class BungohanServer {
     const checked = this._checkRoom(connection, room, hash)
     if (checked.isErr()) return checked
     const client = new Client(reservation.sessionId, connection)
-    return this._joinExisting(connection, room, client, options, true)
+    return this._joinExisting(connection, room, client, options, true, ref)
   }
 
   private async _reconnect(
     connection: Connection,
     token: string,
     hash: string | null,
+    ref?: number,
   ): Promise<Result<Joined, BungohanError>> {
     const roomId = token.slice(0, Math.max(0, token.indexOf(".")))
     const room = this._manager.getRoom(roomId)
@@ -785,7 +1056,7 @@ export class BungohanServer {
     }
     const checked = this._checkRoom(connection, room, hash)
     if (checked.isErr()) return checked
-    room._reconnect(client, connection)
+    room._reconnect(client, connection, ref)
     return ok({ room, client, reconnected: true })
   }
 
@@ -830,6 +1101,456 @@ export class BungohanServer {
   }
 
   // ==========================================================================
+  // Cluster mode (spec §6.4)
+  // ==========================================================================
+
+  /** The cluster node while cluster mode runs, `undefined` otherwise. */
+  public getCluster(): ClusterNode | undefined {
+    return this._cluster
+  }
+
+  /**
+   * Connections of *other* processes that currently hold seats in rooms
+   * here (spec §6.4). One per remote client connection, not per seat.
+   */
+  public getRemoteConnectionCount(): number {
+    return this._remoteConnections.size
+  }
+
+  private async _startCluster(): Promise<Result<void, BungohanError>> {
+    const options = this._options.cluster ?? {}
+    if (options.backplane?.provider !== undefined) {
+      this._backplane = options.backplane.provider
+      this._ownsBackplane = false
+    } else if (options.backplane?.config !== undefined) {
+      this._backplane = new RedisBackplane(options.backplane.config)
+      this._ownsBackplane = true
+    } else {
+      return err(
+        this._error(
+          "INVALID_OPTIONS",
+          "cluster.enabled needs a backplane: pass " +
+            "cluster.backplane.provider (a RedisBackplane, a MemoryBackplane " +
+            "on a shared MemoryBus, or your own IBackplane) or " +
+            "cluster.backplane.config for Redis",
+        ),
+      )
+    }
+    const node = new ClusterNode({
+      backplane: this._backplane,
+      processId: this._processId,
+      namespace: options.namespace ?? "bungohan",
+      clock: this._clock,
+      logger: this._logger,
+      timings: this._clusterTimings,
+      createId: () => nanoid(16),
+      handlers: this._clusterHandlers(),
+    })
+    const started = await node.start()
+    if (started.isErr()) {
+      if (this._ownsBackplane) await this._backplane.close()
+      this._backplane = undefined
+      this._ownsBackplane = false
+      return started
+    }
+    this._cluster = node
+    return ok(undefined)
+  }
+
+  private async _stopCluster(): Promise<void> {
+    await this._cluster?.stop()
+    this._cluster = undefined
+    if (this._ownsBackplane) await this._backplane?.close()
+    this._backplane = undefined
+    this._ownsBackplane = false
+  }
+
+  private _clusterHandlers(): ClusterHandlers {
+    return {
+      localProcessInfo: () => this._matchMaker._localProcess(),
+      hasRoom: (roomId) => {
+        const room = this._manager.getRoom(roomId)
+        return room !== undefined && !room.isDisposed
+      },
+      hasReservation: (id) => this._matchMaker._hasReservation(id),
+      findAvailable: (roomType, exclude) =>
+        this._shuttingDown
+          ? undefined
+          : this._matchMaker._findAvailable(roomType, exclude)?.id,
+      listRooms: (roomType, metadata, includePrivate) =>
+        this._matchMaker._listLocal(roomType, metadata, includePrivate),
+      createRoom: (roomType, options) =>
+        this._clusterCreateRoom(roomType, options),
+      reserve: (roomId, options) => this._clusterReserve(roomId, options),
+      roomOp: (roomId, call) => this._clusterRoomOp(roomId, call),
+      remoteJoin: (request) => this._clusterJoin(request),
+      remoteMessage: (edge, roomId, sessionId, connectionId, raw, id, body) =>
+        this._clusterMessage(
+          edge,
+          roomId,
+          sessionId,
+          connectionId,
+          raw,
+          id,
+          body,
+        ),
+      remoteLeave: (_edge, roomId, sessionId) =>
+        this._clusterLeave(roomId, sessionId),
+      edgeConnectionClosed: (processId, connectionId) =>
+        this._closeRemoteConnection(`${processId}|${connectionId}`),
+      edgeProcessLost: (processId) => {
+        for (const [key, connection] of [...this._remoteConnections]) {
+          if (connection.processId === processId) {
+            this._closeRemoteConnection(key)
+          }
+        }
+      },
+      relayFrames: (connectionIds, frame) =>
+        this._relayFrames(connectionIds, frame),
+      relayViolation: (connectionId, why) => {
+        const connection = this._connections.get(connectionId)
+        if (connection !== undefined) this._violation(connection, why)
+      },
+      ownerProcessLost: (processId) => this._ownerProcessLost(processId),
+    }
+  }
+
+  // --- owner side ----------------------------------------------------------
+
+  private async _clusterCreateRoom(
+    roomType: string,
+    options: unknown,
+  ): Promise<Result<RoomInfo, BungohanError>> {
+    if (this._shuttingDown || !this._running) {
+      return err(
+        this._error("SERVER_SHUTTING_DOWN", "the server is shutting down"),
+      )
+    }
+    const type = this._matchMaker._getType(roomType)
+    if (type === undefined) {
+      return err(
+        this._error(
+          "ROOM_TYPE_NOT_DEFINED",
+          `room type "${roomType}" is not defined on process ` +
+            `${this._processId}`,
+        ),
+      )
+    }
+    const created = await this._manager._createReady(type, options)
+    return created.isErr()
+      ? created
+      : ok(this._matchMaker._roomInfo(created.value))
+  }
+
+  private async _clusterReserve(
+    roomId: string,
+    options: unknown,
+  ): Promise<Result<Reservation, BungohanError>> {
+    const room = this._manager.getRoom(roomId)
+    if (room === undefined || room.isDisposed) {
+      return err(this._error("ROOM_NOT_FOUND", `room "${roomId}" not found`))
+    }
+    const ready = await room._readyPromise
+    if (ready?.isErr()) return err(ready.error)
+    return this._matchMaker._reserveIn(room, options)
+  }
+
+  private _clusterRoomOp(
+    roomId: string,
+    call: RoomOp,
+  ): Result<unknown, BungohanError> {
+    const room = this._manager.getRoom(roomId)
+    if (room === undefined) {
+      return err(this._error("ROOM_NOT_FOUND", `room "${roomId}" not found`))
+    }
+    switch (call.op) {
+      case "info":
+        return ok(this._matchMaker._roomInfo(room))
+      case "lock":
+        if (call.locked) room.lock()
+        else room.unlock()
+        return ok(this._matchMaker._roomInfo(room))
+      case "visibility":
+        if (call.visibility === "private") room.makePrivate()
+        else room.makePublic()
+        return ok(this._matchMaker._roomInfo(room))
+      case "dispose":
+        void room.dispose()
+        return ok(undefined)
+      case "presenceSet":
+        room.setPresence(call.clientId, call.data)
+        return ok(undefined)
+      case "presenceRemove":
+        room.removePresence(call.clientId)
+        return ok(undefined)
+      case "presenceAll":
+        return ok([...room.getAllPresence()])
+      case "broadcast":
+        room._broadcastByName(
+          call.type,
+          call.message,
+          this._seatOf(room, call.except),
+        )
+        return ok(undefined)
+      case "broadcastRaw":
+        room._broadcastRawByName(
+          call.type,
+          call.message,
+          this._seatOf(room, call.except),
+        )
+        return ok(undefined)
+      case "kick": {
+        const client = room.getClient(call.sessionId)
+        if (client !== undefined) {
+          room.disconnectClient(client, call.code, call.reason)
+        }
+        return ok(undefined)
+      }
+    }
+  }
+
+  private _seatOf(
+    room: Room,
+    sessionId: string | undefined,
+  ): Client | undefined {
+    return sessionId === undefined ? undefined : room.getClient(sessionId)
+  }
+
+  /**
+   * Owner side of a forwarded `JOIN`. The reply names the seat and goes out
+   * **before** `JOIN_SUCCESS`, and both travel on the same channel in
+   * publish order, so the edge has the mapping before the first frame.
+   */
+  private async _clusterJoin(request: JoinForwardRequest): Promise<void> {
+    const cluster = this._cluster
+    if (cluster === undefined) return
+    if (this._shuttingDown || !this._running) {
+      cluster.sendJoinReply(request.from, request.rid, {
+        code: "SERVER_SHUTTING_DOWN",
+        message: "the server is shutting down",
+      })
+      return
+    }
+    const connection = this._remoteConnection(request)
+    const joined = await this._joinResolved(connection, request)
+    if (joined.isErr()) {
+      cluster.sendJoinReply(request.from, request.rid, {
+        code: joined.error.code,
+        message: joined.error.message,
+      })
+      this._pruneRemoteConnection(connection)
+      return
+    }
+    cluster.sendJoinReply(request.from, request.rid, {
+      roomId: joined.value.room.id,
+      sessionId: joined.value.client.sessionId,
+    })
+    this._completeJoin(connection, request.requestId, joined.value)
+  }
+
+  private async _joinResolved(
+    connection: RemoteConnection,
+    request: JoinForwardRequest,
+  ): Promise<Result<Joined, BungohanError>> {
+    const { target, options, hash, roomRef } = request
+    switch (target.kind) {
+      case "reconnect":
+        return this._reconnect(connection, target.token, hash, roomRef)
+      case "reservation":
+        return this._joinReservation(
+          connection,
+          target.reservationId,
+          hash,
+          roomRef,
+        )
+      case "room": {
+        const room = this._manager.getRoom(target.roomId)
+        if (room === undefined || room.isDisposed) {
+          return err(
+            this._error("ROOM_NOT_FOUND", `room "${target.roomId}" not found`),
+          )
+        }
+        // Matchmaking modes take any *available* room; JOIN_BY_ID may take
+        // a private one, and `_seat` still refuses a locked or full room.
+        if (target.mode !== JoinMode.JOIN_BY_ID && !room.isAvailable()) {
+          return err(
+            this._error("ROOM_NOT_FOUND", "the room is no longer available"),
+          )
+        }
+        const checked = this._checkRoom(connection, room, hash)
+        if (checked.isErr()) return checked
+        const client = new Client(nanoid(12), connection)
+        return this._joinExisting(
+          connection,
+          room,
+          client,
+          options,
+          false,
+          roomRef,
+        )
+      }
+    }
+  }
+
+  private _clusterMessage(
+    edgeProcessId: string,
+    roomId: string,
+    sessionId: string,
+    connectionId: string,
+    raw: boolean,
+    messageId: number,
+    body: Uint8Array,
+  ): void {
+    const room = this._manager.getRoom(roomId)
+    const client = room?.getClient(sessionId)
+    // A frame for a seat this process no longer knows is dropped silently,
+    // exactly as a local one is (PROTOCOL.md §7.1).
+    if (room === undefined || client === undefined) return
+    if (client._status !== "joined") return
+    const received = raw
+      ? room._receiveRaw(client, body)
+      : room._receive(client, messageId, body)
+    if (received.isErr()) {
+      this._logger.warn(
+        `protocol violation from ${edgeProcessId}|${connectionId}: ` +
+          received.error.message,
+      )
+      this._cluster?.sendViolation(
+        edgeProcessId,
+        connectionId,
+        received.error.message,
+      )
+    }
+  }
+
+  private _clusterLeave(roomId: string, sessionId: string): void {
+    const room = this._manager.getRoom(roomId)
+    const client = room?.getClient(sessionId)
+    if (room === undefined || client === undefined) return
+    if (client._status !== "joined") return
+    void room._release(client, true, LeaveCode.CONSENTED)
+  }
+
+  private _remoteConnection(request: JoinForwardRequest): RemoteConnection {
+    const key = `${request.from}|${request.connectionId}`
+    const existing = this._remoteConnections.get(key)
+    if (existing !== undefined) return existing
+    const connection = new RemoteConnection(
+      request.from,
+      request.connectionId,
+      unpackContext(request.context),
+      this._clock.now(),
+    )
+    this._remoteConnections.set(key, connection)
+    return connection
+  }
+
+  /** Forgets a remote connection that ended up holding no seat. */
+  private _pruneRemoteConnection(connection: RemoteConnection): void {
+    if (connection._seats.size > 0) return
+    this._remoteConnections.delete(connection.id)
+  }
+
+  private _closeRemoteConnection(key: string): void {
+    const connection = this._remoteConnections.get(key)
+    if (connection === undefined) return
+    this._remoteConnections.delete(key)
+    connection._open = false
+    for (const client of [...connection._seats.values()]) {
+      client._room?._connectionLost(client)
+    }
+  }
+
+  // --- edge side -----------------------------------------------------------
+
+  /** Hands finished frames from the owning process to the real sockets. */
+  private _relayFrames(connectionIds: string[], frame: Uint8Array): void {
+    // A LEAVE ends the seat: no frame for that roomRef follows it
+    // (PROTOCOL.md §5.2), so the mapping goes with it. Every other frame
+    // costs one byte to rule out.
+    const ends =
+      frame[0] === ServerFrameType.LEAVE
+        ? decodeFrame(frame, SERVER_FRAME_HEADERS)
+        : undefined
+    const ref = ends?.isOk() === true ? (ends.value.header[0] ?? 0) : undefined
+    for (const connectionId of connectionIds) {
+      const connection = this._connections.get(connectionId)
+      if (connection === undefined) continue
+      this._host.sendFrame(connection, frame)
+      if (ref !== undefined) connection._remoteSeats.delete(ref)
+    }
+  }
+
+  /**
+   * The process owning some of our seats is gone (spec §6.4, failure).
+   * Those rooms are unreachable, so the clients hear it the way they hear
+   * any room ending: `LEAVE(roomRef, 4002 ROOM_DISPOSED)`. The connection
+   * stays open — its other seats are unaffected.
+   */
+  private _ownerProcessLost(processId: string): void {
+    for (const connection of this._connections.values()) {
+      for (const [ref, seat] of [...connection._remoteSeats]) {
+        if (seat.processId !== processId) continue
+        connection._remoteSeats.delete(ref)
+        this._logger.warn(
+          `room ${seat.roomId} is unreachable: process ${processId} is gone`,
+        )
+        const frame = encodeFrame(ServerFrameType.LEAVE, [
+          ref,
+          LeaveCode.ROOM_DISPOSED,
+        ])
+        if (frame.isOk()) this._host.sendFrame(connection, frame.value)
+      }
+    }
+  }
+
+  /**
+   * Hands a resolved `JOIN` to the process that owns the room. The
+   * `roomRef` is allocated **here**, on the connection it belongs to, and
+   * the owner builds every frame with it (PROTOCOL.md §3.1). Refs are
+   * never reused on a connection, so a refused join simply burns one.
+   */
+  private async _forwardJoin(
+    connection: Connection,
+    requestId: number,
+    processId: string,
+    options: unknown,
+    hash: string | null,
+    target: JoinTarget,
+  ): Promise<Result<Routed, BungohanError>> {
+    const cluster = this._cluster
+    if (cluster === undefined) {
+      return err(this._error("ROOM_NOT_FOUND", "cluster mode is not running"))
+    }
+    const roomRef = connection._nextRoomRef++
+    connection._remoteOwners.add(processId)
+    const reply = await cluster.forwardJoin(processId, {
+      connectionId: connection.id,
+      roomRef,
+      requestId,
+      target,
+      options,
+      hash,
+      context: packContext(connection.context),
+    })
+    if (reply.isErr()) {
+      return err(this._error(reply.error.code, reply.error.message))
+    }
+    connection._remoteSeats.set(roomRef, {
+      processId,
+      roomId: reply.value.roomId,
+      sessionId: reply.value.sessionId,
+    })
+    if (!connection._open) {
+      // It closed while the owner was seating us; tell it now, since
+      // `_handleDisconnect` had nothing to report yet.
+      connection._remoteSeats.delete(roomRef)
+      cluster.notifyConnectionClosed(processId, connection.id)
+    }
+    return ok({ kind: "remote" })
+  }
+
+  // ==========================================================================
   // Host, errors, signals
   // ==========================================================================
 
@@ -851,19 +1572,46 @@ export class BungohanServer {
         if (this._metrics !== undefined) {
           this._metrics.bytesSent += frame.byteLength
         }
+        // A seat whose socket is on another process: the frame is already
+        // addressed with that connection's roomRef, so it is relayed
+        // unchanged (spec §6.4).
+        if (isRemoteConnection(connection)) {
+          this._cluster?.sendFrames(
+            connection.processId,
+            [connection.connectionId],
+            frame,
+          )
+          return
+        }
         const sent = this._transport.send(connection.id, frame)
         if (sent.isErr())
           this._logger.debug(`send failed: ${sent.error.message}`)
       },
       broadcastFrame: (connections, frame) => {
         const ids: string[] = []
+        let remote: Map<string, string[]> | undefined
+        let count = 0
         for (const connection of connections) {
-          if (connection._open) ids.push(connection.id)
+          if (!connection._open) continue
+          count++
+          if (isRemoteConnection(connection)) {
+            remote ??= new Map()
+            const list = remote.get(connection.processId)
+            if (list === undefined) {
+              remote.set(connection.processId, [connection.connectionId])
+            } else list.push(connection.connectionId)
+          } else ids.push(connection.id)
+        }
+        if (count === 0) return
+        if (this._metrics !== undefined) {
+          this._metrics.bytesSent += frame.byteLength * count
+        }
+        if (remote !== undefined) {
+          for (const [processId, connectionIds] of remote) {
+            this._cluster?.sendFrames(processId, connectionIds, frame)
+          }
         }
         if (ids.length === 0) return
-        if (this._metrics !== undefined) {
-          this._metrics.bytesSent += frame.byteLength * ids.length
-        }
         const sent = this._transport.broadcast(ids, frame)
         if (sent.isErr()) {
           this._logger.debug(`broadcast failed: ${sent.error.message}`)

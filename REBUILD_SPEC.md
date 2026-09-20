@@ -281,7 +281,7 @@ Because the builders in §4.1 produce runtime descriptors, the generator simply 
 
 #### 4.2.1 Codegen and the non-TypeScript clients as built — **[DECIDED]**
 
-Cluster mode is the next milestone. What exists is each language's **protocol core**, the codegen that binds to it, and tests proving both against the vectors and a real recorded stream. Networking — the transport seam, the client, the join handshake and reconnection — was added on top and is §4.2.2. PROTOCOL.md §15 lists the pitfalls met on the way.
+What exists is each language's **protocol core**, the codegen that binds to it, and tests proving both against the vectors and a real recorded stream. (Cluster mode, §6.4.1, came after and changed none of it: it adds no wire change, so every vector and both runners are untouched.) Networking — the transport seam, the client, the join handshake and reconnection — was added on top and is §4.2.2. PROTOCOL.md §15 lists the pitfalls met on the way.
 
 **`@bungohan/codegen`** (`packages/codegen`):
 
@@ -823,7 +823,165 @@ The old `MatchMaker._getAllProcesses()` published a `PROCESS_INFO` request over 
 3. The requester collects responses for a short window (e.g. 200ms) keyed by `requestId`, then resolves with the aggregated list (including itself, without a network round-trip for its own entry).
 4. `ProcessSelector` functions passed to `createRoom`/`joinOrCreate`/`reserve` receive this real aggregated list, enabling actual least-loaded-process selection in clustered mode — this was previously plumbed through but never functional.
 
-Everything else about clustering (RoomProxy for remote rooms, `PROXY_JOIN/LEAVE/MESSAGE/BROADCAST/DISCONNECT/LOCK/VISIBILITY/PRESENCE_*` backplane message types, `CLIENT_SEND/DISCONNECT` routing) worked correctly in the old code — reproduce as-is.
+Everything else about clustering (RoomProxy for remote rooms, `PROXY_JOIN/LEAVE/MESSAGE/BROADCAST/DISCONNECT/LOCK/VISIBILITY/PRESENCE_*` backplane message types, `CLIENT_SEND/DISCONNECT` routing) worked correctly in the old code — reproduce as-is. **[DECIDED]** The old code was written against a much older protocol (JSON-Patch state sync, serialized `Client` objects, a read-only state replica on the proxy); what §6.4.1 reproduces is its *vocabulary*, not its mechanism.
+
+#### 6.4.1 Cluster mode as built — **[DECIDED]** (`packages/core/src/cluster/`)
+
+Cluster mode is built, and every path that used to return
+`CLUSTER_NOT_IMPLEMENTED` works: `start()` with `cluster.enabled`,
+`createRoom` / `joinRoom` / `joinById` / `query` across processes,
+`reserve`, and the aggregation above. **`getAllProcesses` is exactly steps
+1–4**, with `gatherTimeout` (default 200 ms) as the window and the local
+entry added with no round trip.
+
+**The hard constraint held: there is no wire change.** `PROTOCOL.md` is
+untouched, the 311 conformance vectors are untouched, and the C# and Godot
+runners pass unmodified. A client cannot tell where its room runs, which
+`packages/testing/src/cluster/wire.test.ts` checks by comparing the actual
+frames of a local seat and a remote one: same frame sequence, same
+`roomRef`, same snapshot size, and a one-`SET` patch that is still 6 bytes.
+No extra field, no extra frame, no second `roomRef` space.
+
+**Room ownership.** A room lives on exactly one process, and *the seat
+lives with the room*. The owning process holds a real `Client` in
+`room.clients`: it runs `onAuth`/`onJoin`, counts against `maxClients`, is
+passed to `createFiltered` filters, and gets its ops from the room's single
+codec session (§8.1.2). Nothing about refIds, the class table or per-client
+filtering changes, because nothing about them is per-connection. What
+differs is only where its frames go: the `Client` is bound to a
+**`RemoteConnection`** (`cluster/remote.ts`), and `RoomHost.sendFrame` /
+`broadcastFrame` publish those frames to the process that holds the socket
+instead of handing them to a transport. That process relays the bytes
+verbatim.
+
+**How the `roomRef` stays right.** `roomRef` is per connection
+(PROTOCOL.md §3.1), and the connection belongs to the *edge* process, so
+its mapping is the one that goes on the wire. The edge therefore allocates
+the `roomRef` from its own connection **before** forwarding the join, and
+sends it along; the owner binds the seat with that handle
+(`Room._seat(…, ref)` / `_reconnect(…, ref)`). Every frame the owner builds
+is then already addressed correctly and needs no rewriting — which is what
+keeps a relayed frame byte-identical to a local one. A refused join simply
+burns a handle, which is fine: handles are never reused on a connection.
+
+**What crosses the backplane** (`cluster/protocol.ts`, JSON over
+`IBackplane`, so frame bytes travel base64): one broadcast channel
+(`<namespace>:cluster:all`) and one per process
+(`<namespace>:cluster:p:<id>`). Messages are heartbeats and goodbyes;
+request/reply for process info, room/reservation lookup, "find an available
+room", `query`, `createRoom`, `reserve` and the `RoomProxy` operations; the
+forwarded `JOIN`; room messages and `LEAVE` from an edge; connection-closed
+notices; and, the other way, finished frames and protocol violations. It is
+versioned (`CLUSTER_PROTOCOL`), and a message of another version is
+dropped, so a rolling deploy degrades to "those processes don't see each
+other" rather than to corruption.
+
+**Ordering.** A join reply and the `JOIN_SUCCESS` that follows it are
+published by the owner on the same channel, in that order, so the edge has
+the seat mapping before the first frame for it arrives. The edge drops a
+mapping when it relays a `LEAVE` for that `roomRef` (PROTOCOL.md §5.2: no
+frame follows it), which costs one byte to detect and nothing otherwise.
+
+**Routing is local first, always.** A join looks for a room on this process
+exactly as before; only when it finds none does it ask the cluster, so an
+unclustered server is unchanged and a clustered one pays a lookup only when
+it has nothing to offer. `JOIN_OR_CREATE` that loses the race for a remote
+room (it filled, locked or vanished) creates one here, as it would locally.
+A `FIND` carries the rooms the asking connection already sits in, so
+joining the same type twice gives two rooms rather than `ALREADY_JOINED`.
+**A process need not define every room type**: if the type is unknown here
+but a room of it exists elsewhere, the join is routed there; only when
+nothing answers is it `ROOM_TYPE_NOT_DEFINED`.
+
+**Process registry and liveness.** Peers are learned from heartbeats, not
+from an `IStore`: a store cannot list keys, and store and backplane stay
+independent. Each process publishes a heartbeat every
+`cluster.heartbeatInterval` (default 2,000 ms) with its room and client
+counts, and a `hello` at startup so the first matchmaking call doesn't wait
+for one. A peer silent for `cluster.peerTimeout` (default 6,000 ms, three
+heartbeats) is dropped, and a graceful `stop()` publishes a goodbye so it
+is dropped at once. **Every one of these is a `Clock` timer** (§6.8.2,
+`@bungohan/types`), never wall-clock time, so a test advances a process to
+its death. `getAllProcesses()` does not read this registry: it asks, and
+returns who actually answered, plus this process.
+
+**Failure — a clear error, never a hang.** Every wait is a deadline:
+`requestTimeout` (default 5,000 ms) for a directed request, `gatherTimeout`
+for a broadcast. A request waiting on a peer that is declared dead fails at
+once with `CONNECTION_LOST` rather than waiting out its own timeout; one
+that nobody answers is `TIMEOUT`. When a process is lost:
+
+- **Clients elsewhere with seats in its rooms get `LEAVE(roomRef, 4002
+  ROOM_DISPOSED)`** — an existing code, so no wire change; from the
+  client's side the room simply ended. Their connection stays open and
+  their other seats are untouched. A *graceful* stop is better: the rooms
+  dispose first, so those clients get `LEAVE(…, 4001 SERVER_SHUTDOWN)`
+  before the goodbye.
+- **Held seats and unconsumed reservations for its rooms are gone with it.**
+  A later lookup finds nothing, so `joinById` is `ROOM_NOT_FOUND`, a
+  reconnection token is `INVALID_TOKEN` and a reservation is
+  `RESERVATION_NOT_FOUND`, each after one collection window.
+- **A matchmaking call in flight** returns `CONNECTION_LOST` (peer declared
+  dead) or `TIMEOUT` (no answer), never a pending promise. A forwarded
+  join that fails this way reaches the client as a `JOIN_ERROR`.
+- **When the process holding the *socket* dies**, the owner sees its
+  connections close (by notice, or by the peer deadline) and treats it as
+  any unconsented disconnect: the seats are **held** for
+  `reconnectionTimeout` and expire on the owner's own clock (§6.7.5).
+
+**Cross-process reservations and reconnection** both work by locating the
+owner, because a client may reach any process. A reservation is made and
+held where its room is (`reserve` on any process forwards to the owner) and
+consumed from anywhere: the consuming process broadcasts a lookup for the
+reservation id and forwards the `JOIN`. A reconnection token already names
+its room (`<roomId>.<secret>`), so the same lookup resumes a held seat from
+a process that has never seen the client. Neither id format changed, and
+both are opaque to clients.
+
+**`RoomProxy`** (`cluster/proxy.ts`) is what `createRoom` / `joinRoom` /
+`joinById` return for a room elsewhere — a `Room`, so the signatures are
+unchanged, with `isRemote` true. It is **control and description, not
+simulation**: it forwards `lock`/`unlock`, `makePrivate`/`makePublic`,
+`dispose`, `broadcastMessage`, `disconnectClient` (a kick) and the presence
+writes; it caches the owner's description (`id`, `roomType`, `metadata`,
+the option fields, `getClientCount()`, `getSeatCount()`, `locked`,
+`visibility`, `isDisposed`), re-read by `refresh()`; and it refuses, with an
+explanation, what needs the process the room runs on — `join`/`leave` (a
+`Client` belongs to the process holding its connection) and `onMessage`
+(handlers belong to the room class). Presence is read with
+`fetchPresence()`, a round trip, rather than a lie from a local map.
+Deliberately **no state replica**: the state exists once, on the owner, and
+a second copy here would be a second source of truth. `getAllRooms()`,
+`getRoom()`, `getRoomCount()` and `getClientCount()` stay local, by
+definition.
+
+**New `ServerOptions.cluster` fields:** `namespace` (channel prefix,
+default `"bungohan"`, so unrelated clusters and test runs can share one
+Redis), `heartbeatInterval`, `peerTimeout`, `requestTimeout`,
+`gatherTimeout`. `cluster.enabled` **requires** a backplane
+(`backplane.provider` or `backplane.config`); without one, `start()` fails
+with `INVALID_OPTIONS` naming both, rather than starting a cluster of one.
+
+**Known limitations, deliberately:** a forwarded join's `options` and a
+proxied broadcast's payload travel as JSON, so they must be JSON-safe; a
+`ConnectionContext` carries `ip`, `searchParams`, `headers`, `token` and
+`protocol` to the owner's `onAuth`, but not a custom transport's extra
+properties; and `ClientMetrics.avgLatency` is not recorded for a seat whose
+`PING` lands on another process (the round trip is measured where the
+socket is, and forwarding it would cost a message per ping for a metric
+that is off by default).
+
+**Tests** (`packages/testing/src/cluster/`, on `createClusterHarness`:
+several real servers in one `bun test` process, each with its own
+transport, sharing one `ManualClock` and one backplane bus, §11.2):
+matchmaking and `RoomProxy` (`matchmaking.test.ts`), join routing
+(`routing.test.ts`), a seat whose socket and room are on different
+processes — state, filtering, messages both ways, raw messages, leaving,
+kicking, a room disposed remotely (`seat.test.ts`), cross-process
+reservations and reconnection (`resume.test.ts`), processes dying and
+stopping (`failure.test.ts`), byte-identity with a local seat
+(`wire.test.ts`), and the whole thing again over a real `RedisBackplane`
+(`redis.integration.test.ts`, with `REDIS_URL`).
 
 ### 6.5 Error codes
 
@@ -1037,7 +1195,7 @@ No client has shipped yet, so these rules are in the protocol from v1. They let 
 
 ### 6.8 Core, single-process — **[DECIDED]** (`packages/core`)
 
-This is how §6.1–6.3, §6.5 and §6.6 were built. Cluster mode (§6.4: `RoomProxy`, backplane routing, `getAllProcesses` aggregation) is the next milestone. Its seams are in place, but every cross-process path returns `CLUSTER_NOT_IMPLEMENTED` (below).
+This is how §6.1–6.3, §6.5 and §6.6 were built. **[DECIDED]** Cluster mode (§6.4) is built too; §6.4.1 is how, and what stays local below describes a server without it.
 
 #### 6.8.1 Clients, connections, rooms
 
@@ -1083,7 +1241,7 @@ A state first assigned in `onCreate` isn't visible to the probe. It is validated
 
 - **New `ServerOptions`:** `clock`, `stateCodec` (§8.1.4), `simulation.maxCatchUpSteps`, `transport.config.compressionThreshold` (passed through to `WebSocketTransport`), and `gracefulShutdown.handleSignals` (default true; the test harness turns it off). The **default port is 6060**, not alpha 1's 6000, which browsers refuse to connect to (Chrome's restricted-ports list). A store is used only if `store.provider` or `store.config` (→ `RedisStore`) is given, and one the server created is closed on `stop()`.
 - **Graceful shutdown.** `stop()` refuses new joins (`SERVER_SHUTTING_DOWN`), disposes every room (`LEAVE(4001)`, then `onLeave(client, false)`, then `onDispose`), and closes the transport (1001) and the HTTP server. On SIGTERM/SIGINT the server runs `stop()`, then `onShutdown`, then `process.exit(0)`, or `exit(1)` if that takes longer than `gracefulShutdown.timeout` (default 30 s). The handlers are installed by `start()` and removed by `stop()`.
-- **Cluster seams.** `start()` with `cluster.enabled` returns `CLUSTER_NOT_IMPLEMENTED`. `getAllProcesses()` returns this process only. A `ProcessSelector` is called with that one-element list. Picking this process works; picking any other returns `CLUSTER_NOT_IMPLEMENTED`.
+- **Without cluster mode** (`cluster.enabled` unset, the default), `getAllProcesses()` returns this process only and a `ProcessSelector` is called with that one-element list: picking this process works, and picking any other returns `CLUSTER_NOT_IMPLEMENTED`, which is now what that code means — "there is no cluster to route to", not "unfinished". With cluster mode on, both are real (§6.4.1). `start()` with `cluster.enabled` and no backplane fails with `INVALID_OPTIONS`.
 - **`DefineRoomOptions`** defaults: `maxClients` unlimited, `autoDispose` true, `allowReconnection` true, `reconnectionTimeout` 30 s, `visibility` public, `locked` false. There is a new `reservationTimeout` (60 s). An expired reservation is remembered for one more timeout, so a late client hears `RESERVATION_EXPIRED` rather than `RESERVATION_NOT_FOUND`.
 - **`matchMaker.query`** returns ready, undisposed rooms of the type. It skips private rooms unless `includePrivate: true` (new). `removeRoom(id)` disposes the room.
 - **`ErrorCode`** = the §6.5 codes, plus the §6.7.6 join codes, plus `ROOM_CREATE_FAILED`, `STORE_FAILED`, `CLUSTER_NOT_IMPLEMENTED` and `INVALID_STATE`.
@@ -1616,6 +1774,7 @@ Also expose `harness.bytesSent()` / `bytesReceived()` so §11.1's bandwidth asse
   - `ManualClock.nextDue()` gives the next timer's due time (what join delivery steps through), and `LoopbackClientTransport` takes `onReceive`/`onClose` hooks (what it follows joins with).
   - `harness.offline = true` makes new connections fail like an unreachable server (never open, close 1006). `harness.dropConnection(client, code = 1006)` drops a client's connection from the network side. `harness.socketOf(client)` returns its current `LoopbackSocket`, to inject frames with `transport.send`. `harness.driver()` returns a byte-level `TestClient` on the same server. `harness.stop()` disconnects every client, then stops the server.
   - `ServerHarness` (with `TestClient`) is unchanged. Both share one base class for the server, loopback, clock, `tick`/`flush`/`flushSync` and byte counters.
+  - **[DECIDED] `createClusterHarness`** (`packages/testing/src/cluster.ts`) is the §6.4 harness: `size` real `BungohanServer`s in one `bun test` process, each a full `TestHarness` with its own transport and clients, sharing one `ManualClock` (so every heartbeat, deadline and sync loop in the cluster runs on the time a test advances) and one backplane bus (`MemoryBackplane`s on a shared `MemoryBus` by default, or injected `backplanes` — real `RedisBackplane`s in `redis.integration.test.ts`). `flush()` covers every node, since a frame for a client on one process may be produced on another; `run(promise)` advances timer by timer until cross-process work settles; `kill(index)` stops a process the way a crash does (no goodbye, so peers notice by heartbeat timeout); and `settle` lets a backplane that goes over a socket be waited for. Each harness gets a fresh channel `namespace`, so runs can share a Redis. The join pump is the `TestHarness` one, now driven through a replaceable network hook.
   - `LoopbackSocket.protocol` exposes the negotiated subprotocol, like `WebSocket.protocol`.
   - End-to-end suites (`packages/testing/src/client-js/`) cover: join, typed messages both ways, raw messages, an `onJoin` message reaching a handler registered after the join, state listeners, `listen()` across a mid-game snapshot, listener removal on leave, kicks, reconnection driven by the clock (default delay, backoff while offline, giving up, rooms without reconnection), explicit `reconnect()` and `consumeReservation()`, unknown frame types and message ids being dropped, contract mismatch, and codec mismatch.
 
@@ -1660,4 +1819,5 @@ Given package dependencies, implement in this order so each layer can be tested 
 10. `@bungohan/testing` — depends on `core` + `client-js`; the loopback harness (§11.2). Build it early enough to use it while developing 8 and 9.
 11. `PROTOCOL.md` + `conformance/` vectors (§11.3) — write these as the wire format stabilizes, not after. They're the contract every non-JS client implements against. **[DECIDED] Done** for v1 (§6.7, §11.3).
 12. `@bungohan/codegen` — depends on `types`; emits C#/GDScript/JSON bindings (§4.2). **[DECIDED] Done**, with the C# and GDScript protocol cores it binds to (§4.2.1).
-13. `apps/example-shooter` — exercises everything end-to-end; port the existing app's server/client/shared code onto the rebuilt API, adjusting call sites for the **[NEW]**/**[FIX]** items above (it can now use `server.onJoin(...)` instead of hand-rolling it via `RoomManager`, should declare its messages through a §4.1 contract, and should switch from its bespoke `useBungohan` hook to the real `@bungohan/client-js/react` one).
+13. Cluster mode (§6.4) — depends on `core` + `backplane`. **[DECIDED] Done**, with no wire change (§6.4.1).
+14. `apps/example-shooter` — exercises everything end-to-end; port the existing app's server/client/shared code onto the rebuilt API, adjusting call sites for the **[NEW]**/**[FIX]** items above (it can now use `server.onJoin(...)` instead of hand-rolling it via `RoomManager`, should declare its messages through a §4.1 contract, and should switch from its bespoke `useBungohan` hook to the real `@bungohan/client-js/react` one).

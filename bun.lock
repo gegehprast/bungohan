@@ -149,6 +149,7 @@
       "name": "@bungohan/testing",
       "version": "0.0.0",
       "dependencies": {
+        "@bungohan/backplane": "workspace:*",
         "@bungohan/client-js": "workspace:*",
         "@bungohan/core": "workspace:*",
         "@bungohan/result": "workspace:*",

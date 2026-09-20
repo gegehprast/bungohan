@@ -4,6 +4,11 @@ export {
 } from "./client-transport"
 export { type Clock, ManualClock, type TimerId } from "./clock"
 export {
+  ClusterHarness,
+  type ClusterHarnessOptions,
+  createClusterHarness,
+} from "./cluster"
+export {
   type DriverOptions,
   type DroppedFrame,
   JoinFailure,
