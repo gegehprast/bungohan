@@ -3,7 +3,8 @@
  * headless Chromium tabs over the DevTools protocol. Tab A creates a room,
  * tab B joins it by code, both ready up and start, and B holds `D`. The
  * frames each tab sent and received are decoded with the framework's own
- * codec to check that B's move reaches A's state.
+ * codec to check that B's move reaches A's state. B walks away from the
+ * nearer wall, since players spawn at a random x and the arena clamps.
  *
  * Run: `bun run check:browser` (in apps/example-shooter/server).
  * Needs Chromium on PATH, or set CHROMIUM to its binary. Uses ports 6060
@@ -12,7 +13,7 @@
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { GameState, Input } from "@bungohan/example-shooter-shared"
+import { GAME_CONFIG, GameState, Input } from "@bungohan/example-shooter-shared"
 import {
   decodeFrame,
   type Frame,
@@ -320,15 +321,22 @@ try {
   console.log("B's x in A's replica before:", before)
 
   await send("Page.bringToFront", {}, b.session)
+  // Players spawn at a random x and the arena clamps at its edges, so
+  // walk whichever way has room: near the right wall, "d" moves nothing.
+  const left =
+    typeof before === "number" && before > GAME_CONFIG.ARENA_WIDTH / 2
+  const [keyName, keyCode, keyValue] = left
+    ? ["a", "KeyA", 65]
+    : ["d", "KeyD", 68]
   const key = (type: "keyDown" | "keyUp"): Promise<unknown> =>
     send(
       "Input.dispatchKeyEvent",
       {
         type,
-        key: "d",
-        code: "KeyD",
-        windowsVirtualKeyCode: 68,
-        text: type === "keyDown" ? "d" : undefined,
+        key: keyName,
+        code: keyCode,
+        windowsVirtualKeyCode: keyValue,
+        text: type === "keyDown" ? keyName : undefined,
       },
       b.session,
     )
@@ -375,10 +383,10 @@ try {
       [...handshakes(a), ...handshakes(b)].every((h) => h.body[5] === "schema"),
     ],
     [
-      "B's player moved right in A's replica",
+      `B's player moved ${left ? "left" : "right"} in A's replica`,
       typeof before === "number" &&
         typeof after === "number" &&
-        after > before + 50,
+        (left ? after < before - 50 : after > before + 50),
     ],
     [
       "B's inputs decode under the schema codec",

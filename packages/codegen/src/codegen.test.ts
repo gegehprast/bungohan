@@ -16,6 +16,7 @@ const ROOT = new URL("../../../", import.meta.url).pathname
 const FIXTURE = join(ROOT, "packages/codegen/test/fixture")
 const GOLDEN = join(ROOT, "packages/codegen/test/golden")
 const SHARED = join(ROOT, "apps/example-shooter/shared/src/index.ts")
+const INTEROP = join(ROOT, "packages/testing/src/interop/shared.ts")
 const LANGUAGES: readonly Language[] = ["csharp", "gdscript", "json"]
 
 /** Every file under `dir`: relative path → content. */
@@ -97,23 +98,39 @@ describe("golden files", () => {
   })
 })
 
-describe("example shooter bindings", () => {
-  const targets: [Language, string, string[]][] = [
+describe("committed bindings", () => {
+  const targets: [Language, string, string, string, string[]][] = [
     [
       "csharp",
+      SHARED,
       "clients/csharp/Bungohan.Bindings/Shooter",
+      "codegen:example",
       ["--namespace", "Bungohan.Example.Shooter"],
     ],
-    ["gdscript", "clients/godot/example/shooter", []],
-    ["json", "clients/fixtures", []],
+    [
+      "gdscript",
+      SHARED,
+      "clients/godot/example/shooter",
+      "codegen:example",
+      [],
+    ],
+    ["json", SHARED, "clients/fixtures", "codegen:example", []],
+    [
+      "csharp",
+      INTEROP,
+      "clients/csharp/Bungohan.Bindings/Interop",
+      "codegen:interop",
+      ["--namespace", "Bungohan.Interop"],
+    ],
+    ["gdscript", INTEROP, "clients/godot/tests/interop", "codegen:interop", []],
   ]
-  for (const [lang, dir, extra] of targets) {
-    test(`${dir} is up to date (bun run codegen:example)`, async () => {
+  for (const [lang, module, dir, script, extra] of targets) {
+    test(`${dir} is up to date (bun run ${script})`, async () => {
       const generated = await runCli([
         "--contract",
-        SHARED,
+        module,
         "--state",
-        SHARED,
+        module,
         "--lang",
         lang,
         ...extra,

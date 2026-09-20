@@ -576,6 +576,13 @@ are:
 A `ROOM_MESSAGE` with a valid id that the room has no handler for is not a
 violation: it is dropped and logged on the server.
 
+The `ERROR` frame is a courtesy, and **a client MUST NOT depend on
+receiving it**: some WebSocket stacks discard whatever they have buffered
+the moment the close frame arrives, so the frame the server sent just
+before closing may never reach the application (§15). The close code
+**1008** is the reliable signal that the connection was refused for a
+protocol violation; the `ERROR` frame only says why.
+
 ### 8.3 Close codes
 
 | code | Sent when |
@@ -1414,7 +1421,10 @@ Case kinds (`"kind"`):
   what a receiver must do with each frame (§9, §8.2): `"accept"` (processed,
   or legitimately ignored, and the connection stays open), `"drop"` (a client
   skips the frame and carries on), or `"violation"` (the server sends
-  `ERROR(0, INVALID_MESSAGE)` and closes with 1008). Client-side cases start
+  `ERROR(0, INVALID_MESSAGE)` and closes with 1008). A `"violation"` case is
+  checked by the **close code**; a runner whose transport also delivers the
+  `ERROR` frame checks that it is `INVALID_MESSAGE`, and one whose transport
+  drops it on close (§8.2, §15) cannot. Client-side cases start
   from a connection holding one joined room at roomRef `1`, with no contract.
   Server-side cases start from a connection that has joined a room at
   roomRef `1` whose room type is `compat` and has no contract.
@@ -1429,8 +1439,8 @@ where a type is a string (`"int8"`, `"fixed:2"`, `"string"`, …) or an object:
 ## 15. Notes for implementers
 
 Pitfalls met while writing the C# (`clients/csharp`) and GDScript
-(`clients/godot`) clients, which pass every non-`behavior` vector. None
-changes a byte; each is an easy way to get one wrong.
+(`clients/godot`) clients, which pass every vector. None changes a byte;
+each is an easy way to get one wrong.
 
 **Rounding (§12).** C#'s `Math.Round(x)` rounds half to even: use
 `Math.Round(x, MidpointRounding.AwayFromZero)`. GDScript's `roundf()`
@@ -1450,6 +1460,15 @@ languages.
 as the canonical pattern of §1.4 (a NaN's payload is not portable). Read a
 MessagePack float big-endian (§4); Godot's `PackedByteArray.decode_*` are
 little-endian, so MessagePack floats are assembled from their bits.
+
+**Closing (§8.2).** Godot's `WebSocketPeer` discards the inbound packets it
+has buffered when the peer reaches `STATE_CLOSED`, so the `ERROR` a server
+sends immediately before closing on a protocol violation never reaches the
+application: only close code 1008 does. Read every buffered packet on each
+poll whatever the ready state (a peer that is `STATE_CLOSING` still has
+frames worth reading), and treat the close code, not the `ERROR`, as the
+signal. .NET's `ClientWebSocket` does deliver the frame, because its
+receive loop reads messages until it reaches the close message.
 
 **Strings (§1.3).** Engine UTF-8 decoders are often lenient. Godot's
 `get_string_from_utf8()` replaces invalid bytes with U+FFFD, stops at a NUL

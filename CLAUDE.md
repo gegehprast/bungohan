@@ -38,7 +38,7 @@ apps/example-shooter/{server,client,shared}
 clients/csharp   clients/godot   clients/fixtures      # outside the Bun workspace (spec §4.2.1)
 ```
 
-`clients/` holds the non-TypeScript protocol cores: C# (`clients/csharp/Bungohan.Protocol`, netstandard2.1, C# 9, no NuGet packages, so it builds for Unity and Godot .NET) and a GDScript Godot addon (`clients/godot/addons/bungohan`). Their generated example bindings (`Bungohan.Bindings/Shooter`, `godot/example/shooter`, `fixtures/bungohan.json`) come from `bun run codegen:example`; never edit them by hand. `clients/fixtures/shooter-stream.*.json` are recordings (`bun apps/example-shooter/server/scripts/record-stream.ts`), not generated vectors: re-recording changes them.
+`clients/` holds the non-TypeScript clients: C# (`clients/csharp/Bungohan.Protocol`, netstandard2.1, C# 9, no NuGet packages, so it builds for Unity and Godot .NET) and a GDScript Godot addon (`clients/godot/addons/bungohan`). Each is a protocol core plus a networking layer (`Net/`, `net/`) with a pluggable client transport and a poll/pump model — every callback arrives on the thread that calls `Poll()`/`poll()`. Their generated example bindings (`Bungohan.Bindings/Shooter`, `godot/example/shooter`, `fixtures/bungohan.json`) come from `bun run codegen:example`, and the interop test server's (`Bungohan.Bindings/Interop`, `godot/tests/interop`) from `bun run codegen:interop`; never edit them by hand. `clients/fixtures/shooter-stream.*.json` are recordings (`bun apps/example-shooter/server/scripts/record-stream.ts`), not generated vectors: re-recording changes them.
 
 - **All package names are scoped `@bungohan/*`.** The previous implementation used unscoped `gungohan-*` (a typo) — never reproduce that.
 - Cross-package deps use `"workspace:*"`; shared dependency versions use the root `catalog:` protocol.
@@ -51,12 +51,13 @@ bun test                        # all tests
 bun --filter @bungohan/state test
 bun run check                   # biome check --write
 bun run lint                    # biome lint --write && tsc --noEmit
-bun run test:csharp             # dotnet run --project clients/csharp/Bungohan.Protocol.Tests
-bun run test:godot              # cd clients/godot && godot-mono --headless --script tests/run_all.gd
+bun run test:csharp             # interop server + dotnet run --project clients/csharp/Bungohan.Protocol.Tests
+bun run test:godot              # interop server + godot-mono --headless --script tests/run_all.gd
 bun run codegen:example         # regenerate the example bindings after a codegen or shared-module change
+bun run codegen:interop         # same, for the interop test server's bindings
 ```
 
-When a change touches `clients/`, `packages/codegen`, PROTOCOL.md or the vectors, also run the C# and Godot runners (`tests/run_vectors.gd` alone runs just the vectors). `UPDATE_GOLDEN=1 bun test packages/codegen` rewrites the codegen goldens; review their diff.
+When a change touches `clients/`, `packages/codegen`, PROTOCOL.md or the vectors, also run the C# and Godot runners (`tests/run_vectors.gd` alone runs just the vectors). Both `test:*` scripts boot a real server through `scripts/interop.ts` (`packages/testing/src/interop/`) and pass its URL as `BUNGOHAN_INTEROP_URL`; the server-side `behavior` vectors and the end-to-end suites need it, and skip without it. `UPDATE_GOLDEN=1 bun test packages/codegen` rewrites the codegen goldens; review their diff.
 
 **Before considering any task done, run `bun test` and `bunx tsc --noEmit` and make them pass.** Writing tests without running them doesn't count as verification.
 

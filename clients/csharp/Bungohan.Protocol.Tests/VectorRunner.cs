@@ -7,10 +7,13 @@ using Bungohan.Protocol;
 namespace Bungohan.Protocol.Tests
 {
     /// <summary>
-    /// Runs every conformance vector (PROTOCOL.md §14) except the
-    /// <c>behavior</c> kind, which needs a connection (<c>replica</c> cases
-    /// run in <see cref="ReplicaVectors"/>). Codec cases run in both
-    /// directions: encode → exact bytes, and bytes → decoded values.
+    /// Runs every conformance vector (PROTOCOL.md §14). Codec cases run in
+    /// both directions: encode → exact bytes, and bytes → decoded values;
+    /// <c>replica</c> cases run in <see cref="ReplicaVectors"/> and
+    /// <c>behavior</c> cases in <see cref="BehaviorTests"/>. Server-side
+    /// <c>behavior</c> cases need the interop server
+    /// (<c>BUNGOHAN_INTEROP_URL</c>, set by <c>bun run test:csharp</c>);
+    /// without it they are the only cases skipped.
     /// </summary>
     public static class VectorRunner
     {
@@ -23,6 +26,7 @@ namespace Bungohan.Protocol.Tests
         public static Suite Run(string root)
         {
             var suite = new Suite("conformance vectors");
+            string? interopUrl = Environment.GetEnvironmentVariable("BUNGOHAN_INTEROP_URL");
             string dir = Path.Combine(root, "conformance", "v1");
             string[] files = Directory.GetFiles(dir, "*.json").OrderBy(f => f, StringComparer.Ordinal).ToArray();
             Suite.That(files.Length > 0, "no vector files in " + dir);
@@ -48,7 +52,17 @@ namespace Bungohan.Protocol.Tests
                         case "message": suite.Run(label, () => MessageCase(c)); break;
                         case "state": suite.Run(label, () => StateCase(c)); break;
                         case "replica": suite.Run(label, () => ReplicaVectors.Run(c)); break;
-                        case "behavior": suite.Skip(); break; // needs a connection (next milestone)
+                        case "behavior":
+                            if ((string?)c["side"] == "server")
+                            {
+                                if (string.IsNullOrEmpty(interopUrl)) suite.Skip();
+                                else suite.Run(label, () => BehaviorTests.ServerCase(c, interopUrl));
+                            }
+                            else
+                            {
+                                suite.Run(label, () => BehaviorTests.ClientCase(c));
+                            }
+                            break;
                         default: suite.Run(label, () => throw new CheckFailed("unknown case kind " + kind)); break;
                     }
                 }

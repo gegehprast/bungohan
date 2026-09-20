@@ -1,7 +1,9 @@
 extends RefCounted
-## Every conformance vector (PROTOCOL.md §14) except the `behavior` kind,
-## which needs a connection. Codec cases run in both directions: encode →
-## exact bytes, and bytes → decoded values. Run by run_vectors.gd.
+## Every conformance vector (PROTOCOL.md §14). Codec cases run in both
+## directions: encode → exact bytes, and bytes → decoded values. Server-side
+## `behavior` cases need the interop server (BUNGOHAN_INTEROP_URL, set by
+## `bun run test:godot`); without it they are the only cases skipped.
+## Run by run_vectors.gd.
 
 const Checks = preload("checks.gd")
 const Contract = preload("res://addons/bungohan/protocol/contract.gd")
@@ -9,6 +11,8 @@ const Frames = preload("res://addons/bungohan/protocol/frames.gd")
 const MsgPack = preload("res://addons/bungohan/protocol/msgpack.gd")
 const MsgpackCodec = preload("res://addons/bungohan/protocol/msgpack_codec.gd")
 const Numeric = preload("res://addons/bungohan/protocol/numeric.gd")
+const BehaviorTests = preload("behavior_tests.gd")
+const Net = preload("net_support.gd")
 const ReplicaVectors = preload("replica_vectors.gd")
 const ByteReader = preload("res://addons/bungohan/protocol/byte_reader.gd")
 const ByteWriter = preload("res://addons/bungohan/protocol/byte_writer.gd")
@@ -23,6 +27,7 @@ static func run() -> Checks:
 
 func _run() -> Checks:
 	var checks := Checks.new("conformance vectors")
+	var interop_url := Net.interop_url()
 	var dir := Checks.repo_root().path_join("conformance/v1")
 	var files := DirAccess.get_files_at(dir)
 	files.sort()
@@ -56,7 +61,13 @@ func _run() -> Checks:
 				"replica":
 					checks.record(label, ReplicaVectors.run(c))
 				"behavior":
-					checks.skip()  # needs a connection (next milestone)
+					if c.get("side", "client") == "server":
+						if interop_url == "":
+							checks.skip()
+						else:
+							checks.record(label, BehaviorTests.server_case(c, interop_url))
+					else:
+						checks.record(label, BehaviorTests.client_case(c))
 				_:
 					checks.record(label, "unknown case kind " + kind)
 	return checks

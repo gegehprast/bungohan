@@ -37,7 +37,7 @@ func skip() -> void:
 func report() -> int:
 	var line := "%s: %d passed, %d failed" % [name, passed, failures.size()]
 	if skipped > 0:
-		line += ", %d skipped (behavior: needs a connection)" % skipped
+		line += ", %d skipped (needs BUNGOHAN_INTEROP_URL)" % skipped
 	print(line)
 	for failure in failures:
 		print("  FAIL " + failure)
