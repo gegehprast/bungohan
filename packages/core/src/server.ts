@@ -8,7 +8,11 @@ import {
   SchemaCodec,
 } from "@bungohan/serializer"
 import { type IStore, RedisStore } from "@bungohan/store"
-import { type ITransport, WebSocketTransport } from "@bungohan/transport"
+import {
+  clipCloseReason,
+  type ITransport,
+  WebSocketTransport,
+} from "@bungohan/transport"
 import {
   CLIENT_FRAME_HEADERS,
   ClientFrameType,
@@ -528,6 +532,12 @@ export class BungohanServer {
   /**
    * Protocol violation (spec §6.7.6): explain with `ERROR(0)`, close with
    * 1008. Frames still in flight from this connection are ignored.
+   *
+   * `why` goes in **both** the `ERROR` body and the close reason. A client
+   * must not depend on receiving the `ERROR` (PROTOCOL.md §8.2): some
+   * WebSocket stacks drop whatever they have buffered the moment a close
+   * frame arrives, so a client that only ever sees the close would
+   * otherwise be left with a bare 1008 and no explanation.
    */
   private _violation(connection: Connection, why: string): void {
     this._logger.warn(`protocol violation from ${connection.id}: ${why}`)
@@ -540,7 +550,7 @@ export class BungohanServer {
     this._transport.disconnect(
       connection.id,
       CloseCode.POLICY_VIOLATION,
-      "protocol violation",
+      clipCloseReason(why),
     )
   }
 

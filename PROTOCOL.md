@@ -564,8 +564,8 @@ join failure and keep the original code for diagnostics.
 ### 8.2 Protocol violations
 
 The server closes a connection that breaks the protocol. It sends
-`ERROR(0, ["INVALID_MESSAGE", reason])`, then closes with **1008**. Violations
-are:
+`ERROR(0, ["INVALID_MESSAGE", reason])`, then closes with **1008** and the
+same `reason` as the close reason. Violations are:
 
 - a frame that can't be parsed, or has an unknown client frame type;
 - a body that isn't valid MessagePack where MessagePack is expected;
@@ -581,7 +581,13 @@ receiving it**: some WebSocket stacks discard whatever they have buffered
 the moment the close frame arrives, so the frame the server sent just
 before closing may never reach the application (§15). The close code
 **1008** is the reliable signal that the connection was refused for a
-protocol violation; the `ERROR` frame only says why.
+protocol violation.
+
+So the explanation is carried **twice**: in the `ERROR` body, and as the
+**close reason**, which every WebSocket stack surfaces alongside the code.
+Both hold the same text, clipped to the 123 bytes RFC 6455 allows a close
+reason (a longer one ends in `...`). A client that never receives the
+`ERROR` can still report why it was disconnected.
 
 ### 8.3 Close codes
 

@@ -1,5 +1,6 @@
 export { TransportError, type TransportErrorCode } from "./errors"
 export {
+  clipCloseReason,
   type Negotiation,
   negotiateProtocol,
   PROTOCOL_ERROR,

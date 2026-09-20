@@ -33,7 +33,13 @@ export function parseProtocols(header: string | null): string[] {
     .filter((value) => value !== "")
 }
 
-function clip(reason: string): string {
+/**
+ * A WebSocket close reason, clipped to the 123 bytes RFC 6455 allows.
+ * Longer reasons end in `...`. Shared by version negotiation (below) and
+ * by core, which puts the reason for a protocol violation here too
+ * (PROTOCOL.md §8.2).
+ */
+export function clipCloseReason(reason: string): string {
   const bytes = new TextEncoder().encode(reason)
   if (bytes.byteLength <= MAX_REASON_BYTES) return reason
   // Cutting mid-character leaves a U+FFFD replacement character; drop it.
@@ -60,5 +66,5 @@ export function negotiateProtocol(
     offered.length === 0
       ? `no protocol version offered; expected ${expected}`
       : `unsupported protocol ${offered.join(", ")}; expected ${expected}`
-  return { ok: false, echo: offered[0], reason: clip(reason) }
+  return { ok: false, echo: offered[0], reason: clipCloseReason(reason) }
 }

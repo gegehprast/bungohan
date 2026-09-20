@@ -90,7 +90,7 @@ namespace Bungohan.Protocol.Tests
         public static void ServerCase(MsgMap c, string url)
         {
             var errors = new List<ClientError>();
-            var closes = new List<int>();
+            var closes = new List<Closed>();
             var transport = new ClosingWebSocketTransport(closes);
             var client = new BungohanClient(new ClientOptions
             {
@@ -113,16 +113,24 @@ namespace Bungohan.Protocol.Tests
 
                 if ((string)c["expect"]! == "violation")
                 {
-                    // The close code is the signal; the ERROR frame that
-                    // precedes it may be dropped by the transport (§8.2).
+                    // The close is the signal; the ERROR frame that precedes
+                    // it may be dropped by the transport (§8.2), so the same
+                    // explanation rides along as the close reason.
                     Pump.Until(client, () => client.State == ConnectionState.Disconnected,
                         "the server to close the connection");
-                    Suite.That(closes.Count > 0 && closes[0] == CloseCode.PolicyViolation,
+                    Suite.That(closes.Count > 0 && closes[0].Code == CloseCode.PolicyViolation,
                         "expected a 1008 close, got " + (closes.Count > 0 ? closes[0].ToString() : "none"));
+                    Suite.That(closes[0].Reason.Length > 0,
+                        "the close reason should say why (§8.2)");
                     foreach (ClientError error in errors)
                     {
                         Suite.That(error.Message.StartsWith("INVALID_MESSAGE", StringComparison.Ordinal),
                             "expected INVALID_MESSAGE, got " + error);
+                        // Both carry the same text (§8.2), unless the close
+                        // reason had to be clipped to 123 bytes.
+                        Suite.That(closes[0].Reason.EndsWith("...", StringComparison.Ordinal) ||
+                            error.Message.EndsWith(closes[0].Reason, StringComparison.Ordinal),
+                            "the ERROR and the close reason should agree: " + error + " vs " + closes[0]);
                     }
                 }
                 else

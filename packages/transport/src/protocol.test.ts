@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { negotiateProtocol, parseProtocols } from "./protocol"
+import { clipCloseReason, negotiateProtocol, parseProtocols } from "./protocol"
 
 describe("protocol negotiation", () => {
   test("parses the Sec-WebSocket-Protocol header", () => {
@@ -45,5 +45,29 @@ describe("protocol negotiation", () => {
       new TextEncoder().encode(result.reason).byteLength,
     ).toBeLessThanOrEqual(123)
     expect(result.reason.endsWith("...")).toBe(true)
+  })
+})
+
+describe("clipCloseReason", () => {
+  const size = (text: string): number =>
+    new TextEncoder().encode(text).byteLength
+
+  test("a reason that fits is untouched", () => {
+    expect(clipCloseReason("")).toBe("")
+    expect(clipCloseReason("a".repeat(123))).toBe("a".repeat(123))
+  })
+
+  test("a longer one is clipped to 123 bytes and ends in ...", () => {
+    const clipped = clipCloseReason("a".repeat(124))
+    expect(size(clipped)).toBeLessThanOrEqual(123)
+    expect(clipped).toBe(`${"a".repeat(120)}...`)
+  })
+
+  test("clipping never leaves a half-encoded character", () => {
+    // 2-byte characters: cutting at 120 bytes lands mid-character.
+    const clipped = clipCloseReason("é".repeat(100))
+    expect(size(clipped)).toBeLessThanOrEqual(123)
+    expect(clipped.includes("\uFFFD")).toBe(false)
+    expect(clipped).toBe(`${"é".repeat(60)}...`)
   })
 })

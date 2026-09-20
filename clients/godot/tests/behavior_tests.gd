@@ -91,8 +91,9 @@ static func client_case(c: Dictionary) -> String:
 
 ## Server side, against the real interop server.
 static func server_case(c: Dictionary, url: String) -> String:
-	# The close code is what a `violation` case is checked by (§8.2), and
-	# only the transport sees it.
+	# A `violation` case is checked by the close (§8.2), and only the
+	# transport sees its code and reason. That reason matters most here:
+	# Godot's peer drops the ERROR frame the server sends before closing.
 	var closes: Array = []
 	var transport := _ClosingTransport.new()
 	transport.closes = closes
@@ -130,13 +131,19 @@ static func server_case(c: Dictionary, url: String) -> String:
 		if outcome == "":
 			# The ERROR frame that precedes the close may be dropped by the
 			# transport (§8.2, §15: Godot's peer discards it), so the close
-			# code is the signal; an ERROR that did arrive must be right.
-			if closes.is_empty() or closes[0] != Constants.CLOSE_POLICY_VIOLATION:
+			# is the signal and carries the same explanation as its reason.
+			if closes.is_empty() or closes[0][0] != Constants.CLOSE_POLICY_VIOLATION:
 				outcome = "expected a 1008 close, got %s" % [closes]
+			elif closes[0][1] == "":
+				outcome = "the close reason should say why (§8.2)"
 			else:
 				for error in errors:
 					if not str(error[1]).begins_with("INVALID_MESSAGE"):
 						outcome = "expected INVALID_MESSAGE, got %s" % [error]
+						break
+					elif not closes[0][1].ends_with("...") and not str(error[1]).ends_with(closes[0][1]):
+						outcome = "the ERROR and the close reason should agree: %s vs %s" % [
+							error, closes[0]]
 						break
 	else:
 		Net.run_for(client, 250)
@@ -157,7 +164,7 @@ class _ClosingTransport:
 	func open(url: String, protocols: PackedStringArray, on_open: Callable,
 			on_message: Callable, on_close: Callable):
 		var recorded := func(code: int, reason: String) -> void:
-			closes.append(code)
+			closes.append([code, reason])
 			on_close.call(code, reason)
 		return super.open(url, protocols, on_open, on_message, recorded)
 

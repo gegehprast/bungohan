@@ -143,6 +143,92 @@ describe("unknown server frame types", () => {
   })
 })
 
+describe("protocol violations explain themselves twice", () => {
+  /**
+   * The ERROR frame may never reach the application: some WebSocket stacks
+   * drop what they have buffered when the close frame arrives (PROTOCOL.md
+   * §8.2, §15). So the close reason carries the same explanation, and a
+   * client that only sees the close can still report why.
+   */
+  test("the close reason repeats the ERROR body's reason", async () => {
+    const { h } = await setup()
+    const client = h.connect()
+    client.sendBytes(new Uint8Array([200, 1]))
+    await h.flush()
+    expect(client.errors[0]).toEqual(["INVALID_MESSAGE", "unknown frame 200"])
+    expect(client.closeCode).toBe(CloseCode.POLICY_VIOLATION)
+    expect(client.closeReason).toBe("unknown frame 200")
+    await h.stop()
+  })
+
+  test("every violation kind names itself in the close reason", async () => {
+    const violations: [string, (client: TestClient) => void][] = [
+      [
+        "a body the serializer can't decode",
+        (client) =>
+          client.sendBytes(
+            encodeFrame(
+              ClientFrameType.JOIN,
+              [1],
+              new Uint8Array([0xc1]),
+            ).unwrap(),
+          ),
+      ],
+      [
+        "a JOIN body that isn't an array",
+        (client) => client.sendFrame(ClientFrameType.JOIN, [1], "nope"),
+      ],
+      [
+        "a truncated header",
+        (client) => client.sendBytes(new Uint8Array([ClientFrameType.PING, 7])),
+      ],
+    ]
+    for (const [what, send] of violations) {
+      const { h } = await setup()
+      const client = h.connect()
+      send(client)
+      await h.flush()
+      const reason = client.closeReason ?? ""
+      expect({ what, code: client.closeCode }).toEqual({
+        what,
+        code: CloseCode.POLICY_VIOLATION,
+      })
+      // Not the old generic text, and the same string the ERROR carried.
+      expect({ what, reason }).not.toEqual({ what, reason: "" })
+      expect({ what, reason }).not.toEqual({
+        what,
+        reason: "protocol violation",
+      })
+      expect({ what, reason }).toEqual({
+        what,
+        reason: client.errors[0]?.[1] ?? "",
+      })
+      // A close reason must fit RFC 6455's 123 bytes. No reason core
+      // produces today comes close, so this guards future ones; the
+      // clipping itself is covered by `clipCloseReason`'s own tests.
+      expect({
+        what,
+        bytes: new TextEncoder().encode(reason).byteLength <= 123,
+      }).toEqual({ what, bytes: true })
+      await h.stop()
+    }
+  })
+
+  test("a malformed contract payload names the message in the reason", async () => {
+    const { h, join } = await setup()
+    const client = h.connect()
+    const room = await join(client)
+    room.sendById(0, new Uint8Array(200).fill(0xff))
+    await h.flush()
+    expect(client.closeCode).toBe(CloseCode.POLICY_VIOLATION)
+    expect(client.closeReason).toBe(
+      "move: varint longer than 5 bytes (at byte 5)",
+    )
+    expect(client.closeReason).toBe(client.errors[0]?.[1])
+    await h.stop()
+  })
+})
+
 describe("protocol version", () => {
   test("a wrong version is rejected before any frame, with a reason", async () => {
     const { h } = await setup()
