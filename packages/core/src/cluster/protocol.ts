@@ -8,7 +8,14 @@
  * client frame, produced by the process that owns the room and relayed
  * byte for byte by the process that holds the connection.
  *
- * `IBackplane` carries JSON, so frame bytes travel base64-encoded.
+ * The backplane carries **bytes**, and core encodes these messages with
+ * the server's own `ISerializer` (MessagePack by default). That matters
+ * beyond efficiency: a value that reached this process from a client was
+ * decoded by that serializer, so re-encoding it reproduces it exactly.
+ * With JSON in between, a `Uint8Array`, `NaN`, `±Infinity` or a `Date` in
+ * a join's `options` would arrive at the owning process as something else,
+ * and identical game code would behave differently depending on where the
+ * room happened to live.
  */
 import type { ConnectionContext } from "@bungohan/transport"
 import type { JoinMode, Reservation } from "@bungohan/types"
@@ -34,26 +41,14 @@ export function processChannel(namespace: string, processId: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Frame bytes over a JSON channel
-// ---------------------------------------------------------------------------
-
-export function encodeBytes(bytes: Uint8Array): string {
-  return bytes.toBase64()
-}
-
-export function decodeBytes(text: string): Uint8Array<ArrayBuffer> {
-  return Uint8Array.fromBase64(text)
-}
-
-// ---------------------------------------------------------------------------
 // Connection context
 // ---------------------------------------------------------------------------
 
 /**
- * A `ConnectionContext` as JSON, so the owning process can run `onAuth`
- * with the same ip, query, headers and token the edge process saw. Only
- * these fields travel; a custom transport's extra properties stay on the
- * process that created them.
+ * A `ConnectionContext` flattened for the backplane, so the owning process
+ * can run `onAuth` with the same ip, query, headers and token the edge
+ * process saw. Only these fields travel; a custom transport's extra
+ * properties stay on the process that created them.
  */
 export interface WireContext {
   ip: string
@@ -295,7 +290,8 @@ export interface SeatMessage extends Envelope {
   /** True for `ROOM_MESSAGE_RAW`. */
   raw: boolean
   messageId: number
-  body: string
+  /** The frame body, exactly as it arrived from the client. */
+  body: Uint8Array
 }
 
 /** The client asked to leave a remote room (`LEAVE` frame). */
@@ -311,11 +307,11 @@ export interface ConnectionClosed extends Envelope {
   connectionId: string
 }
 
-/** Finished frames the edge relays verbatim to one or more connections. */
+/** A finished frame the edge relays verbatim to one or more connections. */
 export interface FrameRelay extends Envelope {
   t: "frames"
   to: string[]
-  body: string
+  body: Uint8Array
 }
 
 /** The owner refused a frame: the edge closes the connection (§8.2). */

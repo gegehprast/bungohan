@@ -1,15 +1,11 @@
-import { err, ok, type Result } from "@bungohan/result"
-import { BackplaneError, reason } from "./errors"
-
 /**
  * Local callback bookkeeping shared by the backplanes: many callbacks per
- * channel, dispatch that survives a throwing callback or a bad payload.
+ * channel, and dispatch that survives a throwing callback.
  *
- * Callbacks receive `unknown` JSON. `IBackplane.subscribe<M>` lets the
- * caller name the type it expects, but nothing checks it at runtime (the
- * same trust model as any JSON channel between your own processes).
+ * Callbacks receive raw bytes; decoding them is the publisher's and the
+ * subscriber's business, not the backplane's (see `IBackplane`).
  */
-export type Callback = (message: unknown) => void
+export type Callback = (data: Uint8Array) => void
 
 export class Channels {
   private readonly _callbacks = new Map<string, Set<Callback>>()
@@ -47,23 +43,17 @@ export class Channels {
     this._callbacks.clear()
   }
 
-  /** Parses a raw message and hands it to each callback on `channel`. */
-  public dispatch(channel: string, raw: string): void {
+  /**
+   * Hands `data` to each callback on `channel`. Every callback gets its
+   * own copy, so one that keeps or mutates the array can't affect the
+   * next (`IBackplane`).
+   */
+  public dispatch(channel: string, data: Uint8Array): void {
     const callbacks = this._callbacks.get(channel)
     if (callbacks === undefined) return
-    let message: unknown
-    try {
-      message = JSON.parse(raw)
-    } catch (error) {
-      console.error(
-        `[bungohan/backplane] dropped a non-JSON message on "${channel}"`,
-        error,
-      )
-      return
-    }
     for (const callback of [...callbacks]) {
       try {
-        callback(message)
+        callback(data.slice())
       } catch (error) {
         console.error(
           `[bungohan/backplane] callback on "${channel}" threw`,
@@ -72,21 +62,4 @@ export class Channels {
       }
     }
   }
-}
-
-export function toJson(message: unknown): Result<string, BackplaneError> {
-  try {
-    const json = JSON.stringify(message)
-    if (json !== undefined) return ok(json)
-  } catch (error) {
-    return err(
-      new BackplaneError(
-        "SERIALIZATION_FAILED",
-        `message is not JSON-serializable: ${reason(error)}`,
-      ),
-    )
-  }
-  return err(
-    new BackplaneError("SERIALIZATION_FAILED", "cannot publish undefined"),
-  )
 }

@@ -864,8 +864,8 @@ is then already addressed correctly and needs no rewriting — which is what
 keeps a relayed frame byte-identical to a local one. A refused join simply
 burns a handle, which is fine: handles are never reused on a connection.
 
-**What crosses the backplane** (`cluster/protocol.ts`, JSON over
-`IBackplane`, so frame bytes travel base64): one broadcast channel
+**What crosses the backplane** (`cluster/protocol.ts`, MessagePack over
+`IBackplane`, so frame bytes ride as `bin`): one broadcast channel
 (`<namespace>:cluster:all`) and one per process
 (`<namespace>:cluster:p:<id>`). Messages are heartbeats and goodbyes;
 request/reply for process info, room/reservation lookup, "find an available
@@ -962,14 +962,35 @@ Redis), `heartbeatInterval`, `peerTimeout`, `requestTimeout`,
 (`backplane.provider` or `backplane.config`); without one, `start()` fails
 with `INVALID_OPTIONS` naming both, rather than starting a cluster of one.
 
-**Known limitations, deliberately:** a forwarded join's `options` and a
-proxied broadcast's payload travel as JSON, so they must be JSON-safe; a
-`ConnectionContext` carries `ip`, `searchParams`, `headers`, `token` and
-`protocol` to the owner's `onAuth`, but not a custom transport's extra
-properties; and `ClientMetrics.avgLatency` is not recorded for a seat whose
-`PING` lands on another process (the round trip is measured where the
-socket is, and forwarding it would cost a message per ping for a metric
-that is off by default).
+**[DECIDED] Backplane messages are MessagePack, not JSON**, encoded with
+the **server's own `ISerializer`** (§8.1.4). This is a correctness
+requirement, not an optimization. A forwarded join's `options`, a proxied
+broadcast's payload and a room message all pass through the backplane, and
+JSON silently rewrites exactly the values the wire protocol carries
+faithfully: a `Uint8Array` became `{"0":1,"1":2,"2":3}`, `NaN` and
+`±Infinity` became `null`, and a `Date` became an ISO string. So the same
+game code behaved differently depending on where the room happened to
+live, with no error anywhere. Using the serializer that *decoded the value
+off the wire in the first place* makes the round trip an identity: a
+handler on the owning process receives what a handler on the edge would.
+`packages/testing/src/cluster/fidelity.test.ts` joins a local room and a
+remote one of the same type with the same options and compares them value
+for value, over all four kinds; every case fails if the encoding is put
+back to JSON. Frame bytes ride along as MessagePack `bin`, so relaying
+costs no base64 either.
+
+**Known limitations, deliberately:** a value must be one MessagePack can
+carry, so anything that isn't — a `Map`, a `Set`, a class instance — still
+arrives as a plain object, and `-0` arrives as `0` (PROTOCOL.md §4). This
+is not an asymmetry for anything a *client* sent, which by definition came
+through the same serializer; it only bites options a server built itself
+and handed to `createRoom`/`reserve`. A `ConnectionContext` carries `ip`,
+`searchParams`, `headers`, `token` and `protocol` to the owner's `onAuth`,
+but not a custom transport's extra properties. And
+`ClientMetrics.avgLatency` is not recorded for a seat whose `PING` lands on
+another process (the round trip is measured where the socket is, and
+forwarding it would cost a message per ping for a metric that is off by
+default).
 
 **Tests** (`packages/testing/src/cluster/`, on `createClusterHarness`:
 several real servers in one `bun test` process, each with its own
@@ -1460,14 +1481,14 @@ interface IStore {
 // RedisStore: Bun's built-in RedisClient, JSON-serializes values, `setex` for TTL; extra connect()/isConnected()
 // StoreError codes: CONNECTION_FAILED | INVALID_OPTIONS
 
-// backplane
+// backplane — [DECIDED] byte-oriented, like ITransport (see below)
 interface IBackplane {
-  publish<M>(channel: string, message: M): Promise<Result<void, Error>>;
-  subscribe<M>(channel: string, callback: (message: M) => void): Promise<Result<void, Error>>;
+  publish(channel: string, data: Uint8Array): Promise<Result<void, Error>>;
+  subscribe(channel: string, callback: (data: Uint8Array) => void): Promise<Result<void, Error>>;
   unsubscribe(channel: string): Promise<Result<void, Error>>;
   close(): Promise<Result<void, Error>>;
 }
-// RedisBackplane: two Bun RedisClient connections (publisher + subscriber), JSON messages,
+// RedisBackplane: two Bun RedisClient connections (publisher + subscriber),
 // supports multiple local callbacks per channel via Map<channel, Set<callback>> while only issuing one real Redis SUBSCRIBE per channel
 // extra connect()/isConnected(); BackplaneError codes: CONNECTION_FAILED | INVALID_OPTIONS
 ```
@@ -1489,9 +1510,11 @@ interface IBackplane {
   - `close()` sends every client 1001, then stops **gracefully and without awaiting**. On Bun 1.3.13 the promise from `server.stop()` never settles once the server has initiated a WebSocket close, although the port is freed at once. `stop(true)` straight after `ws.close()` drops output Bun hasn't flushed yet (e.g. the upgrade response to a client that has only just connected); `stop(false)` flushes it.
   - Bun's own WebSocket *client* reports a received 1001 as 1000; the bytes on the wire are correct. Keep this in mind for client-js tests run under Bun.
 - **Store.** `get` of a missing or expired key is `ok(undefined)` (JSON `null` is a real value). Deleting a missing key is not an error. A TTL is a positive whole number of seconds, otherwise `INVALID_OPTIONS`; `RedisStore` uses `SETEX`. `undefined`, cyclic and `BigInt` values are `SERIALIZATION_FAILED`, and so is a stored value that isn't JSON. A failed command is `OPERATION_FAILED`. Those two codes are additions to the `[KEEP]` list above, which only had `CONNECTION_FAILED | INVALID_OPTIONS` and used `INVALID_OPTIONS` for everything.
-- **Backplane.** A process receives its own publications on channels it subscribes to, as in Redis. `subscribe` resolves once the subscription is live. `unsubscribe` removes every callback on the channel. Non-JSON messages and throwing callbacks are logged and skipped, and don't affect the other callbacks. `RedisBackplane` issues one `SUBSCRIBE` per channel, and concurrent `subscribe` calls share the in-flight one. A failed `SUBSCRIBE` rolls back its callback so that a retry re-subscribes. `unsubscribe` during an in-flight `SUBSCRIBE` waits for it, so the channel ends up unsubscribed.
+- **Backplane.** A process receives its own publications on channels it subscribes to, as in Redis. `subscribe` resolves once the subscription is live. `unsubscribe` removes every callback on the channel. A throwing callback is logged and skipped, and doesn't affect the others. `RedisBackplane` issues one `SUBSCRIBE` per channel, and concurrent `subscribe` calls share the in-flight one. A failed `SUBSCRIBE` rolls back its callback so that a retry re-subscribes. `unsubscribe` during an in-flight `SUBSCRIBE` waits for it, so the channel ends up unsubscribed.
+- **[DECIDED] The backplane carries bytes, not JSON**, and doesn't decide what they mean — the same shape as `ITransport`. The encoding belongs to the publisher, which for cluster mode is core with the server's `ISerializer` (§6.4.1 says why that matters). Each callback gets its own copy of the bytes, and `MemoryBackplane` copies at publish time like a socket write, so a publisher that reuses its buffer can't corrupt delivery. `SERIALIZATION_FAILED` is gone from `BackplaneErrorCode`: there is nothing left for the backplane to serialize.
+- **[DECIDED] Bun's Redis client cannot carry binary pub/sub payloads.** `RedisClient.publish` refuses a `Uint8Array` or a `Buffer` (`ERR_INVALID_ARG_TYPE`), a subscriber's listener is typed `(message: string, …)`, and Bun's own typings note that buffer subscriptions "are not yet implemented". So the bytes travel as a **latin1 string** — one code unit per byte, byte-exact and no larger, where base64 would cost a third more on every cluster message. Measured on Bun 1.3.13 against a real Redis: all 256 byte values, sequences that are valid UTF-8 (`c3 a9`, `e2 82 ac`) and 4 KB of random bytes all come back unchanged, so Bun decodes a pub/sub payload as binary rather than as UTF-8. That is behaviour rather than a documented promise, so `redis.integration.test.ts` pins it with all 256 values through a real Redis; if it ever changes, that test fails, and in the meantime a corrupted payload fails the receiving serializer's decode and is dropped with a log rather than silently mis-read.
 - **Redis clients.** `new RedisClient(url)` throws on a malformed URL, and a constructor can't return a `Result`. So `RedisStore`/`RedisBackplane` construction never throws: a bad URL makes every operation return `INVALID_OPTIONS`. Both accept injected clients (`client` / `clients: { publisher, subscriber }`) typed by minimal interfaces (`RedisStoreClient`, `RedisPubSubClient`) that Bun's `RedisClient` satisfies. That is how the unit tests use in-memory fakes. `redisUrl()` URL-encodes the password (the old code didn't), and `redis` passes `RedisOptions` through.
-- **In-memory implementations ship as real exports.** `MemoryStore` (JSON copy semantics identical to Redis; injectable `now` for manual clocks) and `MemoryBackplane` plus `MemoryBus` (several backplanes on one bus simulate a cluster in one process). Delivery goes through JSON on a microtask, in publish order, and is never re-entrant. They are the single-process defaults for core and the test doubles for §2's "mock store / mock backplane".
+- **In-memory implementations ship as real exports.** `MemoryStore` (JSON copy semantics identical to Redis; injectable `now` for manual clocks) and `MemoryBackplane` plus `MemoryBus` (several backplanes on one bus simulate a cluster in one process). Delivery copies the bytes at publish time and hands them over on a microtask, in publish order, and is never re-entrant. They are the single-process defaults for core and the test doubles for §2's "mock store / mock backplane".
 - **[DECIDED] MessagePack strings are strict UTF-8.** `@msgpack/msgpack` decodes invalid UTF-8 leniently (a lone `ff` becomes `"ÿ"`), which PROTOCOL.md §4 forbids. `MessagePackSerializer.decode` walks the MessagePack structure first and checks every string and map key with a fatal decoder, so such a body is `DECODE_FAILED`.
 - **Integration tests** (`*.integration.test.ts` in store and backplane) run against a real Redis when `REDIS_URL` is set and skip otherwise. Each run uses unique key/channel prefixes and cleans up after itself.
 

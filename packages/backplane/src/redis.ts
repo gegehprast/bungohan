@@ -1,7 +1,8 @@
 import { err, ok, type Result } from "@bungohan/result"
 import { RedisClient, type RedisOptions } from "bun"
 import type { IBackplane } from "./backplane"
-import { type Callback, Channels, toJson } from "./channels"
+import { fromBinaryString, toBinaryString } from "./binary"
+import { type Callback, Channels } from "./channels"
 import { BackplaneError, reason } from "./errors"
 
 /**
@@ -118,16 +119,18 @@ export class RedisBackplane implements IBackplane {
     return publisher.connected && subscriber.connected
   }
 
-  public async publish<M>(
+  /**
+   * Bun's client only publishes strings, so the bytes travel as latin1
+   * (see `binary.ts`): byte-exact, and no larger than what it was given.
+   */
+  public async publish(
     channel: string,
-    message: M,
+    data: Uint8Array,
   ): Promise<Result<void, Error>> {
     const clients = this._use()
     if (clients.isErr()) return clients
-    const json = toJson(message)
-    if (json.isErr()) return json
     try {
-      await clients.value.publisher.publish(channel, json.value)
+      await clients.value.publisher.publish(channel, toBinaryString(data))
       return ok(undefined)
     } catch (error) {
       return err(
@@ -139,13 +142,12 @@ export class RedisBackplane implements IBackplane {
     }
   }
 
-  public async subscribe<M>(
+  public async subscribe(
     channel: string,
-    callback: (message: M) => void,
+    callback: (data: Uint8Array) => void,
   ): Promise<Result<void, Error>> {
     const clients = this._use()
     if (clients.isErr()) return clients
-    // Typed by the caller, unchecked at runtime (see Channels).
     const local = callback as Callback
     this._channels.add(channel, local)
     let pending = this._subscribed.get(channel)
@@ -220,7 +222,7 @@ export class RedisBackplane implements IBackplane {
   ): Promise<Result<void, BackplaneError>> {
     try {
       await subscriber.subscribe(channel, (message) =>
-        this._channels.dispatch(channel, message),
+        this._channels.dispatch(channel, fromBinaryString(message)),
       )
       return ok(undefined)
     } catch (error) {

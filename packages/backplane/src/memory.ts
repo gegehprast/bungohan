@@ -1,6 +1,6 @@
 import { err, ok, type Result } from "@bungohan/result"
 import type { IBackplane } from "./backplane"
-import { type Callback, Channels, toJson } from "./channels"
+import { type Callback, Channels } from "./channels"
 import { BackplaneError } from "./errors"
 
 /**
@@ -21,15 +21,17 @@ export class MemoryBus {
   }
 
   /** @internal Delivers to every member, like a Redis PUBLISH. */
-  public _publish(channel: string, json: string): void {
-    for (const member of this._members) member._deliver(channel, json)
+  public _publish(channel: string, data: Uint8Array): void {
+    for (const member of this._members) member._deliver(channel, data)
   }
 }
 
 /**
- * In-process `IBackplane`: the single-process default and a test double.
- * Messages go through JSON exactly like `RedisBackplane`, and are delivered
- * asynchronously (on a microtask, in publish order), as over a network.
+ * In-process `IBackplane`: a test double, and how several processes share
+ * a "network" in one `bun test` process. Bytes are **copied at publish
+ * time**, like a socket write, so a publisher that reuses its buffer
+ * afterwards can't corrupt what subscribers see, and delivery is
+ * asynchronous (on a microtask, in publish order), as over a network.
  * Publishing also reaches the publisher's own subscriptions, as in Redis.
  */
 export class MemoryBackplane implements IBackplane {
@@ -42,23 +44,20 @@ export class MemoryBackplane implements IBackplane {
     bus._join(this)
   }
 
-  public async publish<M>(
+  public async publish(
     channel: string,
-    message: M,
+    data: Uint8Array,
   ): Promise<Result<void, Error>> {
     if (this._closed) return err(closed())
-    const json = toJson(message)
-    if (json.isErr()) return json
-    this._bus._publish(channel, json.value)
+    this._bus._publish(channel, data.slice())
     return ok(undefined)
   }
 
-  public async subscribe<M>(
+  public async subscribe(
     channel: string,
-    callback: (message: M) => void,
+    callback: (data: Uint8Array) => void,
   ): Promise<Result<void, Error>> {
     if (this._closed) return err(closed())
-    // Typed by the caller, unchecked at runtime (see Channels).
     this._channels.add(channel, callback as Callback)
     return ok(undefined)
   }
@@ -76,9 +75,9 @@ export class MemoryBackplane implements IBackplane {
   }
 
   /** @internal */
-  public _deliver(channel: string, json: string): void {
+  public _deliver(channel: string, data: Uint8Array): void {
     if (!this._channels.has(channel)) return
-    queueMicrotask(() => this._channels.dispatch(channel, json))
+    queueMicrotask(() => this._channels.dispatch(channel, data))
   }
 }
 

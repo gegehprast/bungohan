@@ -1138,6 +1138,7 @@ export class BungohanServer {
     }
     const node = new ClusterNode({
       backplane: this._backplane,
+      serializer: this._serializer,
       processId: this._processId,
       namespace: options.namespace ?? "bungohan",
       clock: this._clock,

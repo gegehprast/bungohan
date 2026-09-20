@@ -5,8 +5,6 @@ export type BackplaneErrorCode =
   | "INVALID_OPTIONS"
   /** The backing service rejected or failed a command. */
   | "OPERATION_FAILED"
-  /** A message couldn't be encoded as JSON. */
-  | "SERIALIZATION_FAILED"
 
 export class BackplaneError<T = unknown> extends Error {
   public readonly code: BackplaneErrorCode

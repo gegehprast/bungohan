@@ -9,6 +9,7 @@
  */
 import type { IBackplane } from "@bungohan/backplane"
 import { err, ok, type Result } from "@bungohan/result"
+import type { ISerializer } from "@bungohan/serializer"
 import type { Clock, Reservation } from "@bungohan/types"
 import { BungohanError, type ErrorCode } from "../errors"
 import type { Logger } from "../logger"
@@ -18,8 +19,6 @@ import {
   asClusterMessage,
   CLUSTER_PROTOCOL,
   type ClusterPayload,
-  decodeBytes,
-  encodeBytes,
   type JoinForwardRequest,
   type JoinTarget,
   processChannel,
@@ -108,6 +107,13 @@ export interface ClusterHandlers {
 
 export interface ClusterNodeOptions {
   readonly backplane: IBackplane
+  /**
+   * The server's serializer (MessagePack by default). The same one that
+   * decoded a value off the wire re-encodes it for the backplane, so a
+   * handler on the owning process receives exactly what a handler here
+   * would (spec §6.4.1).
+   */
+  readonly serializer: ISerializer
   readonly processId: string
   readonly namespace: string
   readonly clock: Clock
@@ -162,7 +168,7 @@ export class ClusterNode {
 
   public async start(): Promise<Result<void, BungohanError>> {
     const { backplane } = this._options
-    const receive = (message: unknown): void => this._receive(message)
+    const receive = (data: Uint8Array): void => this._receive(data)
     const own = await backplane.subscribe(this._own, receive)
     if (own.isErr()) return err(this._error("CONNECTION_FAILED", own.error))
     const all = await backplane.subscribe(this._all, receive)
@@ -369,7 +375,7 @@ export class ClusterNode {
       connectionId,
       raw,
       messageId,
-      body: encodeBytes(body),
+      body,
     })
   }
 
@@ -404,7 +410,7 @@ export class ClusterNode {
     this._publish(processChannel(this._options.namespace, processId), {
       t: "frames",
       to: connectionIds,
-      body: encodeBytes(frame),
+      body: frame,
     })
   }
 
@@ -443,8 +449,16 @@ export class ClusterNode {
   // Inbound
   // ==========================================================================
 
-  private _receive(raw: unknown): void {
-    const message = asClusterMessage(raw)
+  private _receive(data: Uint8Array): void {
+    const decoded = this._options.serializer.decode(data)
+    if (decoded.isErr()) {
+      this._options.logger.error(
+        "[cluster] dropped an undecodable message:",
+        decoded.error,
+      )
+      return
+    }
+    const message = asClusterMessage(decoded.value)
     if (message === undefined) return
     if (message.from === this._options.processId) return
     if (!this._running) return
@@ -543,7 +557,7 @@ export class ClusterNode {
           message.connectionId,
           message.raw,
           message.messageId,
-          decodeBytes(message.body),
+          message.body,
         )
         return
       case "leave":
@@ -554,7 +568,7 @@ export class ClusterNode {
         return
 
       case "frames":
-        handlers.relayFrames(message.to, decodeBytes(message.body))
+        handlers.relayFrames(message.to, message.body)
         return
       case "violation":
         handlers.relayViolation(message.connectionId, message.why)
@@ -697,8 +711,16 @@ export class ClusterNode {
       v: CLUSTER_PROTOCOL,
       from: this._options.processId,
     }
+    const encoded = this._options.serializer.encode(full)
+    if (encoded.isErr()) {
+      this._options.logger.error(
+        `[cluster] cannot encode a ${message.t} for ${channel}:`,
+        encoded.error,
+      )
+      return
+    }
     void this._options.backplane
-      .publish(channel, full)
+      .publish(channel, encoded.value)
       .then((sent) => {
         if (sent.isErr()) {
           this._options.logger.error(

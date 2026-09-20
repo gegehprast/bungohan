@@ -5,9 +5,10 @@
  *
  * The servers still run on a `ManualClock` and a `LoopbackTransport`, so
  * the game side stays deterministic; what is real here is the backplane,
- * which means messages cross a socket instead of a microtask. `flush()` is
- * told to wait for that, and to see several quiet passes before it calls
- * the cluster settled.
+ * which means messages cross a socket instead of a microtask. Joins are
+ * driven by the harness's own loops, which already wait as long as it
+ * takes; every other cross-process assertion goes through {@link until},
+ * so no assertion here depends on guessing a round-trip time.
  */
 import { afterEach, describe, expect, test } from "bun:test"
 import { type IBackplane, RedisBackplane } from "@bungohan/backplane"
@@ -21,7 +22,26 @@ const url = process.env["REDIS_URL"]
 
 /** Real time for Redis to deliver; `flush()` repeats this until quiet. */
 function realSettle(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 2))
+  return new Promise((resolve) => setTimeout(resolve, 4))
+}
+
+/**
+ * Flushes until `done()` holds. Quiescence over a real socket can't be
+ * decided by a fixed wait — under load a round trip can outlast any
+ * number we pick — so the assertions wait for the effect they are about,
+ * and only give up after a real-time budget. On the happy path this
+ * returns on the first check.
+ */
+async function until(
+  c: ClusterHarness,
+  done: () => boolean,
+  what: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < 60; attempt++) {
+    await c.flush()
+    if (done()) return
+  }
+  throw new Error(`Redis never delivered: ${what}`)
 }
 
 describe.skipIf(url === undefined)("cluster over a real Redis", () => {
@@ -71,13 +91,20 @@ describe.skipIf(url === undefined)("cluster over a real Redis", () => {
       room.sessionId,
     )
 
-    room.send("move", { dx: -1.25 })
-    await c.flushSync()
-    await c.flushSync()
     const owned = mm(c, 1).getRoom(created.id)
     if (!(owned instanceof GameRoom)) throw new Error("not the local room")
-    expect(owned.game.players.get(room.sessionId)?.x.get()).toBe(-1.25)
-    expect(room.state.players.get(room.sessionId)?.x.get()).toBe(-1.25)
+    room.send("move", { dx: -1.25 })
+    await until(
+      c,
+      () => owned.game.players.get(room.sessionId)?.x.get() === -1.25,
+      "the move reached the owning process",
+    )
+    await c.flushSync()
+    await until(
+      c,
+      () => room.state.players.get(room.sessionId)?.x.get() === -1.25,
+      "the patch came back to the client",
+    )
   })
 
   test("messages travel both ways between two processes", async () => {
@@ -90,10 +117,10 @@ describe.skipIf(url === undefined)("cluster over a real Redis", () => {
     await c.flush()
 
     a.send("say", { text: "over redis" })
-    await c.flush()
+    await until(c, () => heard.length === 1, "the broadcast reached b")
     expect(heard).toEqual(["over redis"])
     await c.flushSync()
-    expect(b.state.players.size).toBe(2)
+    await until(c, () => b.state.players.size === 2, "b's state caught up")
   })
 
   test("query and joinById reach across the cluster", async () => {
@@ -148,8 +175,12 @@ describe.skipIf(url === undefined)("cluster over a real Redis", () => {
     room.onLeave((code) => codes.push(code))
 
     await c.node(1).server.stop()
-    await c.flush()
+    await until(c, () => codes.length === 1, "the LEAVE reached the client")
     expect(codes).toEqual([LeaveCode.SERVER_SHUTDOWN])
-    expect(c.node(0).server.getCluster()?.peers()).toEqual([])
+    await until(
+      c,
+      () => c.node(0).server.getCluster()?.peers().length === 0,
+      "p0 dropped p1 on its goodbye",
+    )
   })
 })
