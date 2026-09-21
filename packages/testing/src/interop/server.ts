@@ -138,38 +138,29 @@ export class CompatRoom extends Room {
 
 /**
  * Typed options (PROTOCOL.md §6.2.1, §14): sends each joiner, as a raw
- * `"options"` message, `{ join, create }` — what its hooks received — as
- * soon as it has joined (what the `join` vectors read), and again whenever
- * it sends a raw `"options"` (for clients that subscribe after the join).
+ * `"options"` message from `onJoin`, `{ join, create }` — what its hooks
+ * received. That is what the `join` vectors read, and the client runners
+ * read it through a handler attached after the join resolves (the
+ * unclaimed-event rule, spec §7.5).
  */
 export class OptionsRoom extends Room<InteropState, typeof optionsContract> {
   public static override contract = optionsContract
   public override state = new InteropState()
   private _created: InferCreateOptions<typeof optionsContract> | undefined
-  private readonly _joined = new Map<
-    string,
-    InferJoinOptions<typeof optionsContract>
-  >()
 
   protected override async onCreate(
     options: RoomOnCreateOptions & InferCreateOptions<typeof optionsContract>,
   ): Promise<void> {
     const { mode, rounds, friendlyFire } = options
     this._created = { mode, rounds, friendlyFire }
-    this.onMessageRaw("options", (client) => this._echo(client))
   }
 
   protected override async onJoin(
     client: Client,
     options: InferJoinOptions<typeof optionsContract>,
   ): Promise<void> {
-    this._joined.set(client.sessionId, options)
-    this._echo(client)
-  }
-
-  private _echo(client: Client): void {
     this.sendRaw(client, "options", {
-      join: this._joined.get(client.sessionId) ?? null,
+      join: options,
       create: this._created ?? null,
     })
   }

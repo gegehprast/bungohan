@@ -393,10 +393,10 @@ func _options_case() -> String:
 	if joined == null or not joined.ok:
 		problem = "join failed: %s" % [joined]
 	if problem == "":
+		# Sent from the room's onJoin, before this listener existed: kept
+		# for it (the unclaimed-event rule, spec §7.5).
 		var got := []
 		joined.value.raw_message.connect(func(_type, payload): got.append(payload))
-		# The echo sent from onJoin came before this handler; ask again.
-		joined.value.send_raw("options", null)
 		problem = Net.until(client, func(): return not got.is_empty(), "the room's echo")
 		if problem == "":
 			problem = Checks.difference(got.back(), {

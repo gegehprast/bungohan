@@ -276,10 +276,10 @@ namespace Bungohan.Protocol.Tests
                 Result<BungohanRoom> joined = Pump.Wait(client,
                     client.CreateAsync("options", options, settings), "the join");
                 Suite.That(joined.IsOk, "join failed: " + joined.Error);
+                // Sent from the room's onJoin, before this handler existed:
+                // kept for it (the unclaimed-event rule, spec §7.5).
                 object? echoed = null;
                 joined.Value.RawMessage += (name, payload) => echoed = payload;
-                // The echo sent from onJoin came before this handler; ask again.
-                joined.Value.SendRaw("options", null).ThrowIfFailed("sendRaw");
                 Pump.Until(client, () => echoed != null, "the room's echo");
                 var expected = new MsgMap();
                 var join = new MsgMap();

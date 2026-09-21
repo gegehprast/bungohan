@@ -7,7 +7,7 @@ namespace Bungohan.Protocol.Tests
     {
         /// <summary>
         /// Runs every suite and exits non-zero on any failure. Pass suite
-        /// names (<c>vectors</c>, <c>replica</c>, <c>bindings</c>, <c>interop</c>) to run only those.
+        /// names (<c>vectors</c>, <c>replica</c>, <c>room</c>, <c>bindings</c>, <c>interop</c>) to run only those.
         /// </summary>
         public static int Main(string[] args)
         {
@@ -16,6 +16,7 @@ namespace Bungohan.Protocol.Tests
             var suites = new List<Suite>();
             if (wanted.Count == 0 || wanted.Contains("vectors")) suites.Add(VectorRunner.Run(root));
             if (wanted.Count == 0 || wanted.Contains("replica")) suites.Add(ReplicaTests.Run());
+            if (wanted.Count == 0 || wanted.Contains("room")) suites.Add(RoomEventTests.Run());
             if (wanted.Count == 0 || wanted.Contains("bindings")) suites.Add(BindingsTests.Run(root));
             if (wanted.Count == 0 || wanted.Contains("interop")) suites.Add(InteropTests.Run());
 

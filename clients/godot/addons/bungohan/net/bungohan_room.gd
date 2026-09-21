@@ -7,6 +7,12 @@ extends RefCounted
 ##         if name == "welcome":
 ##             var m = Bindings.WelcomeMessage.from_payload(payload))
 ##     room.state_replaced.connect(func(state): state.players.added.connect(_spawn))
+##
+## What the room sends before the join has handed it over (a message sent in
+## the server's onJoin, …) is kept, and reaches the first listener attached
+## for it, however late: an `on_message` handler or a `connect` to
+## `message`, `raw_message`, `client_joined`, `client_left` or
+## `error_received`, from the next poll() on (spec §7.5).
 
 const Constants = preload("constants.gd")
 const Frames = preload("../protocol/frames.gd")
@@ -141,7 +147,6 @@ func on_message(name: String, handler: Callable) -> void:
 	if not _handlers.has(name):
 		_handlers[name] = []
 	_handlers[name].append(handler)
-	_claim(func(e): return e["kind"] == "message" and e["name"] == name)
 
 
 ## Drops every listener; done automatically when the room is left.
@@ -199,6 +204,29 @@ func receive(type: int, header: Array, body: PackedByteArray) -> void:
 			_held.append([type, header, body])
 			return
 	_handle(type, header, body)
+
+
+## Hands the kept pre-join events to the listeners attached since. A signal
+## has no hook on connect, so the client calls this from every poll()
+## instead: a kept event reaches a listener at the first poll after it was
+## attached, never inside the call that attached it.
+func claim_unclaimed() -> void:
+	if _unclaimed.is_empty() or _held != null:
+		return
+	var kept: Array = _unclaimed
+	_unclaimed = []
+	# Whether each kind has a listener, looked up once per poll: an event
+	# nobody ever handles stays kept, and is checked on every poll.
+	var listening := {}
+	for i in kept.size():
+		if status == Constants.RoomStatus.LEFT:
+			return
+		var e: Dictionary = kept[i]
+		var key: String = e["kind"] + ":" + e["name"] if e["kind"] == "message" else e["kind"]
+		if not listening.has(key):
+			listening[key] = _listens(e)
+		if not listening[key] or not _dispatch(e):
+			_unclaimed.append(e)
 
 
 ## Handles the frames held during a first join, in order.
@@ -425,33 +453,20 @@ func _dispatch(e: Dictionary) -> bool:
 			return true
 
 
-## A handler was registered: hand it the kept events it takes, later.
-func _claim(takes: Callable) -> void:
-	if _unclaimed.is_empty():
-		return
-	var claimed: Array = []
-	var rest: Array = []
-	for e in _unclaimed:
-		if takes.call(e):
-			claimed.append(e)
-		else:
-			rest.append(e)
-	if claimed.is_empty():
-		return
-	_unclaimed = rest
-	# Not inside the registering call: its caller hasn't returned yet.
-	var host = _host_ref.get_ref()
-	if host == null:
-		return
-	var me := weakref(self)
-	host.defer(func():
-		var room = me.get_ref()
-		if room == null:
-			return
-		for e in claimed:
-			if room.status == Constants.RoomStatus.LEFT:
-				return
-			room._dispatch(e))
+## Whether an event would find a listener now.
+func _listens(e: Dictionary) -> bool:
+	match e["kind"]:
+		"message":
+			return not _handlers.get(e["name"], []).is_empty() \
+				or not message.get_connections().is_empty()
+		"raw":
+			return not raw_message.get_connections().is_empty()
+		"client_joined":
+			return not client_joined.get_connections().is_empty()
+		"client_left":
+			return not client_left.get_connections().is_empty()
+		_:
+			return not error_received.get_connections().is_empty()
 
 
 func _decode(body: PackedByteArray) -> Variant:

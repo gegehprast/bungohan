@@ -151,6 +151,9 @@ func poll() -> void:
 		_inbox = []
 		for action in work:
 			action.call()
+	# Kept pre-join events whose listener has been attached since (§7.5).
+	for room in _by_ref.values():
+		room.claim_unclaimed()
 	_timers()
 	_polling = false
 
@@ -630,11 +633,6 @@ func desync(room, code: String, text: String) -> void:
 		return
 	_lost(_generation, RESYNC_CLOSE, "desync")
 	socket.close(RESYNC_CLOSE, "desync")
-
-
-## Runs `action` at the start of the next poll.
-func defer(action: Callable) -> void:
-	_inbox.append(action)
 
 
 func warn(text: String) -> void:

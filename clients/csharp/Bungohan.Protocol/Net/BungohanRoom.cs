@@ -87,6 +87,11 @@ namespace Bungohan.Protocol
         private List<Held>? _held;
         private bool _releasing;
         private int _snapshots;
+        private Action<string, MsgMap>? _message;
+        private Action<string, object?>? _raw;
+        private Action<string, string>? _error;
+        private Action<string>? _clientJoined;
+        private Action<string>? _clientLeft;
 
         internal BungohanRoom(IRoomHost host, JoinSettings settings)
         {
@@ -125,11 +130,28 @@ namespace Bungohan.Protocol
         /// <summary>Snapshots applied; 1 once the join completed.</summary>
         public int Snapshots => _snapshots;
 
-        /// <summary>A contract message arrived: its name and decoded payload.</summary>
-        public event Action<string, MsgMap>? Message;
+        // The events a room can receive before its caller holds it (a
+        // message sent in the server's onJoin, …) claim what was kept for
+        // them when subscribed, like OnMessage: a plain field-like event
+        // couldn't (§7.5, the unclaimed-event rule).
 
-        /// <summary>An untyped message (<c>ROOM_MESSAGE_RAW</c>).</summary>
-        public event Action<string, object?>? RawMessage;
+        /// <summary>
+        /// A contract message arrived: its name and decoded payload. The
+        /// first subscriber also receives the pre-join messages nobody had
+        /// claimed, on the next <c>Poll()</c>.
+        /// </summary>
+        public event Action<string, MsgMap>? Message
+        {
+            add => Subscribe(ref _message, value, EventKind.Message);
+            remove => _message -= value;
+        }
+
+        /// <summary>An untyped message (<c>ROOM_MESSAGE_RAW</c>); claims like <see cref="Message"/>.</summary>
+        public event Action<string, object?>? RawMessage
+        {
+            add => Subscribe(ref _raw, value, EventKind.Raw);
+            remove => _raw -= value;
+        }
 
         /// <summary>A fresh replica; raised <b>before</b> its snapshot applies.</summary>
         public event Action<Schema>? StateReplaced;
@@ -140,12 +162,26 @@ namespace Bungohan.Protocol
         /// <summary>The room was left; the argument is a <see cref="LeaveCode"/>.</summary>
         public event Action<int>? Left;
 
-        /// <summary>An <c>ERROR</c> frame for this room, or a local failure.</summary>
-        public event Action<string, string>? ErrorReceived;
+        /// <summary>An <c>ERROR</c> frame for this room, or a local failure; claims like <see cref="Message"/>.</summary>
+        public event Action<string, string>? ErrorReceived
+        {
+            add => Subscribe(ref _error, value, EventKind.Error);
+            remove => _error -= value;
+        }
 
-        public event Action<string>? ClientJoined;
+        /// <summary>Another seat joined; claims like <see cref="Message"/>.</summary>
+        public event Action<string>? ClientJoined
+        {
+            add => Subscribe(ref _clientJoined, value, EventKind.ClientJoined);
+            remove => _clientJoined -= value;
+        }
 
-        public event Action<string>? ClientLeft;
+        /// <summary>Another seat left; claims like <see cref="Message"/>.</summary>
+        public event Action<string>? ClientLeft
+        {
+            add => Subscribe(ref _clientLeft, value, EventKind.ClientLeft);
+            remove => _clientLeft -= value;
+        }
 
         // --- sending -------------------------------------------------------
 
@@ -234,14 +270,14 @@ namespace Bungohan.Protocol
         {
             _handlers.Clear();
             _unclaimed.Clear();
-            Message = null;
-            RawMessage = null;
+            _message = null;
+            _raw = null;
             StateReplaced = null;
             StateChanged = null;
             Left = null;
-            ErrorReceived = null;
-            ClientJoined = null;
-            ClientLeft = null;
+            _error = null;
+            _clientJoined = null;
+            _clientLeft = null;
         }
 
         // --- driven by the client ------------------------------------------
@@ -340,7 +376,7 @@ namespace Bungohan.Protocol
 
         /// <summary>Reports an error on this room.</summary>
         internal void Fail(string code, string message) =>
-            Raise(() => ErrorReceived?.Invoke(code, message));
+            Raise(() => _error?.Invoke(code, message));
 
         // --- internals -----------------------------------------------------
 
@@ -565,7 +601,7 @@ namespace Bungohan.Protocol
                             Raise(() => handler(e.Payload!));
                         }
                     }
-                    Action<string, MsgMap>? all = Message;
+                    Action<string, MsgMap>? all = _message;
                     if (all != null)
                     {
                         handled = true;
@@ -575,33 +611,41 @@ namespace Bungohan.Protocol
                 }
                 case EventKind.Raw:
                 {
-                    Action<string, object?>? raw = RawMessage;
+                    Action<string, object?>? raw = _raw;
                     if (raw == null) return false;
                     Raise(() => raw(e.Name, e.Value));
                     return true;
                 }
                 case EventKind.ClientJoined:
                 {
-                    Action<string>? joined = ClientJoined;
+                    Action<string>? joined = _clientJoined;
                     if (joined == null) return false;
                     Raise(() => joined(e.Name));
                     return true;
                 }
                 case EventKind.ClientLeft:
                 {
-                    Action<string>? left = ClientLeft;
+                    Action<string>? left = _clientLeft;
                     if (left == null) return false;
                     Raise(() => left(e.Name));
                     return true;
                 }
                 default:
                 {
-                    Action<string, string>? error = ErrorReceived;
+                    Action<string, string>? error = _error;
                     if (error == null) return false;
                     Raise(() => error(e.Name, e.Value as string ?? ""));
                     return true;
                 }
             }
+        }
+
+        /// <summary>Adds a listener to one of the claiming events.</summary>
+        private void Subscribe<T>(ref T? field, T? handler, EventKind kind) where T : Delegate
+        {
+            if (handler == null) return;
+            field = (T?)Delegate.Combine(field, handler);
+            Claim(e => e.Kind == kind);
         }
 
         /// <summary>A handler was registered: hand it the kept events it takes, later.</summary>
