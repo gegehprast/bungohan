@@ -7,8 +7,15 @@
  */
 import { afterEach, expect, test } from "bun:test"
 import { BungohanClient } from "@bungohan/client-js"
+import { declarationOf as declaration } from "../conformance/vectors"
 import { type InteropServerHandle, startInteropServer } from "./server"
-import { InteropState, interopContract } from "./shared"
+import {
+  InteropState,
+  interopContract,
+  OptionsCreate,
+  OptionsJoin,
+  optionsContract,
+} from "./shared"
 
 let handle: InteropServerHandle | undefined
 let client: BungohanClient | undefined
@@ -169,4 +176,43 @@ test("raw messages round-trip through the interop room", async () => {
   })
   room.sendRaw("ping", [1, "two", true])
   expect(await echoed).toEqual(["pong", [1, "two", true]])
+})
+
+test("the options room declares exactly what the join vectors declare", async () => {
+  const file = Bun.file(
+    new URL(
+      "../../../../conformance/v1/011-join-options.json",
+      import.meta.url,
+    ),
+  )
+  const vectors: { cases: { kind: string; declares?: unknown }[] } =
+    await file.json()
+  const joins = vectors.cases.filter((c) => c.kind === "join")
+  expect(joins.length).toBeGreaterThan(0)
+  const expected = {
+    create: declaration(OptionsCreate),
+    join: declaration(OptionsJoin),
+  }
+  for (const c of joins) expect(c.declares).toEqual(expected)
+})
+
+test("the options room decodes typed options and echoes what it got", async () => {
+  const c = await connect()
+  const room = (
+    await c.create(
+      "options",
+      {
+        create: { mode: "team", rounds: 700, friendlyFire: true },
+        join: { name: "ann", aim: 1.006, spectator: false },
+      },
+      { contract: optionsContract },
+    )
+  ).unwrap()
+  const echo = new Promise<unknown>((resolve) => {
+    room.onMessageRaw((_type, payload) => resolve(payload))
+  })
+  expect(await echo).toEqual({
+    join: { name: "ann", aim: 1.01, spectator: false },
+    create: { mode: "team", rounds: 255, friendlyFire: true },
+  })
 })

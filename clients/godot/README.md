@@ -76,6 +76,24 @@ func _exit_tree() -> void:
 		_client.disconnect_from_server()
 ```
 
+**Join and create options.** If the contract declares typed options
+(PROTOCOL.md §6.2.1), the generated contract script builds them with typed
+parameters, and the join takes the result:
+
+```gdscript
+var lobby = Bindings.LobbyMessage.new()   # create options
+lobby.map = "ice"
+var seat = Bindings.SeatMessage.new()     # join options
+seat.name = "ann"
+await _client.join_or_create("game", Bindings.GameContract.create_options(lobby, seat), settings)
+await _client.join_by_id(room_id, Bindings.GameContract.join_options(seat), settings)
+```
+
+They are encoded as `schema` messages whatever the room's codec, and the
+server decodes them against the same declarations before the room sees
+them; options that don't fit fail the join with `INVALID_OPTIONS`. Without
+declared options, `options` is any MessagePack value.
+
 `await` works because `_process` keeps polling: the client resolves a join
 from inside `poll()`, which resumes whatever is awaiting it. A script that
 does not run `_process` (a `SceneTree` tool script, a test) must poll in its

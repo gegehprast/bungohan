@@ -16,8 +16,11 @@ export {
   type ClientOptions,
   createBungohanClient,
   type IBungohanClient,
+  type JoinWithMode,
+  type TypedJoin,
 } from "./client"
 export { ClientError, type ClientErrorCode } from "./errors"
+export { joinBody } from "./options"
 export {
   type IRoom,
   type JoinOptions,

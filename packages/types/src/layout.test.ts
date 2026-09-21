@@ -4,7 +4,10 @@ import {
   contractHash,
   contractLayout,
   fnv1a32,
+  hasTypedOptions,
   messageLayout,
+  NO_OPTIONS,
+  optionsDef,
   validateContract,
 } from "./layout"
 
@@ -121,6 +124,54 @@ describe("validateContract", () => {
     expect(validateContract(contract)).toEqual([
       "client.lists.a: array elements can't be messages with no data",
       "client.lists.m: map elements can't be messages with no data",
+    ])
+  })
+})
+
+describe("typed options (spec §4.1.2)", () => {
+  const Seat = defineMessage("seat", { name: f.string })
+  const Setup = defineMessage("setup", { rounds: f.uint8 })
+
+  test("the layout gains an options part only when options are declared", () => {
+    const plain = defineContract({ client: {}, server: {} })
+    expect(contractLayout(plain)).toBe("client{}server{}")
+    expect(contractLayout({ ...plain, options: {} })).toBe("client{}server{}")
+    expect(
+      contractLayout({ ...plain, options: { join: Seat, create: Setup } }),
+    ).toBe(
+      "client{}server{}options{create:setup(rounds:uint8);join:seat(name:string)}",
+    )
+    expect(contractLayout({ ...plain, options: { join: Seat } })).toBe(
+      "client{}server{}options{join:seat(name:string)}",
+    )
+  })
+
+  test("a kind left out is the empty message; none declared is untyped", () => {
+    const plain = defineContract({ client: {}, server: {} })
+    expect(optionsDef(plain, "join")).toBeUndefined()
+    const joinOnly = { ...plain, options: { join: Seat } }
+    expect(optionsDef(joinOnly, "join")).toBe(Seat)
+    expect(optionsDef(joinOnly, "create")).toBe(NO_OPTIONS)
+    expect(hasTypedOptions(joinOnly)).toBe(true)
+  })
+
+  test("validateContract checks the declarations and their kinds", () => {
+    expect(
+      validateContract({ client: {}, server: {}, options: { join: Seat } }),
+    ).toEqual([])
+    expect(
+      validateContract({
+        client: {},
+        server: {},
+        options: { joins: Seat, create: { kind: "message" } },
+      }),
+    ).toEqual([
+      'options.joins: unknown options kind (use "create" or "join")',
+      "options.create: message name must be a non-empty string",
+      "options.create: malformed message (use defineMessage)",
+    ])
+    expect(validateContract({ client: {}, server: {}, options: 3 })).toEqual([
+      "contract.options: not an object",
     ])
   })
 })

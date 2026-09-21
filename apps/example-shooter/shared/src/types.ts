@@ -1,20 +1,27 @@
+import type {
+  CreateArg,
+  InferCreateOptions,
+  InferJoinOptions,
+} from "@bungohan/types"
+import type { shooterContract } from "./contract"
+
 export type GameStatus = "waiting" | "playing" | "finished"
 
 /**
- * Options of a shooter join (`client.joinById(id, options)`). Join options
- * aren't part of the contract, so the server receives them as `unknown`
- * and narrows them itself (server/src/utils/options.ts).
+ * Options of a shooter join (`client.joinById(id, options)`), declared in
+ * `shooterContract`: typed on both ends, and decoded against the
+ * declaration before the room sees them.
  */
-export interface JoinShooterOptions {
-  playerName: string
-}
+export type JoinShooterOptions = InferJoinOptions<typeof shooterContract>
 
-/** Options of `client.create("shooter", options)`: the room's, and the creator's join. */
-export interface CreateShooterOptions extends JoinShooterOptions {
-  roomName?: string
-  maxPlayers: number
-  isPrivate: boolean
-}
+/** The settings a shooter room is created with. */
+export type ShooterSettings = InferCreateOptions<typeof shooterContract>
+
+/**
+ * Options of `client.create("shooter", options)`: `{ create, join }`, the
+ * room's settings and the creator's own join options.
+ */
+export type CreateShooterOptions = CreateArg<typeof shooterContract>
 
 /**
  * What a shooter room publishes in its `metadata` for the lobby, which

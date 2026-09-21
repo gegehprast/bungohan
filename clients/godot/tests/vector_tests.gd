@@ -1,8 +1,9 @@
 extends RefCounted
 ## Every conformance vector (PROTOCOL.md §14). Codec cases run in both
 ## directions: encode → exact bytes, and bytes → decoded values. Server-side
-## `behavior` cases need the interop server (BUNGOHAN_INTEROP_URL, set by
-## `bun run test:godot`); without it they are the only cases skipped.
+## `behavior` and `join` cases need the interop server
+## (BUNGOHAN_INTEROP_URL, set by `bun run test:godot`); without it they are
+## the only cases skipped.
 ## Run by run_vectors.gd.
 
 const Checks = preload("checks.gd")
@@ -12,6 +13,7 @@ const MsgPack = preload("res://addons/bungohan/protocol/msgpack.gd")
 const MsgpackCodec = preload("res://addons/bungohan/protocol/msgpack_codec.gd")
 const Numeric = preload("res://addons/bungohan/protocol/numeric.gd")
 const BehaviorTests = preload("behavior_tests.gd")
+const JoinVectors = preload("join_vectors.gd")
 const Net = preload("net_support.gd")
 const ReplicaVectors = preload("replica_vectors.gd")
 const ByteReader = preload("res://addons/bungohan/protocol/byte_reader.gd")
@@ -60,6 +62,12 @@ func _run() -> Checks:
 					checks.record(label, _state(c))
 				"replica":
 					checks.record(label, ReplicaVectors.run(c))
+				"join":
+					checks.record(label + " (encode)", JoinVectors.encode(c))
+					if interop_url == "":
+						checks.skip()
+					else:
+						checks.record(label + " (server)", JoinVectors.server(c, interop_url))
 				"behavior":
 					if c.get("side", "client") == "server":
 						if interop_url == "":

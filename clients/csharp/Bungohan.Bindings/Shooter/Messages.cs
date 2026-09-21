@@ -497,6 +497,100 @@ namespace Bungohan.Example.Shooter
         }
     }
 
+    /// <summary>Contract message <c>shooterCreateOptions</c>.</summary>
+    public sealed partial class ShooterCreateOptionsMessage : IContractMessage
+    {
+        /// <summary>The message's name on the wire; its id comes from the handshake.</summary>
+        public const string MessageName = "shooterCreateOptions";
+
+        /// <summary>The declaration the codecs encode with.</summary>
+        public static readonly MessageDef Definition = new MessageDef(MessageName,
+            new MessageField("roomName", FieldType.OptionalOf(FieldType.String)),
+            new MessageField("maxPlayers", FieldType.UInt8),
+            new MessageField("isPrivate", FieldType.Bool));
+
+        /// <summary><c>roomName</c>: <c>optional&lt;string&gt;</c>.</summary>
+        public string? RoomName { get; set; }
+
+        /// <summary><c>maxPlayers</c>: <c>uint8</c>.</summary>
+        public byte MaxPlayers { get; set; }
+
+        /// <summary><c>isPrivate</c>: <c>bool</c>.</summary>
+        public bool IsPrivate { get; set; }
+
+        MessageDef IContractMessage.MessageDefinition => Definition;
+
+        public MsgMap ToPayload()
+        {
+            var payload = new MsgMap();
+            if (RoomName != null) payload["roomName"] = RoomName;
+            payload["maxPlayers"] = MaxPlayers;
+            payload["isPrivate"] = IsPrivate;
+            return payload;
+        }
+
+        public static ShooterCreateOptionsMessage FromPayload(MsgMap payload)
+        {
+            var message = new ShooterCreateOptionsMessage();
+            message.RoomName = payload.TryGetValue("roomName", out object? v0) && v0 != null
+                ? (string?)(v0 as string ?? "")
+                : null;
+            message.MaxPlayers = (byte)Payloads.ToLong(payload["maxPlayers"]);
+            message.IsPrivate = (payload["isPrivate"] is true);
+            return message;
+        }
+
+        /// <summary>Encodes with the room's codec.</summary>
+        public Result<byte[]> Encode(IStateCodec codec) => codec.EncodeMessage(Definition, ToPayload());
+
+        /// <summary>Decodes a body with the room's codec.</summary>
+        public static Result<ShooterCreateOptionsMessage> Decode(IStateCodec codec, byte[] body)
+        {
+            Result<MsgMap> decoded = codec.DecodeMessage(Definition, body, 0, body.Length);
+            return decoded.IsOk ? Result<ShooterCreateOptionsMessage>.Ok(FromPayload(decoded.Value)) : Result<ShooterCreateOptionsMessage>.Fail(decoded.Error!);
+        }
+    }
+
+    /// <summary>Contract message <c>shooterJoinOptions</c>.</summary>
+    public sealed partial class ShooterJoinOptionsMessage : IContractMessage
+    {
+        /// <summary>The message's name on the wire; its id comes from the handshake.</summary>
+        public const string MessageName = "shooterJoinOptions";
+
+        /// <summary>The declaration the codecs encode with.</summary>
+        public static readonly MessageDef Definition = new MessageDef(MessageName,
+            new MessageField("playerName", FieldType.String));
+
+        /// <summary><c>playerName</c>: <c>string</c>.</summary>
+        public string PlayerName { get; set; } = "";
+
+        MessageDef IContractMessage.MessageDefinition => Definition;
+
+        public MsgMap ToPayload()
+        {
+            var payload = new MsgMap();
+            payload["playerName"] = PlayerName;
+            return payload;
+        }
+
+        public static ShooterJoinOptionsMessage FromPayload(MsgMap payload)
+        {
+            var message = new ShooterJoinOptionsMessage();
+            message.PlayerName = (payload["playerName"] as string ?? "");
+            return message;
+        }
+
+        /// <summary>Encodes with the room's codec.</summary>
+        public Result<byte[]> Encode(IStateCodec codec) => codec.EncodeMessage(Definition, ToPayload());
+
+        /// <summary>Decodes a body with the room's codec.</summary>
+        public static Result<ShooterJoinOptionsMessage> Decode(IStateCodec codec, byte[] body)
+        {
+            Result<MsgMap> decoded = codec.DecodeMessage(Definition, body, 0, body.Length);
+            return decoded.IsOk ? Result<ShooterJoinOptionsMessage>.Ok(FromPayload(decoded.Value)) : Result<ShooterJoinOptionsMessage>.Fail(decoded.Error!);
+        }
+    }
+
     /// <summary>Contract message <c>startGame</c>.</summary>
     public sealed partial class StartGameMessage : IContractMessage
     {

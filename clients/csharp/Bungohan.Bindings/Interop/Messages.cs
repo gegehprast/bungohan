@@ -381,6 +381,129 @@ namespace Bungohan.Interop
         }
     }
 
+    /// <summary>Contract message <c>optionsCreate</c>.</summary>
+    public sealed partial class OptionsCreateMessage : IContractMessage
+    {
+        /// <summary>The message's name on the wire; its id comes from the handshake.</summary>
+        public const string MessageName = "optionsCreate";
+
+        /// <summary>The declaration the codecs encode with.</summary>
+        public static readonly MessageDef Definition = new MessageDef(MessageName,
+            new MessageField("mode", FieldType.Enum("duel", "team")),
+            new MessageField("rounds", FieldType.UInt8),
+            new MessageField("friendlyFire", FieldType.Bool));
+
+        /// <summary>The values of <see cref="ModeValue"/>, in index order.</summary>
+        private static readonly object[] s_modeValues = { "duel", "team" };
+
+        public enum ModeValue
+        {
+            /// <summary><c>"duel"</c></summary>
+            Duel = 0,
+            /// <summary><c>"team"</c></summary>
+            Team = 1,
+        }
+
+        /// <summary><c>mode</c>: <c>enum["duel"|"team"]</c>.</summary>
+        public ModeValue Mode { get; set; }
+
+        /// <summary><c>rounds</c>: <c>uint8</c>.</summary>
+        public byte Rounds { get; set; }
+
+        /// <summary><c>friendlyFire</c>: <c>bool</c>.</summary>
+        public bool FriendlyFire { get; set; }
+
+        MessageDef IContractMessage.MessageDefinition => Definition;
+
+        public MsgMap ToPayload()
+        {
+            var payload = new MsgMap();
+            payload["mode"] = s_modeValues[(int)Mode];
+            payload["rounds"] = Rounds;
+            payload["friendlyFire"] = FriendlyFire;
+            return payload;
+        }
+
+        public static OptionsCreateMessage FromPayload(MsgMap payload)
+        {
+            var message = new OptionsCreateMessage();
+            message.Mode = (ModeValue)Math.Max(0, Array.IndexOf(s_modeValues, payload["mode"]));
+            message.Rounds = (byte)Payloads.ToLong(payload["rounds"]);
+            message.FriendlyFire = (payload["friendlyFire"] is true);
+            return message;
+        }
+
+        /// <summary>Encodes with the room's codec.</summary>
+        public Result<byte[]> Encode(IStateCodec codec) => codec.EncodeMessage(Definition, ToPayload());
+
+        /// <summary>Decodes a body with the room's codec.</summary>
+        public static Result<OptionsCreateMessage> Decode(IStateCodec codec, byte[] body)
+        {
+            Result<MsgMap> decoded = codec.DecodeMessage(Definition, body, 0, body.Length);
+            return decoded.IsOk ? Result<OptionsCreateMessage>.Ok(FromPayload(decoded.Value)) : Result<OptionsCreateMessage>.Fail(decoded.Error!);
+        }
+    }
+
+    /// <summary>Contract message <c>optionsJoin</c>.</summary>
+    public sealed partial class OptionsJoinMessage : IContractMessage
+    {
+        /// <summary>The message's name on the wire; its id comes from the handshake.</summary>
+        public const string MessageName = "optionsJoin";
+
+        /// <summary>The declaration the codecs encode with.</summary>
+        public static readonly MessageDef Definition = new MessageDef(MessageName,
+            new MessageField("name", FieldType.String),
+            new MessageField("aim", FieldType.Fixed(2)),
+            new MessageField("team", FieldType.OptionalOf(FieldType.UInt8)),
+            new MessageField("spectator", FieldType.Bool));
+
+        /// <summary><c>name</c>: <c>string</c>.</summary>
+        public string Name { get; set; } = "";
+
+        /// <summary><c>aim</c>: <c>fixed:2</c>.</summary>
+        public double Aim { get; set; }
+
+        /// <summary><c>team</c>: <c>optional&lt;uint8&gt;</c>.</summary>
+        public byte? Team { get; set; }
+
+        /// <summary><c>spectator</c>: <c>bool</c>.</summary>
+        public bool Spectator { get; set; }
+
+        MessageDef IContractMessage.MessageDefinition => Definition;
+
+        public MsgMap ToPayload()
+        {
+            var payload = new MsgMap();
+            payload["name"] = Name;
+            payload["aim"] = Aim;
+            if (Team != null) payload["team"] = Team.Value;
+            payload["spectator"] = Spectator;
+            return payload;
+        }
+
+        public static OptionsJoinMessage FromPayload(MsgMap payload)
+        {
+            var message = new OptionsJoinMessage();
+            message.Name = (payload["name"] as string ?? "");
+            message.Aim = Payloads.ToDouble(payload["aim"]);
+            message.Team = payload.TryGetValue("team", out object? v2) && v2 != null
+                ? (byte?)(byte)Payloads.ToLong(v2)
+                : null;
+            message.Spectator = (payload["spectator"] is true);
+            return message;
+        }
+
+        /// <summary>Encodes with the room's codec.</summary>
+        public Result<byte[]> Encode(IStateCodec codec) => codec.EncodeMessage(Definition, ToPayload());
+
+        /// <summary>Decodes a body with the room's codec.</summary>
+        public static Result<OptionsJoinMessage> Decode(IStateCodec codec, byte[] body)
+        {
+            Result<MsgMap> decoded = codec.DecodeMessage(Definition, body, 0, body.Length);
+            return decoded.IsOk ? Result<OptionsJoinMessage>.Ok(FromPayload(decoded.Value)) : Result<OptionsJoinMessage>.Fail(decoded.Error!);
+        }
+    }
+
     /// <summary>Contract message <c>playerDump</c>.</summary>
     public sealed partial class PlayerDumpMessage : IContractMessage
     {

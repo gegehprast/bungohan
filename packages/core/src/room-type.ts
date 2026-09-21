@@ -2,11 +2,15 @@
  * A registered room type: resolved options, the runtime contract with its
  * message tables and hash, and the startup validation (spec §6.8).
  */
+import { err, ok, type Result } from "@bungohan/result"
+import { decodeOptions, encodeOptions } from "@bungohan/serializer"
 import { Schema, validateSchemaClass } from "@bungohan/state"
 import {
   type Contract,
+  type ContractOptions,
   contractHash,
   type MessageDef,
+  optionsDef,
   validateContract,
 } from "@bungohan/types"
 import type { Room } from "./room"
@@ -36,6 +40,106 @@ export interface RoomTypeDef {
   readonly serverDefs: ReadonlyMap<string, MessageDef>
   /** Handler names for client messages, for handler registration checks. */
   readonly clientIds: ReadonlyMap<string, number>
+  /**
+   * The typed options declarations (spec §4.1.2), or `undefined` for both
+   * when the contract's options are untyped.
+   */
+  readonly createOptions: MessageDef | undefined
+  readonly joinOptions: MessageDef | undefined
+}
+
+/**
+ * Fields `onCreate` already receives from the framework
+ * (`RoomOnCreateOptions`), so create options can't declare them.
+ */
+const RESERVED_CREATE_FIELDS: ReadonlySet<string> = new Set([
+  "roomId",
+  "roomType",
+  "maxClients",
+  "autoDispose",
+  "allowReconnection",
+  "reconnectionTimeout",
+  "visibility",
+  "locked",
+  "metadata",
+])
+
+/** The declaration options of `kind` use, or undefined when untyped. */
+function defOf(
+  type: RoomTypeDef,
+  kind: keyof ContractOptions,
+): MessageDef | undefined {
+  return kind === "create" ? type.createOptions : type.joinOptions
+}
+
+/**
+ * Options from a client's `JOIN` (PROTOCOL.md §6.2.1). Untyped options
+ * pass through as they came. Typed ones must be `bin` (or `null` for zero
+ * bytes) and decode exactly; the error says why, for `INVALID_OPTIONS`.
+ */
+export function readClientOptions(
+  type: RoomTypeDef,
+  kind: keyof ContractOptions,
+  element: unknown,
+): Result<unknown, Error> {
+  const def = defOf(type, kind)
+  if (def === undefined) return ok(element)
+  const decoded = decodeOptions(def, element)
+  return decoded.isErr()
+    ? err(new Error(`${kind} options: ${decoded.error.message}`))
+    : ok(decoded.value)
+}
+
+/**
+ * Options the server built itself (`createRoom`, `reserve`, `room.join`),
+ * converted through the wire encoding so a room receives exactly what the
+ * same options sent by a client would decode to. Bytes are options another
+ * process already encoded (spec §6.4.1).
+ */
+export function readServerOptions(
+  type: RoomTypeDef,
+  kind: keyof ContractOptions,
+  value: unknown,
+): Result<unknown, Error> {
+  const def = defOf(type, kind)
+  if (def === undefined) return ok(value)
+  return convertOptions(def, kind, value)
+}
+
+/** Encodes then decodes `value` against `def`; bytes are only decoded. */
+export function convertOptions(
+  def: MessageDef,
+  kind: keyof ContractOptions,
+  value: unknown,
+): Result<unknown, Error> {
+  if (value instanceof Uint8Array) {
+    const decoded = decodeOptions(def, value)
+    return decoded.isErr()
+      ? err(new Error(`${kind} options: ${decoded.error.message}`))
+      : ok(decoded.value)
+  }
+  const encoded = packOptions(def, kind, value)
+  if (encoded.isErr()) return encoded
+  const decoded = decodeOptions(def, encoded.value)
+  return decoded.isErr()
+    ? err(new Error(`${kind} options: ${decoded.error.message}`))
+    : ok(decoded.value)
+}
+
+/**
+ * Server-built options as the bytes that cross the backplane to the
+ * process that owns the room, so a remote room decodes exactly what a
+ * local one would (spec §6.4.1).
+ */
+export function packOptions(
+  def: MessageDef,
+  kind: keyof ContractOptions,
+  value: unknown,
+): Result<Uint8Array, Error> {
+  const encoded = encodeOptions(def, value)
+  if (encoded.isErr())
+    return err(new Error(`${kind} options: ${encoded.error.message}`))
+  return ok(encoded.value ?? new Uint8Array(0))
 }
 
 export function resolveOptions(
@@ -99,6 +203,15 @@ export function createRoomType(
   if (declared !== undefined) {
     problems.push(...validateContract(declared).map((p) => `contract ${p}`))
   }
+  const createOptions = optionsDef(contract, "create")
+  for (const field of createOptions?.fieldNames ?? []) {
+    if (RESERVED_CREATE_FIELDS.has(field)) {
+      problems.push(
+        `contract options.create.${field}: onCreate already receives ` +
+          `"${field}" from the framework; rename the option`,
+      )
+    }
+  }
 
   // Room classes take no constructor arguments and do nothing on `new`
   // beyond field initializers, so a probe instance shows the state class.
@@ -133,6 +246,8 @@ export function createRoomType(
     serverNames,
     serverIds: new Map(serverNames.map((n, i) => [n, i])),
     serverDefs: new Map(Object.entries(contract.server)),
+    createOptions,
+    joinOptions: optionsDef(contract, "join"),
   }
 }
 
@@ -149,4 +264,6 @@ export const DETACHED_TYPE: RoomTypeDef = {
   serverNames: [],
   serverIds: new Map(),
   serverDefs: new Map(),
+  createOptions: undefined,
+  joinOptions: undefined,
 }

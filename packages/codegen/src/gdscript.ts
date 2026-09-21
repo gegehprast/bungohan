@@ -507,9 +507,13 @@ function contractScript(
   messageConst: (def: MessageDef) => string,
   messageFile: (def: MessageDef) => string,
 ): string {
-  const defs = [...new Set([...contract.client, ...contract.server])].sort(
-    (a, b) => (a.name < b.name ? -1 : 1),
+  const typed = contract.options
+  const optionDefs = [typed?.create, typed?.join].filter(
+    (def) => def !== undefined,
   )
+  const defs = [
+    ...new Set([...contract.client, ...contract.server, ...optionDefs]),
+  ].sort((a, b) => (a.name < b.name ? -1 : 1))
   const table = (list: readonly MessageDef[]): string[] =>
     list.map((def) => `\t${literal(def.name)}: ${messageConst(def)},`)
   return text([
@@ -517,6 +521,11 @@ function contractScript(
     `## Contract \`${contract.name}\`.`,
     "",
     `const Result = preload(${literal(`${options.addon}/protocol/result.gd`)})`,
+    ...(typed === undefined
+      ? []
+      : [
+          `const TypedOptions = preload(${literal(`${options.addon}/protocol/typed_options.gd`)})`,
+        ]),
     ...defs.map(
       (def) =>
         `const ${messageConst(def)} = preload(${literal(`../${messageFile(def)}.gd`)})`,
@@ -550,7 +559,44 @@ function contractScript(
     "\tif not table.has(name):",
     '\t\treturn Result.failure(Result.DECODE_FAILED, "no message named " + name)',
     "\treturn table[name].decode(codec, body)",
+    ...optionsBuilders(typed, messageConst),
   ])
+}
+
+/**
+ * For typed options (PROTOCOL.md §6.2.1): builders of the TypedOptions a
+ * join takes, one for the joining modes and one for the creating modes,
+ * each with exactly the declared messages as typed parameters.
+ */
+function optionsBuilders(
+  typed: CodegenModel["contracts"][number]["options"],
+  messageConst: (def: MessageDef) => string,
+): string[] {
+  if (typed === undefined) return []
+  const join =
+    typed.join === undefined ? undefined : `join: ${messageConst(typed.join)}`
+  const create =
+    typed.create === undefined
+      ? undefined
+      : `create: ${messageConst(typed.create)}`
+  const joinArg = typed.join === undefined ? "null" : "join"
+  const createArg = typed.create === undefined ? "null" : "create"
+  const params = (list: (string | undefined)[]): string =>
+    list.filter((p) => p !== undefined).join(", ")
+  return [
+    "",
+    "",
+    "## Join options for join() and join_by_id() (typed options,",
+    "## PROTOCOL.md §6.2.1).",
+    `static func join_options(${params([join])}) -> TypedOptions:`,
+    `\treturn TypedOptions.from_messages(${joinArg}, null)`,
+    "",
+    "",
+    "## Options for create() and join_or_create(): the create options for a",
+    "## room the join creates, and the join options.",
+    `static func create_options(${params([create, join])}) -> TypedOptions:`,
+    `\treturn TypedOptions.from_messages(${joinArg}, ${createArg})`,
+  ]
 }
 
 export function generateGDScript(

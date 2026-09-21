@@ -1,17 +1,13 @@
-import {
-  type Client,
-  Room,
-  type RoomOnCreateOptions,
-  type UserDefinedRoomOnCreateOptions,
-  type UserDefinedRoomOnJoinOptions,
-} from "@bungohan/core"
+import { type Client, Room, type RoomOnCreateOptions } from "@bungohan/core"
 import {
   GAME_CONFIG,
   type GameResult,
   GameState,
+  type JoinShooterOptions,
   Player,
   type PlayerInput,
   type ShooterListing,
+  type ShooterSettings,
   shooterContract,
 } from "@bungohan/example-shooter-shared"
 import type { TimerId } from "@bungohan/types"
@@ -20,7 +16,7 @@ import { CombatSystem } from "../systems/CombatSystem"
 import { MovementSystem } from "../systems/MovementSystem"
 import { SpawnSystem } from "../systems/SpawnSystem"
 import type { World } from "../systems/world"
-import { parseCreateOptions, parseJoinOptions } from "../utils/options"
+import { playerName, roomSettings } from "../utils/options"
 import { generateRoomCode } from "../utils/roomCodes"
 
 /**
@@ -42,10 +38,10 @@ export class ShooterRoom extends Room<GameState, typeof shooterContract> {
   private resetTimer: TimerId | undefined
 
   protected override async onCreate(
-    options: RoomOnCreateOptions & UserDefinedRoomOnCreateOptions,
+    options: RoomOnCreateOptions & ShooterSettings,
   ): Promise<void> {
-    const { roomName, maxPlayers, isPrivate } = parseCreateOptions(options)
-    this.state.roomName.set(roomName ?? "Game Room")
+    const { roomName, maxPlayers, isPrivate } = roomSettings(options)
+    this.state.roomName.set(roomName)
     this.state.roomCode.set(generateRoomCode())
     this.state.maxPlayers.set(maxPlayers)
     this.maxClients = maxPlayers
@@ -73,23 +69,23 @@ export class ShooterRoom extends Room<GameState, typeof shooterContract> {
 
   protected override async onJoin(
     client: Client,
-    options: UserDefinedRoomOnJoinOptions,
+    options: JoinShooterOptions,
   ): Promise<void> {
     const { players } = this.state
-    const { playerName } = parseJoinOptions(
-      options,
-      `Player${players.size + 1}`,
-    )
+    const name = playerName(options.playerName, `Player${players.size + 1}`)
     if (players.size === 0) this.state.hostId.set(client.sessionId)
 
     const player = new Player()
-    player.name.set(playerName)
+    player.name.set(name)
     player.color.set(this.freeColor())
     player.health.set(GAME_CONFIG.PLAYER_MAX_HEALTH)
     placeAtRandom(player)
     players.set(client.sessionId, player)
 
-    this.broadcast("playerJoined", { playerId: client.sessionId, playerName })
+    this.broadcast("playerJoined", {
+      playerId: client.sessionId,
+      playerName: name,
+    })
 
     if (players.size >= this.maxClients) this.scheduleAutoStart()
     this.updateCanStart()

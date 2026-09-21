@@ -15,19 +15,27 @@
  *   vectors (PROTOCOL.md §14) are defined against exactly this room.
  * - **`solo`**: like `interop` but `maxClients: 1` and no reconnection, so
  *   a client can check that a seat without a token is simply left.
+ * - **`options`**: typed join and create options (`optionsContract`), the
+ *   room type the `join` conformance vectors target. Private, so a join
+ *   that may create always does, and it echoes what its hooks received.
  *
  * Run it standalone with `bun packages/testing/src/interop/server.ts`
  * (`--port`, default 0 = any free port); it prints the port it bound.
  */
-import type { Client } from "@bungohan/core"
+import type { Client, RoomOnCreateOptions } from "@bungohan/core"
 import { BungohanServer, Room } from "@bungohan/core"
 import { WebSocketTransport } from "@bungohan/transport"
-import type { Infer } from "@bungohan/types"
+import type {
+  Infer,
+  InferCreateOptions,
+  InferJoinOptions,
+} from "@bungohan/types"
 import {
   type Dump,
   InteropPlayer,
   InteropState,
   interopContract,
+  optionsContract,
 } from "./shared"
 
 /** How a room reaches the transport to drop a whole connection. */
@@ -128,6 +136,45 @@ export class CompatRoom extends Room {
   }
 }
 
+/**
+ * Typed options (PROTOCOL.md §6.2.1, §14): sends each joiner, as a raw
+ * `"options"` message, `{ join, create }` — what its hooks received — as
+ * soon as it has joined (what the `join` vectors read), and again whenever
+ * it sends a raw `"options"` (for clients that subscribe after the join).
+ */
+export class OptionsRoom extends Room<InteropState, typeof optionsContract> {
+  public static override contract = optionsContract
+  public override state = new InteropState()
+  private _created: InferCreateOptions<typeof optionsContract> | undefined
+  private readonly _joined = new Map<
+    string,
+    InferJoinOptions<typeof optionsContract>
+  >()
+
+  protected override async onCreate(
+    options: RoomOnCreateOptions & InferCreateOptions<typeof optionsContract>,
+  ): Promise<void> {
+    const { mode, rounds, friendlyFire } = options
+    this._created = { mode, rounds, friendlyFire }
+    this.onMessageRaw("options", (client) => this._echo(client))
+  }
+
+  protected override async onJoin(
+    client: Client,
+    options: InferJoinOptions<typeof optionsContract>,
+  ): Promise<void> {
+    this._joined.set(client.sessionId, options)
+    this._echo(client)
+  }
+
+  private _echo(client: Client): void {
+    this.sendRaw(client, "options", {
+      join: this._joined.get(client.sessionId) ?? null,
+      create: this._created ?? null,
+    })
+  }
+}
+
 export interface InteropServerOptions {
   /** 0 (the default) binds any free port. */
   port?: number
@@ -157,6 +204,7 @@ export async function startInteropServer(
     maxClients: 1,
     allowReconnection: false,
   })
+  server.defineRoomType("options", OptionsRoom, { visibility: "private" })
   ;(await server.start()).unwrap()
   const port = ws.getPort()
   if (port === undefined) throw new Error("the transport did not bind a port")

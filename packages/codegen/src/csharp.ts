@@ -651,7 +651,43 @@ function contractClass(
     ...decoder("server", contract.server),
     "",
     ...decoder("client", contract.client),
+    ...optionsBuilders(contract, messageClass),
     "}",
+  ]
+}
+
+/**
+ * For typed options (PROTOCOL.md §6.2.1): typed builders of the
+ * `TypedOptions` a join takes, one for the joining modes and one for the
+ * creating modes, each with exactly the declared messages as parameters.
+ */
+function optionsBuilders(
+  contract: CodegenModel["contracts"][number],
+  messageClass: (def: MessageDef) => string,
+): string[] {
+  const options = contract.options
+  if (options === undefined) return []
+  const join =
+    options.join === undefined ? undefined : messageClass(options.join)
+  const create =
+    options.create === undefined ? undefined : messageClass(options.create)
+  const joinParam = join === undefined ? [] : [`${join} join`]
+  const createParam = create === undefined ? [] : [`${create} create`]
+  const joinArg = join === undefined ? "null" : "join"
+  const createArg = create === undefined ? "null" : "create"
+  return [
+    "",
+    "    /// <summary>",
+    "    /// Join options for <c>JoinAsync</c> and <c>JoinByIdAsync</c> (typed",
+    "    /// options, PROTOCOL.md §6.2.1).",
+    "    /// </summary>",
+    `    public static TypedOptions JoinOptions(${joinParam.join(", ")}) => new TypedOptions(${joinArg}, null);`,
+    "",
+    "    /// <summary>",
+    "    /// Options for <c>CreateAsync</c> and <c>JoinOrCreateAsync</c>: the",
+    "    /// create options for a room the join creates, and the join options.",
+    "    /// </summary>",
+    `    public static TypedOptions CreateOptions(${[...createParam, ...joinParam].join(", ")}) => new TypedOptions(${joinArg}, ${createArg});`,
   ]
 }
 

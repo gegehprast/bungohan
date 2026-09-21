@@ -2,8 +2,15 @@
  * A room that records exactly what it was handed, so a local join and a
  * remote one can be compared value for value (spec §6.4.1).
  */
-import { type Client, Room } from "@bungohan/core"
+import { type Client, Room, type RoomOnCreateOptions } from "@bungohan/core"
 import { createNumber, Schema } from "@bungohan/state"
+import {
+  defineContract,
+  defineMessage,
+  f,
+  type InferCreateOptions,
+  type InferJoinOptions,
+} from "@bungohan/types"
 
 export class EchoState extends Schema {
   public static override schemaName = "Cluster.Echo"
@@ -87,4 +94,51 @@ export function expectTricky(
   expect(nested["bytes"]).toBeInstanceOf(Uint8Array)
   expect([...(nested["bytes"] as Uint8Array)]).toEqual([255, 0, 128])
   expect(payload["plain"]).toBe("text")
+}
+
+// --- typed options (spec §4.1.2) --------------------------------------------
+
+export const TypedCreate = defineMessage("typedCreate", {
+  spin: f.float64,
+  rounds: f.uint8,
+})
+export const TypedJoin = defineMessage("typedJoin", {
+  name: f.string,
+  aim: f.fixed(2),
+  spin: f.float64,
+  team: f.optional(f.int8),
+})
+export const typedContract = defineContract({
+  client: {},
+  server: {},
+  options: { create: TypedCreate, join: TypedJoin },
+})
+
+/** Options every `TypedEchoRoom` in the process received, newest last. */
+export const typedReceived: { create: unknown[]; join: unknown[] } = {
+  create: [],
+  join: [],
+}
+
+export function resetTypedReceived(): void {
+  typedReceived.create.length = 0
+  typedReceived.join.length = 0
+}
+
+export class TypedEchoRoom extends Room<EchoState, typeof typedContract> {
+  public static override contract = typedContract
+  public override state = new EchoState()
+
+  protected override async onCreate(
+    options: RoomOnCreateOptions & InferCreateOptions<typeof typedContract>,
+  ): Promise<void> {
+    typedReceived.create.push({ spin: options.spin, rounds: options.rounds })
+  }
+
+  protected override async onJoin(
+    _client: Client,
+    options: InferJoinOptions<typeof typedContract>,
+  ): Promise<void> {
+    typedReceived.join.push(options)
+  }
 }

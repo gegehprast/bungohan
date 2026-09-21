@@ -239,6 +239,12 @@ namespace Bungohan.Protocol
         }
 
         // --- joins ---------------------------------------------------------
+        //
+        // `options`: for a room type whose contract declares typed options
+        // (PROTOCOL.md §6.2.1), the TypedOptions its generated binding
+        // builds: `ShooterContract.CreateOptions(create, join)` for
+        // JoinOrCreate/Create, `ShooterContract.JoinOptions(join)` for
+        // Join/JoinById. Otherwise any MessagePack value (a MsgMap, …).
 
         public Task<Result<BungohanRoom>> JoinOrCreateAsync(string roomType, object? options = null,
             JoinSettings? settings = null) =>
@@ -286,13 +292,27 @@ namespace Bungohan.Protocol
             var pending = new PendingJoin(room, roomId, resume, waiting,
                 _joinTimeoutMs > 0 ? _now() + _joinTimeoutMs : double.PositiveInfinity);
             _pending[requestId] = pending;
-            var body = new List<object?> { (long)mode, target, options, room.Hash };
-            Result<byte[]> encoded = MessagePack.Encode(body);
+            Result<byte[]> encoded = EncodeJoin(mode, target, options, room.Hash);
             Result sent = encoded.IsOk
                 ? SendFrame(ClientFrameType.Join, new[] { requestId }, encoded.Value)
                 : Result.Fail(encoded.Error!);
             if (!sent.IsOk) Settle(requestId, Result<BungohanRoom>.Fail(sent.Error!));
             return waiting.Task;
+        }
+
+        /// <summary>
+        /// A <c>JOIN</c> body (PROTOCOL.md §6.2). <paramref name="options"/>
+        /// is untyped (any MessagePack value) or <see cref="TypedOptions"/>
+        /// (§6.2.1), which a generated contract builds.
+        /// </summary>
+        public static Result<byte[]> EncodeJoin(int mode, string target, object? options, string? contractHash)
+        {
+            if (!(options is TypedOptions typed))
+            {
+                return MessagePack.Encode(new List<object?> { (long)mode, target, options, contractHash });
+            }
+            Result<List<object?>> body = typed.Body(mode, target, contractHash);
+            return body.IsOk ? MessagePack.Encode(body.Value) : Result<byte[]>.Fail(body.Error!);
         }
 
         /// <summary>

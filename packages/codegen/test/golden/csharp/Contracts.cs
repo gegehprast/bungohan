@@ -73,4 +73,116 @@ namespace Bungohan.Codegen.Golden
             }
         }
     }
+
+    /// <summary>Contract <c>joinOptionsContract</c>.</summary>
+    public static class JoinOptionsContract
+    {
+        /// <summary>
+        /// The contract hash this client was built against: sent in JOIN and
+        /// compared with the handshake's. Message ids are not generated: they
+        /// come from the handshake and are resolved by name.
+        /// </summary>
+        public const string Hash = "7abe481e";
+
+        /// <summary>Client → server messages, by name.</summary>
+        public static readonly IReadOnlyDictionary<string, MessageDef> ClientMessages = new Dictionary<string, MessageDef>
+        {
+        };
+
+        /// <summary>Server → client messages, by name.</summary>
+        public static readonly IReadOnlyDictionary<string, MessageDef> ServerMessages = new Dictionary<string, MessageDef>
+        {
+        };
+
+        /// <summary>Decodes a server message by name (resolved from its id through the handshake's table).</summary>
+        public static Result<IContractMessage> DecodeServer(IStateCodec codec, string name, byte[] body)
+        {
+            switch (name)
+            {
+                default:
+                    return Result<IContractMessage>.Fail(ErrorCodes.DecodeFailed, "no server message named " + name);
+            }
+        }
+
+        /// <summary>Decodes a client message by name (resolved from its id through the handshake's table).</summary>
+        public static Result<IContractMessage> DecodeClient(IStateCodec codec, string name, byte[] body)
+        {
+            switch (name)
+            {
+                default:
+                    return Result<IContractMessage>.Fail(ErrorCodes.DecodeFailed, "no client message named " + name);
+            }
+        }
+
+        /// <summary>
+        /// Join options for <c>JoinAsync</c> and <c>JoinByIdAsync</c> (typed
+        /// options, PROTOCOL.md §6.2.1).
+        /// </summary>
+        public static TypedOptions JoinOptions(SeatMessage join) => new TypedOptions(join, null);
+
+        /// <summary>
+        /// Options for <c>CreateAsync</c> and <c>JoinOrCreateAsync</c>: the
+        /// create options for a room the join creates, and the join options.
+        /// </summary>
+        public static TypedOptions CreateOptions(SeatMessage join) => new TypedOptions(join, null);
+    }
+
+    /// <summary>Contract <c>optionsContract</c>.</summary>
+    public static class OptionsContract
+    {
+        /// <summary>
+        /// The contract hash this client was built against: sent in JOIN and
+        /// compared with the handshake's. Message ids are not generated: they
+        /// come from the handshake and are resolved by name.
+        /// </summary>
+        public const string Hash = "ced4c41b";
+
+        /// <summary>Client → server messages, by name.</summary>
+        public static readonly IReadOnlyDictionary<string, MessageDef> ClientMessages = new Dictionary<string, MessageDef>
+        {
+            ["ping"] = PingMessage.Definition,
+        };
+
+        /// <summary>Server → client messages, by name.</summary>
+        public static readonly IReadOnlyDictionary<string, MessageDef> ServerMessages = new Dictionary<string, MessageDef>
+        {
+        };
+
+        /// <summary>Decodes a server message by name (resolved from its id through the handshake's table).</summary>
+        public static Result<IContractMessage> DecodeServer(IStateCodec codec, string name, byte[] body)
+        {
+            switch (name)
+            {
+                default:
+                    return Result<IContractMessage>.Fail(ErrorCodes.DecodeFailed, "no server message named " + name);
+            }
+        }
+
+        /// <summary>Decodes a client message by name (resolved from its id through the handshake's table).</summary>
+        public static Result<IContractMessage> DecodeClient(IStateCodec codec, string name, byte[] body)
+        {
+            switch (name)
+            {
+                case "ping":
+                {
+                    var decoded = PingMessage.Decode(codec, body);
+                    return decoded.IsOk ? Result<IContractMessage>.Ok(decoded.Value) : Result<IContractMessage>.Fail(decoded.Error!);
+                }
+                default:
+                    return Result<IContractMessage>.Fail(ErrorCodes.DecodeFailed, "no client message named " + name);
+            }
+        }
+
+        /// <summary>
+        /// Join options for <c>JoinAsync</c> and <c>JoinByIdAsync</c> (typed
+        /// options, PROTOCOL.md §6.2.1).
+        /// </summary>
+        public static TypedOptions JoinOptions(SeatMessage join) => new TypedOptions(join, null);
+
+        /// <summary>
+        /// Options for <c>CreateAsync</c> and <c>JoinOrCreateAsync</c>: the
+        /// create options for a room the join creates, and the join options.
+        /// </summary>
+        public static TypedOptions CreateOptions(LobbyMessage create, SeatMessage join) => new TypedOptions(join, create);
+    }
 }

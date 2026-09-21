@@ -48,6 +48,20 @@ export function generateJson(model: CodegenModel): Map<string, string> {
       hash: contract.hash,
       client: contract.client.map((def) => def.name),
       server: contract.server.map((def) => def.name),
+      // Only for typed options (PROTOCOL.md §6.2.1): the messages named
+      // here are in `messages`; a kind left out is the empty message.
+      ...(contract.options === undefined
+        ? {}
+        : {
+            options: {
+              ...(contract.options.create === undefined
+                ? {}
+                : { create: contract.options.create.name }),
+              ...(contract.options.join === undefined
+                ? {}
+                : { join: contract.options.join.name }),
+            },
+          }),
     })),
     messages: model.messages.map(declaration),
     schemas: model.schemas.map((schema) => ({

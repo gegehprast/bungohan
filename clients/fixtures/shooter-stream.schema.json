@@ -1,7 +1,7 @@
 {
  "description": "A shooter round recorded from the TypeScript server under the schema codec: every STATE_SNAPSHOT/STATE_PATCH body and contract message Alice's client received, in order. `final` is her replica after the last frame (maps as sorted [key, value] pairs, sets sorted), `events` how often her replica's listeners fired. Written by apps/example-shooter/server/scripts/record-stream.ts.",
  "codec": "schema",
- "contractHash": "f671e798",
+ "contractHash": "b70eb79a",
  "serverMessages": [
   "playerJoined",
   "playerLeft",

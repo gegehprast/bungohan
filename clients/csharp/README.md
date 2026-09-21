@@ -84,6 +84,23 @@ public sealed class Net : MonoBehaviour      // or Godot: Node
 }
 ```
 
+**Join and create options.** If the contract declares typed options
+(PROTOCOL.md §6.2.1), the generated contract class builds them with typed
+parameters, and the join takes the result:
+
+```csharp
+TypedOptions options = GameContract.CreateOptions(
+    new LobbyMessage { Map = LobbyMessage.MapValue.Ice, Rounds = 3 },   // create options
+    new SeatMessage { Name = "ann" });                                  // join options
+await _client.JoinOrCreateAsync("game", options, settings);
+await _client.JoinByIdAsync(roomId, GameContract.JoinOptions(new SeatMessage { Name = "bo" }), settings);
+```
+
+They are encoded as `schema` messages whatever the room's codec, and the
+server decodes them against the same declarations before the room sees
+them; options that don't fit fail the join with `INVALID_OPTIONS`. Without
+declared options, `options` is any MessagePack value (a `MsgMap`, …).
+
 Nothing throws on bad input: every fallible call returns `Result` /
 `Result<T>` with a `Code` from `ClientErrorCodes` (the `JOIN_ERROR` codes of
 PROTOCOL.md §8.1, plus `CONNECTION_LOST`, `CODEC_MISMATCH`,

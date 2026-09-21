@@ -259,10 +259,26 @@ export function defineMessage<const N extends string, S extends FieldShape>(
 
 export type MessageMap = { readonly [name: string]: MessageDef }
 
-/** `client`: client → server messages. `server`: server → client messages. */
+/**
+ * Typed join and create options (spec §4.1.2, PROTOCOL.md §6.2.1). Each is
+ * a message declaration; one left out is the message with no fields.
+ * Declaring neither keeps options untyped.
+ */
+export interface ContractOptions {
+  /** Settings for a room a join creates (map, round count, …). */
+  readonly create?: MessageDef
+  /** What each joiner tells the room about itself (name, team, …). */
+  readonly join?: MessageDef
+}
+
+/**
+ * `client`: client → server messages. `server`: server → client messages.
+ * `options`: typed join/create options, if any.
+ */
 export interface Contract {
   readonly client: MessageMap
   readonly server: MessageMap
+  readonly options?: ContractOptions
 }
 
 /** Default when a Room/IRoom binds no contract: no typed messages at all. */
@@ -276,6 +292,80 @@ export type SendMap<C extends Contract> = C["server"]
 /** Messages the server receives (and the client sends). */
 export type RecvMap<C extends Contract> = C["client"]
 
+// ---------------------------------------------------------------------------
+// Options (spec §4.1.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * True when the contract declares typed options: a create-options message,
+ * a join-options message, or both.
+ */
+export type HasTypedOptions<C> = C extends {
+  readonly options: { readonly create: MessageDef }
+}
+  ? true
+  : C extends { readonly options: { readonly join: MessageDef } }
+    ? true
+    : false
+
+/** The declared options message of one kind, or `never`. */
+type OptionsMessage<C, K extends keyof ContractOptions> = C extends {
+  readonly options: { readonly [P in K]: infer M extends MessageDef }
+}
+  ? M
+  : never
+
+/** Options of a room type whose contract declares none: any object. */
+export type UntypedOptions = { [key: string]: unknown }
+
+/** The options of a kind the contract leaves out: the empty message. */
+export type NoOptions = Record<never, never>
+
+type InferOptions<C, K extends keyof ContractOptions> =
+  HasTypedOptions<C> extends true
+    ? [OptionsMessage<C, K>] extends [never]
+      ? NoOptions
+      : Infer<OptionsMessage<C, K>>
+    : UntypedOptions
+
+/**
+ * The join options a room's `onAuth`/`onJoin` receive: the declared
+ * message's payload, `{}` when only create options are declared, or an
+ * untyped object when the contract declares none.
+ */
+export type InferJoinOptions<C> = InferOptions<C, "join">
+
+/** The create options `onCreate` receives (see {@link InferJoinOptions}). */
+export type InferCreateOptions<C> = InferOptions<C, "create">
+
+/**
+ * What a client passes to `create`/`joinOrCreate` for a contract with typed
+ * options: the join options alone, or `{ create, join }` when the contract
+ * declares create options (`join` may then be left out if it isn't
+ * declared).
+ */
+export type CreateArg<C> = [OptionsMessage<C, "create">] extends [never]
+  ? InferJoinOptions<C>
+  : Simplify<
+      { readonly create: InferCreateOptions<C> } & ([
+        OptionsMessage<C, "join">,
+      ] extends [never]
+        ? { readonly join?: NoOptions }
+        : { readonly join: InferJoinOptions<C> })
+    >
+
+/** A contract that declares typed options. */
+export type TypedOptionsContract = Contract &
+  (
+    | { readonly options: { readonly create: MessageDef } }
+    | { readonly options: { readonly join: MessageDef } }
+  )
+
+/** A contract that declares no options (untyped, as before options existed). */
+export type UntypedOptionsContract = Contract & {
+  readonly options?: { readonly create?: undefined; readonly join?: undefined }
+}
+
 /** Requires each map key to equal its message's `name`. */
 type KeysMatchNames<M> = {
   [K in keyof M]: M[K] extends MessageDef<K & string>
@@ -286,7 +376,9 @@ type KeysMatchNames<M> = {
 /**
  * Declares a contract. Keys must equal the message names, so the name used
  * at call sites is always the name on the wire:
- * `defineContract({ client: { playerMove: PlayerMove } })`.
+ * `defineContract({ client: { playerMove: PlayerMove } })`. Typed join and
+ * create options are messages too:
+ * `options: { join: defineMessage("joinOptions", { name: f.string }) }`.
  */
 export function defineContract<const C extends Contract>(
   contract: C & {

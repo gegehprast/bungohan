@@ -8,14 +8,20 @@
  */
 import {
   type Contract,
+  type CreateArg,
   defineContract,
   defineMessage,
   type EmptyContract,
   f,
+  type HasTypedOptions,
   type Infer,
+  type InferCreateOptions,
+  type InferJoinOptions,
   type MessageDef,
+  type NoOptions,
   type RecvMap,
   type SendMap,
+  type UntypedOptions,
 } from "./index"
 
 type Equal<A, B> =
@@ -268,3 +274,53 @@ export function genericSend<M extends MessageDef>(
 genericSend(Everything, {} as Infer<typeof Everything>)
 // @ts-expect-error — still checked at concrete call sites
 genericSend(PlayerMove, { x: 1 })
+
+// ---------------------------------------------------------------------------
+// Typed options (spec §4.1.2)
+// ---------------------------------------------------------------------------
+
+const Setup = defineMessage("setup", { rounds: f.uint8 })
+const Seat = defineMessage("seat", { name: f.string, team: f.optional(f.int8) })
+const bothOptions = defineContract({
+  client: {},
+  server: {},
+  options: { create: Setup, join: Seat },
+})
+const joinOptionsOnly = defineContract({
+  client: {},
+  server: {},
+  options: { join: Seat },
+})
+const createOptionsOnly = defineContract({
+  client: {},
+  server: {},
+  options: { create: Setup },
+})
+const noOptions = defineContract({ client: {}, server: {} })
+
+expectType<
+  Equal<InferJoinOptions<typeof bothOptions>, { name: string; team?: number }>
+>()
+expectType<Equal<InferCreateOptions<typeof bothOptions>, { rounds: number }>>()
+// A kind left out is the empty message once the other is declared…
+expectType<Equal<InferCreateOptions<typeof joinOptionsOnly>, NoOptions>>()
+expectType<Equal<InferJoinOptions<typeof createOptionsOnly>, NoOptions>>()
+// …and declaring neither keeps options untyped.
+expectType<Equal<InferJoinOptions<typeof noOptions>, UntypedOptions>>()
+expectType<Equal<InferCreateOptions<EmptyContract>, UntypedOptions>>()
+expectType<Equal<HasTypedOptions<typeof noOptions>, false>>()
+expectType<Equal<HasTypedOptions<typeof joinOptionsOnly>, true>>()
+
+// What a client passes to the creating modes.
+expectType<
+  Equal<
+    CreateArg<typeof bothOptions>,
+    {
+      readonly create: { rounds: number }
+      readonly join: InferJoinOptions<typeof bothOptions>
+    }
+  >
+>()
+expectType<
+  Equal<CreateArg<typeof joinOptionsOnly>, { name: string; team?: number }>
+>()

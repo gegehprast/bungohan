@@ -1,0 +1,158 @@
+{
+  "description": "Typed join and create options in the JOIN body (PROTOCOL.md §6.2.1): the bin elements, the null forms, what the server decodes, and which JOIN_ERROR it answers when they don't decode. Every case targets the room type \"options\", which declares the options below, is private, and echoes what its code received.",
+  "generated": false,
+  "cases": [
+    {
+      "kind": "join",
+      "description": "the §6.2.1 example: CREATE with join and create options",
+      "declares": {
+        "create": { "name": "optionsCreate", "fields": [["mode", { "enum": ["duel", "team"] }], ["rounds", "uint8"], ["friendlyFire", "bool"]] },
+        "join": { "name": "optionsJoin", "fields": [["name", "string"], ["aim", "fixed:2"], ["team", { "optional": "uint8" }], ["spectator", "bool"]] }
+      },
+      "request": {
+        "requestId": 1, "mode": 1, "target": "options", "contractHash": null,
+        "join": { "name": "ann", "aim": 1.5, "spectator": false },
+        "create": { "mode": "team", "rounds": 5, "friendlyFire": true }
+      },
+      "hex": "02 01 95 01 a7 6f 70 74 69 6f 6e 73 c4 07 00 03 61 6e 6e ac 02 c0 c4 03 01 01 05",
+      "reply": "JOIN_SUCCESS"
+    },
+    {
+      "kind": "join",
+      "description": "JOIN_OR_CREATE: both flag bits set, a negative fixed value, an out-of-range uint8 saturated",
+      "declares": {
+        "create": { "name": "optionsCreate", "fields": [["mode", { "enum": ["duel", "team"] }], ["rounds", "uint8"], ["friendlyFire", "bool"]] },
+        "join": { "name": "optionsJoin", "fields": [["name", "string"], ["aim", "fixed:2"], ["team", { "optional": "uint8" }], ["spectator", "bool"]] }
+      },
+      "request": {
+        "requestId": 7, "mode": 0, "target": "options", "contractHash": null,
+        "join": { "name": "bo", "aim": -2.25, "team": 2, "spectator": true },
+        "create": { "mode": "duel", "rounds": 300, "friendlyFire": false }
+      },
+      "hex": "02 07 95 00 a7 6f 70 74 69 6f 6e 73 c4 07 03 02 62 6f c1 03 02 c0 c4 03 00 00 ff",
+      "reply": "JOIN_SUCCESS",
+      "received": {
+        "join": { "name": "bo", "aim": -2.25, "team": 2, "spectator": true },
+        "create": { "mode": "duel", "rounds": 255, "friendlyFire": false }
+      }
+    },
+    {
+      "kind": "join",
+      "description": "JOIN: createOptions is null where it is never read, and no room is found",
+      "declares": {
+        "create": { "name": "optionsCreate", "fields": [["mode", { "enum": ["duel", "team"] }], ["rounds", "uint8"], ["friendlyFire", "bool"]] },
+        "join": { "name": "optionsJoin", "fields": [["name", "string"], ["aim", "fixed:2"], ["team", { "optional": "uint8" }], ["spectator", "bool"]] }
+      },
+      "request": {
+        "requestId": 2, "mode": 2, "target": "options", "contractHash": null,
+        "join": { "name": "cy", "aim": 0, "spectator": false }
+      },
+      "hex": "02 02 95 02 a7 6f 70 74 69 6f 6e 73 c4 05 00 02 63 79 00 c0 c0",
+      "reply": "ROOM_NOT_FOUND"
+    },
+    {
+      "kind": "join",
+      "description": "JOIN with join options that don't decode: INVALID_OPTIONS, decoded before any room is looked for",
+      "declares": {
+        "create": { "name": "optionsCreate", "fields": [["mode", { "enum": ["duel", "team"] }], ["rounds", "uint8"], ["friendlyFire", "bool"]] },
+        "join": { "name": "optionsJoin", "fields": [["name", "string"], ["aim", "fixed:2"], ["team", { "optional": "uint8" }], ["spectator", "bool"]] }
+      },
+      "hex": "02 02 95 02 a7 6f 70 74 69 6f 6e 73 c4 01 00 c0 c0",
+      "reply": "INVALID_OPTIONS"
+    },
+    {
+      "kind": "join",
+      "description": "JOIN ignores create options: malformed ones can't fail it",
+      "declares": {
+        "create": { "name": "optionsCreate", "fields": [["mode", { "enum": ["duel", "team"] }], ["rounds", "uint8"], ["friendlyFire", "bool"]] },
+        "join": { "name": "optionsJoin", "fields": [["name", "string"], ["aim", "fixed:2"], ["team", { "optional": "uint8" }], ["spectator", "bool"]] }
+      },
+      "hex": "02 02 95 02 a7 6f 70 74 69 6f 6e 73 c4 05 00 02 63 79 00 c0 c4 01 ff",
+      "reply": "ROOM_NOT_FOUND"
+    },
+    {
+      "kind": "join",
+      "description": "a MessagePack map where typed options are declared (a client built without the declarations)",
+      "declares": {
+        "create": { "name": "optionsCreate", "fields": [["mode", { "enum": ["duel", "team"] }], ["rounds", "uint8"], ["friendlyFire", "bool"]] },
+        "join": { "name": "optionsJoin", "fields": [["name", "string"], ["aim", "fixed:2"], ["team", { "optional": "uint8" }], ["spectator", "bool"]] }
+      },
+      "hex": "02 01 94 01 a7 6f 70 74 69 6f 6e 73 81 a4 6e 61 6d 65 a3 61 6e 6e c0",
+      "reply": "INVALID_OPTIONS"
+    },
+    {
+      "kind": "join",
+      "description": "the contract hash is checked first: a stale hash is CONTRACT_MISMATCH even with undecodable options",
+      "declares": {
+        "create": { "name": "optionsCreate", "fields": [["mode", { "enum": ["duel", "team"] }], ["rounds", "uint8"], ["friendlyFire", "bool"]] },
+        "join": { "name": "optionsJoin", "fields": [["name", "string"], ["aim", "fixed:2"], ["team", { "optional": "uint8" }], ["spectator", "bool"]] }
+      },
+      "hex": "02 01 94 01 a7 6f 70 74 69 6f 6e 73 81 a4 6e 61 6d 65 a3 61 6e 6e a8 30 30 30 30 30 30 30 30",
+      "reply": "CONTRACT_MISMATCH"
+    },
+    {
+      "kind": "join",
+      "description": "no options element at all: zero bytes, and the join options have required fields",
+      "declares": {
+        "create": { "name": "optionsCreate", "fields": [["mode", { "enum": ["duel", "team"] }], ["rounds", "uint8"], ["friendlyFire", "bool"]] },
+        "join": { "name": "optionsJoin", "fields": [["name", "string"], ["aim", "fixed:2"], ["team", { "optional": "uint8" }], ["spectator", "bool"]] }
+      },
+      "hex": "02 01 92 01 a7 6f 70 74 69 6f 6e 73",
+      "reply": "INVALID_OPTIONS"
+    },
+    {
+      "kind": "join",
+      "description": "a trailing byte after the join options",
+      "declares": {
+        "create": { "name": "optionsCreate", "fields": [["mode", { "enum": ["duel", "team"] }], ["rounds", "uint8"], ["friendlyFire", "bool"]] },
+        "join": { "name": "optionsJoin", "fields": [["name", "string"], ["aim", "fixed:2"], ["team", { "optional": "uint8" }], ["spectator", "bool"]] }
+      },
+      "hex": "02 01 95 01 a7 6f 70 74 69 6f 6e 73 c4 08 00 03 61 6e 6e ac 02 00 c0 c4 03 01 01 05",
+      "reply": "INVALID_OPTIONS"
+    },
+    {
+      "kind": "join",
+      "description": "an unused flag bit set in the join options",
+      "declares": {
+        "create": { "name": "optionsCreate", "fields": [["mode", { "enum": ["duel", "team"] }], ["rounds", "uint8"], ["friendlyFire", "bool"]] },
+        "join": { "name": "optionsJoin", "fields": [["name", "string"], ["aim", "fixed:2"], ["team", { "optional": "uint8" }], ["spectator", "bool"]] }
+      },
+      "hex": "02 01 95 01 a7 6f 70 74 69 6f 6e 73 c4 07 04 03 61 6e 6e ac 02 c0 c4 03 01 01 05",
+      "reply": "INVALID_OPTIONS"
+    },
+    {
+      "kind": "join",
+      "description": "JOIN_OR_CREATE creates here (the room type is private), so its create options are read: an enum index out of range",
+      "declares": {
+        "create": { "name": "optionsCreate", "fields": [["mode", { "enum": ["duel", "team"] }], ["rounds", "uint8"], ["friendlyFire", "bool"]] },
+        "join": { "name": "optionsJoin", "fields": [["name", "string"], ["aim", "fixed:2"], ["team", { "optional": "uint8" }], ["spectator", "bool"]] }
+      },
+      "hex": "02 01 95 00 a7 6f 70 74 69 6f 6e 73 c4 07 00 03 61 6e 6e ac 02 c0 c4 03 00 02 05",
+      "reply": "INVALID_OPTIONS"
+    },
+    {
+      "kind": "join",
+      "description": "CREATE with null create options, whose declaration has required fields",
+      "declares": {
+        "create": { "name": "optionsCreate", "fields": [["mode", { "enum": ["duel", "team"] }], ["rounds", "uint8"], ["friendlyFire", "bool"]] },
+        "join": { "name": "optionsJoin", "fields": [["name", "string"], ["aim", "fixed:2"], ["team", { "optional": "uint8" }], ["spectator", "bool"]] }
+      },
+      "hex": "02 01 95 01 a7 6f 70 74 69 6f 6e 73 c4 07 00 03 61 6e 6e ac 02 c0 c0",
+      "reply": "INVALID_OPTIONS"
+    },
+    {
+      "kind": "join",
+      "description": "decoders accept any bin format: the join options as bin16 (no encoder writes this)",
+      "declares": {
+        "create": { "name": "optionsCreate", "fields": [["mode", { "enum": ["duel", "team"] }], ["rounds", "uint8"], ["friendlyFire", "bool"]] },
+        "join": { "name": "optionsJoin", "fields": [["name", "string"], ["aim", "fixed:2"], ["team", { "optional": "uint8" }], ["spectator", "bool"]] }
+      },
+      "hex": "02 01 95 01 a7 6f 70 74 69 6f 6e 73 c5 00 07 00 03 61 6e 6e ac 02 c0 c4 03 01 01 05",
+      "reply": "JOIN_SUCCESS",
+      "received": {
+        "join": { "name": "ann", "aim": 1.5, "spectator": false },
+        "create": { "mode": "team", "rounds": 5, "friendlyFire": true }
+      }
+    }
+  ]
+}

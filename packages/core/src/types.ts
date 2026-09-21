@@ -2,7 +2,14 @@ import type { IBackplane } from "@bungohan/backplane"
 import type { ISerializer, IStateCodec } from "@bungohan/serializer"
 import type { IStore } from "@bungohan/store"
 import type { ITransport } from "@bungohan/transport"
-import type { Clock, Contract, EmptyContract } from "@bungohan/types"
+import type {
+  Clock,
+  Contract,
+  EmptyContract,
+  HasTypedOptions,
+  InferCreateOptions,
+  InferJoinOptions,
+} from "@bungohan/types"
 import type { Client, Connection } from "./client"
 import type { LoggerOptions } from "./logger"
 import type { Room } from "./room"
@@ -220,8 +227,12 @@ export interface ResolvedRoomOptions {
   reservationTimeout: number
 }
 
-/** What `onCreate` receives, merged with the user's options. */
-export interface RoomOnCreateOptions {
+/**
+ * What `onCreate` receives, merged with the create options. A type alias,
+ * not an interface: it must stay assignable to an object with an index
+ * signature, so a room typed with create options still extends `Room`.
+ */
+export type RoomOnCreateOptions = {
   roomId: string
   roomType: string
   maxClients: number
@@ -233,7 +244,9 @@ export interface RoomOnCreateOptions {
   metadata: Record<string, unknown>
 }
 
+/** Create options of a room whose contract declares none (untyped). */
 export type UserDefinedRoomOnCreateOptions = Record<string, unknown>
+/** Join options of a room whose contract declares none (untyped). */
 export type UserDefinedRoomOnJoinOptions = Record<string, unknown>
 
 /** Room classes have no constructor arguments; core wires them up after `new`. */
@@ -256,6 +269,33 @@ export type RoomClass<R extends Room = Room> = RoomConstructor<R> &
   ([EmptyContract] extends [ContractOf<R>]
     ? { readonly contract?: Contract | undefined }
     : { readonly contract: ContractOf<R> })
+
+/**
+ * The arguments after the room class of `matchMaker.createRoom` and
+ * `joinOrCreate` (spec §4.1.2): the class's create options, required when
+ * its contract declares typed options, then a process selector.
+ */
+export type CreateRoomArgs<R> =
+  HasTypedOptions<ContractOf<R>> extends true
+    ? [
+        options: InferCreateOptions<ContractOf<R>>,
+        processSelector?: ProcessSelector,
+      ]
+    : [options?: unknown, processSelector?: ProcessSelector]
+
+/**
+ * The arguments after the room class of `matchMaker.reserve`: the seat's
+ * join options, a process selector and, for typed options, the create
+ * options used if the reservation has to create the room.
+ */
+export type ReserveArgs<R> =
+  HasTypedOptions<ContractOf<R>> extends true
+    ? [
+        options: InferJoinOptions<ContractOf<R>>,
+        processSelector?: ProcessSelector,
+        createOptions?: InferCreateOptions<ContractOf<R>>,
+      ]
+    : [options?: unknown, processSelector?: ProcessSelector]
 
 export interface RoomListingInfo {
   id: string

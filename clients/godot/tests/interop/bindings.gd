@@ -18,11 +18,14 @@ const EchoMessage = preload("messages/echo_message.gd")
 const EchoedMessage = preload("messages/echoed_message.gd")
 const KickMeMessage = preload("messages/kick_me_message.gd")
 const MoveMessage = preload("messages/move_message.gd")
+const OptionsCreateMessage = preload("messages/options_create_message.gd")
+const OptionsJoinMessage = preload("messages/options_join_message.gd")
 const PlayerDumpMessage = preload("messages/player_dump_message.gd")
 const RequestDumpMessage = preload("messages/request_dump_message.gd")
 const SetNameMessage = preload("messages/set_name_message.gd")
 const WelcomeMessage = preload("messages/welcome_message.gd")
 const InteropContract = preload("contracts/interop_contract.gd")
+const OptionsContract = preload("contracts/options_contract.gd")
 
 ## Every schema class.
 const SCHEMAS := [Interop_Player, Interop_State]

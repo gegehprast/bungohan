@@ -4,18 +4,21 @@ extends RefCounted
 ## Contract `shooterContract`.
 
 const Result = preload("res://addons/bungohan/protocol/result.gd")
+const TypedOptions = preload("res://addons/bungohan/protocol/typed_options.gd")
 const GameEndedMessage = preload("../messages/game_ended_message.gd")
 const GameStartedMessage = preload("../messages/game_started_message.gd")
 const InputMessage = preload("../messages/input_message.gd")
 const PlayerJoinedMessage = preload("../messages/player_joined_message.gd")
 const PlayerLeftMessage = preload("../messages/player_left_message.gd")
 const ReadyMessage = preload("../messages/ready_message.gd")
+const ShooterCreateOptionsMessage = preload("../messages/shooter_create_options_message.gd")
+const ShooterJoinOptionsMessage = preload("../messages/shooter_join_options_message.gd")
 const StartGameMessage = preload("../messages/start_game_message.gd")
 
 ## The contract hash this client was built against: sent in JOIN and
 ## compared with the handshake's. Message ids are not generated: they
 ## come from the handshake and are resolved by name.
-const HASH := "f671e798"
+const HASH := "b70eb79a"
 ## Client → server messages, by name.
 const CLIENT := {
 	"input": InputMessage,
@@ -45,3 +48,15 @@ static func _decode(table: Dictionary, codec, name: String, body: PackedByteArra
 	if not table.has(name):
 		return Result.failure(Result.DECODE_FAILED, "no message named " + name)
 	return table[name].decode(codec, body)
+
+
+## Join options for join() and join_by_id() (typed options,
+## PROTOCOL.md §6.2.1).
+static func join_options(join: ShooterJoinOptionsMessage) -> TypedOptions:
+	return TypedOptions.from_messages(join, null)
+
+
+## Options for create() and join_or_create(): the create options for a
+## room the join creates, and the join options.
+static func create_options(create: ShooterCreateOptionsMessage, join: ShooterJoinOptionsMessage) -> TypedOptions:
+	return TypedOptions.from_messages(join, create)

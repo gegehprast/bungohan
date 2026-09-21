@@ -177,7 +177,10 @@ async function record(codec: IStateCodec, playMs: number): Promise<unknown> {
   const room: ShooterView = (
     await alice.create(
       ROOM_TYPE.SHOOTER,
-      { playerName: "Alice", maxPlayers: 4, roomName: "Recorded ☃" },
+      {
+        create: { maxPlayers: 4, roomName: "Recorded ☃", isPrivate: false },
+        join: { playerName: "Alice" },
+      },
       shooter,
     )
   ).unwrap()

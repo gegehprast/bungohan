@@ -44,3 +44,28 @@ export const fixtureContract = defineContract({
   client: { everything: Everything, ping: Ping },
   server: { point: Point, everything: Everything },
 })
+
+/** Typed join and create options (PROTOCOL.md §6.2.1). */
+export const Lobby = defineMessage("lobby", {
+  map: f.enum("dust", "ice"),
+  rounds: f.uint8,
+  ranked: f.bool,
+})
+export const Seat = defineMessage("seat", {
+  name: f.string,
+  team: f.optional(f.uint8),
+  at: f.nested(Point),
+})
+
+export const optionsContract = defineContract({
+  client: { ping: Ping },
+  server: {},
+  options: { create: Lobby, join: Seat },
+})
+
+/** Join options only: the create options are the empty message. */
+export const joinOptionsContract = defineContract({
+  client: {},
+  server: {},
+  options: { join: Seat },
+})

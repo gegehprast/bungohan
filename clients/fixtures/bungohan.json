@@ -16,7 +16,7 @@
     },
     {
       "name": "shooterContract",
-      "hash": "f671e798",
+      "hash": "b70eb79a",
       "client": [
         "input",
         "ready",
@@ -27,7 +27,11 @@
         "playerLeft",
         "gameStarted",
         "gameEnded"
-      ]
+      ],
+      "options": {
+        "create": "shooterCreateOptions",
+        "join": "shooterJoinOptions"
+      }
     }
   ],
   "messages": [
@@ -184,6 +188,34 @@
       "fields": [
         [
           "roomId",
+          "string"
+        ]
+      ]
+    },
+    {
+      "name": "shooterCreateOptions",
+      "fields": [
+        [
+          "roomName",
+          {
+            "optional": "string"
+          }
+        ],
+        [
+          "maxPlayers",
+          "uint8"
+        ],
+        [
+          "isPrivate",
+          "bool"
+        ]
+      ]
+    },
+    {
+      "name": "shooterJoinOptions",
+      "fields": [
+        [
+          "playerName",
           "string"
         ]
       ]

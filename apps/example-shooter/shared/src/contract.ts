@@ -46,6 +46,21 @@ export const GameEnded = defineMessage("gameEnded", {
   results: f.array(f.nested(GameResult)),
 })
 
+/**
+ * Typed options (spec §4.1.2): the settings a shooter room is created with,
+ * sent only by the client that creates it…
+ */
+export const ShooterCreateOptions = defineMessage("shooterCreateOptions", {
+  roomName: f.optional(f.string),
+  maxPlayers: f.uint8,
+  isPrivate: f.bool,
+})
+
+/** …and what every player tells the room when joining. */
+export const ShooterJoinOptions = defineMessage("shooterJoinOptions", {
+  playerName: f.string,
+})
+
 export const shooterContract = defineContract({
   client: { input: Input, ready: Ready, startGame: StartGame },
   server: {
@@ -54,6 +69,7 @@ export const shooterContract = defineContract({
     gameStarted: GameStarted,
     gameEnded: GameEnded,
   },
+  options: { create: ShooterCreateOptions, join: ShooterJoinOptions },
 })
 
 // ============================================================================

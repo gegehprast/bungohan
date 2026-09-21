@@ -10,8 +10,9 @@ namespace Bungohan.Protocol.Tests
     /// Runs every conformance vector (PROTOCOL.md §14). Codec cases run in
     /// both directions: encode → exact bytes, and bytes → decoded values;
     /// <c>replica</c> cases run in <see cref="ReplicaVectors"/> and
-    /// <c>behavior</c> cases in <see cref="BehaviorTests"/>. Server-side
-    /// <c>behavior</c> cases need the interop server
+    /// <c>behavior</c> cases in <see cref="BehaviorTests"/>, <c>join</c>
+    /// cases in <see cref="JoinVectors"/>. Server-side <c>behavior</c> and
+    /// <c>join</c> cases need the interop server
     /// (<c>BUNGOHAN_INTEROP_URL</c>, set by <c>bun run test:csharp</c>);
     /// without it they are the only cases skipped.
     /// </summary>
@@ -52,6 +53,11 @@ namespace Bungohan.Protocol.Tests
                         case "message": suite.Run(label, () => MessageCase(c)); break;
                         case "state": suite.Run(label, () => StateCase(c)); break;
                         case "replica": suite.Run(label, () => ReplicaVectors.Run(c)); break;
+                        case "join":
+                            suite.Run(label + " (encode)", () => JoinVectors.Encode(c));
+                            if (string.IsNullOrEmpty(interopUrl)) suite.Skip();
+                            else suite.Run(label + " (server)", () => JoinVectors.Server(c, interopUrl));
+                            break;
                         case "behavior":
                             if ((string?)c["side"] == "server")
                             {

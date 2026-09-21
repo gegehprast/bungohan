@@ -82,7 +82,7 @@ namespace Bungohan.Example.Shooter
         /// compared with the handshake's. Message ids are not generated: they
         /// come from the handshake and are resolved by name.
         /// </summary>
-        public const string Hash = "f671e798";
+        public const string Hash = "b70eb79a";
 
         /// <summary>Client → server messages, by name.</summary>
         public static readonly IReadOnlyDictionary<string, MessageDef> ClientMessages = new Dictionary<string, MessageDef>
@@ -155,5 +155,17 @@ namespace Bungohan.Example.Shooter
                     return Result<IContractMessage>.Fail(ErrorCodes.DecodeFailed, "no client message named " + name);
             }
         }
+
+        /// <summary>
+        /// Join options for <c>JoinAsync</c> and <c>JoinByIdAsync</c> (typed
+        /// options, PROTOCOL.md §6.2.1).
+        /// </summary>
+        public static TypedOptions JoinOptions(ShooterJoinOptionsMessage join) => new TypedOptions(join, null);
+
+        /// <summary>
+        /// Options for <c>CreateAsync</c> and <c>JoinOrCreateAsync</c>: the
+        /// create options for a room the join creates, and the join options.
+        /// </summary>
+        public static TypedOptions CreateOptions(ShooterCreateOptionsMessage create, ShooterJoinOptionsMessage join) => new TypedOptions(join, create);
     }
 }

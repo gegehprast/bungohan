@@ -102,3 +102,25 @@ export const interopContract = defineContract({
   },
   server: { welcome: Welcome, dump: Dump, echoed: Echoed },
 })
+
+/**
+ * Typed join and create options (PROTOCOL.md §6.2.1): exactly what the
+ * `join` conformance vectors declare, served by the room type `options`.
+ */
+export const OptionsCreate = defineMessage("optionsCreate", {
+  mode: f.enum("duel", "team"),
+  rounds: f.uint8,
+  friendlyFire: f.bool,
+})
+export const OptionsJoin = defineMessage("optionsJoin", {
+  name: f.string,
+  aim: f.fixed(2),
+  team: f.optional(f.uint8),
+  spectator: f.bool,
+})
+
+export const optionsContract = defineContract({
+  client: {},
+  server: {},
+  options: { create: OptionsCreate, join: OptionsJoin },
+})

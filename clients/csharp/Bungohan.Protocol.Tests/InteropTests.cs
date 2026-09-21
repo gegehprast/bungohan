@@ -11,8 +11,9 @@ namespace Bungohan.Protocol.Tests
     /// over a real WebSocket, through the generated bindings: joining,
     /// typed messages both ways, a replica compared field by field with
     /// the server's own view of its state, raw messages, a kick, a
-    /// reconnection after an unexpected drop, and the two ways a join is
-    /// refused up front (contract hash, state codec).
+    /// reconnection after an unexpected drop, typed join and create
+    /// options, and the ways a join is refused up front (contract hash,
+    /// state codec, options that don't decode).
     ///
     /// Skipped without <c>BUNGOHAN_INTEROP_URL</c>; <c>bun run
     /// test:csharp</c> starts the server and sets it.
@@ -36,6 +37,7 @@ namespace Bungohan.Protocol.Tests
             suite.Run("an unknown state codec fails the join with CODEC_MISMATCH", () => CodecCase(url));
             suite.Run("PING measures a round trip", () => PingCase(url));
             suite.Run("a room without reconnection hands out no token", () => NoTokenCase(url));
+            suite.Run("typed join and create options reach the room as decoded", () => OptionsCase(url));
             return suite;
         }
 
@@ -244,6 +246,64 @@ namespace Bungohan.Protocol.Tests
                     client.JoinOrCreateAsync("interop", null, Settings("deadbeef")), "the join");
                 Suite.That(!joined.IsOk, "the join should have failed");
                 Suite.Equal(ClientErrorCodes.ContractMismatch, joined.Error!.Code, "error code");
+                Suite.That(client.State == ConnectionState.Connected, "the connection should stay open");
+            }
+            finally
+            {
+                client.Disconnect();
+                client.Poll();
+            }
+        }
+
+        /// <summary>
+        /// Typed options (PROTOCOL.md §6.2.1) through the generated
+        /// binding: the <c>options</c> room echoes what its hooks received.
+        /// </summary>
+        private static void OptionsCase(string url)
+        {
+            BungohanClient client = NewClient(url);
+            try
+            {
+                TypedOptions options = OptionsContract.CreateOptions(
+                    new OptionsCreateMessage
+                    {
+                        Mode = OptionsCreateMessage.ModeValue.Team,
+                        Rounds = 7,
+                        FriendlyFire = true,
+                    },
+                    new OptionsJoinMessage { Name = "ann", Aim = 1.006, Team = 2 });
+                var settings = new JoinSettings { ContractHash = OptionsContract.Hash };
+                Result<BungohanRoom> joined = Pump.Wait(client,
+                    client.CreateAsync("options", options, settings), "the join");
+                Suite.That(joined.IsOk, "join failed: " + joined.Error);
+                object? echoed = null;
+                joined.Value.RawMessage += (name, payload) => echoed = payload;
+                // The echo sent from onJoin came before this handler; ask again.
+                joined.Value.SendRaw("options", null).ThrowIfFailed("sendRaw");
+                Pump.Until(client, () => echoed != null, "the room's echo");
+                var expected = new MsgMap();
+                var join = new MsgMap();
+                join["name"] = "ann";
+                join["aim"] = 1.01;
+                join["team"] = 2d;
+                join["spectator"] = false;
+                var create = new MsgMap();
+                create["mode"] = "team";
+                create["rounds"] = 7d;
+                create["friendlyFire"] = true;
+                expected["join"] = join;
+                expected["create"] = create;
+                Suite.Equal(expected, echoed, "what the room received");
+
+                // A client built without the declarations sends a map: the
+                // server refuses it, before looking for a room, without
+                // closing the connection.
+                var untyped = new MsgMap();
+                untyped["name"] = "ann";
+                Result<BungohanRoom> refused = Pump.Wait(client,
+                    client.JoinAsync("options", untyped, settings), "the second join");
+                Suite.That(!refused.IsOk, "the untyped join should have failed");
+                Suite.Equal(ClientErrorCodes.InvalidOptions, refused.Error!.Code, "error code");
                 Suite.That(client.State == ConnectionState.Connected, "the connection should stay open");
             }
             finally

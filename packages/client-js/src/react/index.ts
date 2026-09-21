@@ -4,7 +4,16 @@
  * dependency, and the main entry never imports this module.
  */
 import type { Schema } from "@bungohan/state"
-import type { Contract, EmptyContract, Infer, SendMap } from "@bungohan/types"
+import type {
+  Contract,
+  CreateArg,
+  EmptyContract,
+  Infer,
+  InferJoinOptions,
+  SendMap,
+  TypedOptionsContract,
+  UntypedOptionsContract,
+} from "@bungohan/types"
 import {
   createContext,
   createElement,
@@ -16,7 +25,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react"
-import type { IBungohanClient } from "../client"
+import type { IBungohanClient, TypedJoin } from "../client"
 import type { ClientError } from "../errors"
 import type { IRoom, JoinOptions } from "../room"
 
@@ -51,6 +60,16 @@ export function useBungohan(): IBungohanClient {
 /** How `useRoom` joins; with `"joinById"` its first argument is a room id. */
 export type RoomJoinMode = "join" | "create" | "joinOrCreate" | "joinById"
 
+/**
+ * `useRoom`'s options for a contract with typed options: what the client
+ * method of that mode takes (spec §4.1.2).
+ */
+export type RoomOptionsArg<C, M extends RoomJoinMode> = M extends
+  | "create"
+  | "joinOrCreate"
+  ? CreateArg<C>
+  : InferJoinOptions<C>
+
 export interface UseRoomResult<S extends Schema, C extends Contract> {
   /** Set once the join completed; undefined again after the room is left. */
   room: IRoom<S, C> | undefined
@@ -72,12 +91,30 @@ export interface UseRoomResult<S extends Schema, C extends Contract> {
  * picked from a room list).
  * `options` and `join` are read when the join starts; changing them later
  * doesn't rejoin. Pass `join` (`{ state, contract }`) to type the room and
- * get a replica.
+ * get a replica. For a contract with typed options (spec §4.1.2), `mode`
+ * and `join` are required and `options` are typed by the mode, as the
+ * client's join methods type them.
  */
 export function useRoom<
-  S extends Schema = Schema,
-  C extends Contract = EmptyContract,
+  S extends Schema,
+  C extends TypedOptionsContract,
+  M extends RoomJoinMode,
 >(
+  roomType: string,
+  options: NoInfer<RoomOptionsArg<C, M>>,
+  mode: M,
+  join: TypedJoin<S, C>,
+): UseRoomResult<S, C>
+export function useRoom<
+  S extends Schema = Schema,
+  C extends UntypedOptionsContract = EmptyContract,
+>(
+  roomType: string,
+  options?: unknown,
+  mode?: RoomJoinMode,
+  join?: JoinOptions<S, C>,
+): UseRoomResult<S, C>
+export function useRoom<S extends Schema, C extends Contract>(
   roomType: string,
   options?: unknown,
   mode: RoomJoinMode = "joinOrCreate",
@@ -97,14 +134,7 @@ export function useRoom<
     let offLeave: (() => void) | undefined
     setResult({ room: undefined, status: "connecting" })
     const { options: joinOptions, join: joinWith } = latest.current
-    const joining =
-      mode === "join"
-        ? client.join(roomType, joinOptions, joinWith)
-        : mode === "create"
-          ? client.create(roomType, joinOptions, joinWith)
-          : mode === "joinById"
-            ? client.joinById(roomType, joinOptions, joinWith)
-            : client.joinOrCreate(roomType, joinOptions, joinWith)
+    const joining = client.joinWith(mode, roomType, joinOptions, joinWith)
     void joining.then((joined) => {
       if (joined.isErr()) {
         if (active) {

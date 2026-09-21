@@ -6,8 +6,13 @@
  * both the byte-level TestClient and client-js (client side).
  */
 import { describe, expect, test } from "bun:test"
-import { BungohanClient } from "@bungohan/client-js"
-import { Room } from "@bungohan/core"
+import { BungohanClient, joinBody } from "@bungohan/client-js"
+import {
+  type Client,
+  Room,
+  type RoomConstructor,
+  type RoomOnCreateOptions,
+} from "@bungohan/core"
 import {
   decodeFrame,
   encodeFrame,
@@ -21,12 +26,18 @@ import {
   writeVarint,
   zigzag,
 } from "@bungohan/serializer"
+import type { Schema } from "@bungohan/state"
 import {
   CLIENT_FRAME_HEADERS,
+  ClientFrameType,
   CloseCode,
+  type Contract,
+  type ContractOptions,
   type IntKind,
   isIntKind,
+  type MessageDef,
   SERVER_FRAME_HEADERS,
+  ServerFrameType,
   toFixed,
   toInt,
   type WireOp,
@@ -312,6 +323,117 @@ async function clientJsBehavior(c: Case): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Join options (PROTOCOL.md §6.2.1)
+// ---------------------------------------------------------------------------
+
+function record(value: unknown): Case {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("expected an object")
+  }
+  return value as Case
+}
+
+/** A contract declaring only the case's options. */
+function optionsContract(c: Case): Contract {
+  const declares = record(c["declares"])
+  const options: { create?: MessageDef; join?: MessageDef } = {}
+  if ("create" in declares) options.create = messageOf(declares["create"])
+  if ("join" in declares) options.join = messageOf(declares["join"])
+  const typed: ContractOptions = options
+  return { client: {}, server: {}, options: typed }
+}
+
+/**
+ * The room type `options` of PROTOCOL.md §14: declares the case's options,
+ * and echoes what its hooks received as a raw `"options"` message.
+ */
+function optionsRoom(
+  contract: Contract,
+): RoomConstructor<Room<Schema, Contract>> & { contract: Contract } {
+  const createFields = contract.options?.create?.fieldNames ?? []
+  return class OptionsRoom extends Room<Schema, Contract> {
+    public static override contract = contract
+    private _created: Record<string, unknown> = {}
+
+    protected override async onCreate(
+      options: RoomOnCreateOptions & Record<string, unknown>,
+    ): Promise<void> {
+      for (const field of createFields) {
+        if (field in options) this._created[field] = options[field]
+      }
+    }
+
+    protected override async onJoin(
+      client: Client,
+      options: Record<string, unknown>,
+    ): Promise<void> {
+      this.sendRaw(client, "options", { join: options, create: this._created })
+    }
+  }
+}
+
+async function joinCase(c: Case): Promise<void> {
+  const contract = optionsContract(c)
+  const bytes = fromHex(str(c["hex"]))
+  if ("request" in c) {
+    const r = record(c["request"])
+    const options =
+      contract.options?.create !== undefined &&
+      (r["mode"] === 0 || r["mode"] === 1)
+        ? { create: r["create"], join: r["join"] }
+        : r["join"]
+    const hash = r["contractHash"] === null ? null : str(r["contractHash"])
+    const body = joinBody(num(r["mode"]), str(r["target"]), options, hash, {
+      ...contract,
+    }).unwrap()
+    const frame = encodeFrame(
+      ClientFrameType.JOIN,
+      [num(r["requestId"])],
+      mp.encode(body).unwrap(),
+    ).unwrap()
+    expect(toHex(frame)).toBe(toHex(bytes))
+  }
+
+  const Options = optionsRoom(contract)
+  const h = await createServerHarness({
+    define: (s) =>
+      s.defineRoomType("options", Options, { visibility: "private" }),
+  })
+  const client = h.connect({ log: () => {} })
+  client.sendBytes(bytes)
+  await h.flush()
+  const requestId =
+    decodeFrame(bytes, CLIENT_FRAME_HEADERS).unwrap().header[0] ?? 0
+  const reply = client.unmatched.find(([, id]) => id === requestId)
+  const expected = str(c["reply"])
+  if (expected !== "JOIN_SUCCESS") {
+    expect(reply).toEqual([ServerFrameType.JOIN_ERROR, requestId, expected])
+    expect(client.connected).toBe(true)
+    await h.stop()
+    return
+  }
+  expect(reply?.[0]).toBe(ServerFrameType.JOIN_SUCCESS)
+  const roomRef = reply?.[2]
+  const echoes = client.frames
+    .map((data) => decodeFrame(data, SERVER_FRAME_HEADERS).unwrap())
+    .filter(
+      (frame) =>
+        frame.type === ServerFrameType.ROOM_MESSAGE_RAW &&
+        frame.header[0] === roomRef,
+    )
+    .map((frame) => list(mp.decode(frame.body).unwrap()))
+  expect(echoes.length).toBe(1)
+  expect(echoes[0]?.[0]).toBe("options")
+  const request = "request" in c ? record(c["request"]) : {}
+  const received =
+    "received" in c
+      ? c["received"]
+      : { join: request["join"], create: request["create"] }
+  same(echoes[0]?.[1], received)
+  await h.stop()
+}
+
+// ---------------------------------------------------------------------------
 
 const files = await loadVectors()
 
@@ -352,6 +474,9 @@ for (const file of files) {
           break
         case "replica":
           test(label, () => expect(runReplica(c)).toEqual([]))
+          break
+        case "join":
+          test(label, () => joinCase(c))
           break
         case "behavior":
           if (c["side"] === "server") {

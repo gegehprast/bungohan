@@ -37,6 +37,7 @@ func _run() -> Checks:
 	checks.record("an unknown state codec fails the join with CODEC_MISMATCH", _codec_case())
 	checks.record("PING measures a round trip", _ping_case())
 	checks.record("a room without reconnection hands out no token", _no_token_case())
+	checks.record("typed join and create options reach the room as decoded", _options_case())
 	return checks
 
 
@@ -57,13 +58,16 @@ func _client(options: Dictionary = {}):
 
 
 ## Joins a room type and pumps until the join settles. Returns the Result.
-func _join(client, settings: Dictionary, room_type := "interop"):
+func _join(client, settings: Dictionary, room_type := "interop",
+		options: Variant = null, mode := "join_or_create"):
 	var box := Net.Box.new()
 	var runner := _Runner.new()
 	runner.box = box
 	runner.client = client
 	runner.settings = settings
 	runner.room_type = room_type
+	runner.options = options
+	runner.mode = mode
 	runner.call("join")
 	var problem := Net.until(client, func(): return box.done, "the join")
 	if problem != "":
@@ -370,6 +374,52 @@ func _no_token_case() -> String:
 	return problem
 
 
+## Typed options (PROTOCOL.md §6.2.1) through the generated contract
+## script: the `options` room echoes what its hooks received.
+func _options_case() -> String:
+	var client = _client()
+	var create = Bindings.OptionsCreateMessage.new()
+	create.mode = "team"
+	create.rounds = 7
+	create.friendly_fire = true
+	var join = Bindings.OptionsJoinMessage.new()
+	join.name = "ann"
+	join.aim = 1.006
+	join.team = 2
+	var settings := {"contract_hash": Bindings.OptionsContract.HASH}
+	var options = Bindings.OptionsContract.create_options(create, join)
+	var joined = _join(client, settings, "options", options, "create")
+	var problem := ""
+	if joined == null or not joined.ok:
+		problem = "join failed: %s" % [joined]
+	if problem == "":
+		var got := []
+		joined.value.raw_message.connect(func(_type, payload): got.append(payload))
+		# The echo sent from onJoin came before this handler; ask again.
+		joined.value.send_raw("options", null)
+		problem = Net.until(client, func(): return not got.is_empty(), "the room's echo")
+		if problem == "":
+			problem = Checks.difference(got.back(), {
+				"join": {"name": "ann", "aim": 1.01, "team": 2, "spectator": false},
+				"create": {"mode": "team", "rounds": 7, "friendlyFire": true},
+			}, "received")
+	if problem == "":
+		# A client built without the declarations sends a map: the server
+		# refuses it, before looking for a room, and keeps the connection.
+		var refused = _join(client, settings, "options", {"name": "ann"}, "join")
+		if refused == null:
+			problem = "the second join never settled"
+		elif refused.ok:
+			problem = "the untyped join should have failed"
+		elif refused.code != Constants.INVALID_OPTIONS:
+			problem = "error code %s, expected %s" % [refused.code, Constants.INVALID_OPTIONS]
+		elif client.state != Constants.ConnectionState.CONNECTED:
+			problem = "the connection should stay open"
+	client.disconnect_from_server()
+	client.poll()
+	return problem
+
+
 ## Starts the coroutine that awaits a join, so the pump can drive it.
 class _Runner:
 	extends RefCounted
@@ -377,6 +427,14 @@ class _Runner:
 	var client
 	var settings: Dictionary
 	var room_type := "interop"
+	var options: Variant = null
+	var mode := "join_or_create"
 
 	func join() -> void:
-		box.finish(await client.join_or_create(room_type, null, settings))
+		match mode:
+			"create":
+				box.finish(await client.create(room_type, options, settings))
+			"join":
+				box.finish(await client.join(room_type, options, settings))
+			_:
+				box.finish(await client.join_or_create(room_type, options, settings))

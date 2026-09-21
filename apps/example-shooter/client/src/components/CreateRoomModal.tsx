@@ -20,10 +20,12 @@ export function CreateRoomModal({ onClose, onCreate }: CreateRoomModalProps) {
     const name = playerName.trim()
     if (!name) return
     onCreate({
-      playerName: name,
-      roomName: roomName.trim() || `${name}'s room`,
-      maxPlayers,
-      isPrivate,
+      create: {
+        roomName: roomName.trim() || `${name}'s room`,
+        maxPlayers,
+        isPrivate,
+      },
+      join: { playerName: name },
     })
   }
 

@@ -20,8 +20,10 @@ import {
   CloseCode,
   type ConnectionState,
   type Contract,
+  type CreateArg,
   contractHash,
   type EmptyContract,
+  type InferJoinOptions,
   type JoinHandshake,
   JoinMode,
   LeaveCode,
@@ -32,8 +34,11 @@ import {
   ServerFrameType,
   SystemClock,
   type TimerId,
+  type TypedOptionsContract,
+  type UntypedOptionsContract,
 } from "@bungohan/types"
 import { ClientError, joinErrorCode } from "./errors"
+import { joinBody } from "./options"
 import {
   type IRoom,
   type JoinOptions,
@@ -84,28 +89,101 @@ export interface ClientOptions {
   logger?: ClientLogger
 }
 
+/**
+ * The join inputs for a contract with typed options: the contract is
+ * required, since it is what the options are encoded against.
+ */
+export type TypedJoin<S extends Schema, C extends Contract> = JoinOptions<
+  S,
+  C
+> & { readonly contract: C }
+
+/** How {@link IBungohanClient.joinWith} joins. */
+export type JoinWithMode = "create" | "join" | "joinById" | "joinOrCreate"
+
+const JOIN_WITH: Readonly<Record<JoinWithMode, number>> = {
+  create: JoinMode.CREATE,
+  join: JoinMode.JOIN,
+  joinById: JoinMode.JOIN_BY_ID,
+  joinOrCreate: JoinMode.JOIN_OR_CREATE,
+}
+
 /** The client's public surface (spec §7.1). */
 export interface IBungohanClient {
   connect(): Promise<Result<void, ClientError>>
   disconnect(): Promise<void>
-  create<S extends Schema = Schema, C extends Contract = EmptyContract>(
+  /**
+   * Creates a room. For a contract with typed options (spec §4.1.2),
+   * `options` are its join options, or `{ create, join }` when it declares
+   * create options, and `join.contract` is required; they are checked at
+   * compile time and encoded against the declarations. Otherwise
+   * `options` are anything MessagePack carries.
+   */
+  create<S extends Schema, C extends TypedOptionsContract>(
+    roomType: string,
+    options: NoInfer<CreateArg<C>>,
+    join: TypedJoin<S, C>,
+  ): Promise<Result<IRoom<S, C>, ClientError>>
+  create<
+    S extends Schema = Schema,
+    C extends UntypedOptionsContract = EmptyContract,
+  >(
     roomType: string,
     options?: unknown,
     join?: JoinOptions<S, C>,
   ): Promise<Result<IRoom<S, C>, ClientError>>
-  join<S extends Schema = Schema, C extends Contract = EmptyContract>(
+  /** Joins an available room; `options` are join options (see `create`). */
+  join<S extends Schema, C extends TypedOptionsContract>(
+    roomType: string,
+    options: NoInfer<InferJoinOptions<C>>,
+    join: TypedJoin<S, C>,
+  ): Promise<Result<IRoom<S, C>, ClientError>>
+  join<
+    S extends Schema = Schema,
+    C extends UntypedOptionsContract = EmptyContract,
+  >(
     roomType: string,
     options?: unknown,
     join?: JoinOptions<S, C>,
   ): Promise<Result<IRoom<S, C>, ClientError>>
-  joinById<S extends Schema = Schema, C extends Contract = EmptyContract>(
+  /** Joins a room by id; `options` are join options (see `create`). */
+  joinById<S extends Schema, C extends TypedOptionsContract>(
+    roomId: string,
+    options: NoInfer<InferJoinOptions<C>>,
+    join: TypedJoin<S, C>,
+  ): Promise<Result<IRoom<S, C>, ClientError>>
+  joinById<
+    S extends Schema = Schema,
+    C extends UntypedOptionsContract = EmptyContract,
+  >(
     roomId: string,
     options?: unknown,
     join?: JoinOptions<S, C>,
   ): Promise<Result<IRoom<S, C>, ClientError>>
-  joinOrCreate<S extends Schema = Schema, C extends Contract = EmptyContract>(
+  /** Joins an available room or creates one; `options` as for `create`. */
+  joinOrCreate<S extends Schema, C extends TypedOptionsContract>(
+    roomType: string,
+    options: NoInfer<CreateArg<C>>,
+    join: TypedJoin<S, C>,
+  ): Promise<Result<IRoom<S, C>, ClientError>>
+  joinOrCreate<
+    S extends Schema = Schema,
+    C extends UntypedOptionsContract = EmptyContract,
+  >(
     roomType: string,
     options?: unknown,
+    join?: JoinOptions<S, C>,
+  ): Promise<Result<IRoom<S, C>, ClientError>>
+  /**
+   * The four joins above, by mode, for code that is generic over the
+   * contract (React's `useRoom`). Typed options are still encoded against
+   * the contract's declarations, so options that don't fit fail with
+   * `ENCODE_FAILED`, but only at run time: prefer the typed methods.
+   */
+  joinWith<S extends Schema = Schema, C extends Contract = EmptyContract>(
+    mode: JoinWithMode,
+    target: string,
+    options: unknown,
     join?: JoinOptions<S, C>,
   ): Promise<Result<IRoom<S, C>, ClientError>>
   reconnect<S extends Schema = Schema, C extends Contract = EmptyContract>(
@@ -337,42 +415,100 @@ export class BungohanClient implements IBungohanClient {
 
   // --- joins ---------------------------------------------------------------
 
-  public create<S extends Schema = Schema, C extends Contract = EmptyContract>(
+  public create<S extends Schema, C extends TypedOptionsContract>(
+    roomType: string,
+    options: NoInfer<CreateArg<C>>,
+    join: TypedJoin<S, C>,
+  ): Promise<Result<IRoom<S, C>, ClientError>>
+  public create<
+    S extends Schema = Schema,
+    C extends UntypedOptionsContract = EmptyContract,
+  >(
     roomType: string,
     options?: unknown,
     join?: JoinOptions<S, C>,
-  ): Promise<Result<IRoom<S, C>, ClientError>> {
+  ): Promise<Result<IRoom<S, C>, ClientError>>
+  public create(
+    roomType: string,
+    options?: unknown,
+    join?: JoinOptions<Schema, Contract>,
+  ): Promise<Result<IRoom<Schema, Contract>, ClientError>> {
     return this._join(JoinMode.CREATE, roomType, options, join)
   }
 
-  public join<S extends Schema = Schema, C extends Contract = EmptyContract>(
+  public join<S extends Schema, C extends TypedOptionsContract>(
+    roomType: string,
+    options: NoInfer<InferJoinOptions<C>>,
+    join: TypedJoin<S, C>,
+  ): Promise<Result<IRoom<S, C>, ClientError>>
+  public join<
+    S extends Schema = Schema,
+    C extends UntypedOptionsContract = EmptyContract,
+  >(
     roomType: string,
     options?: unknown,
     join?: JoinOptions<S, C>,
-  ): Promise<Result<IRoom<S, C>, ClientError>> {
+  ): Promise<Result<IRoom<S, C>, ClientError>>
+  public join(
+    roomType: string,
+    options?: unknown,
+    join?: JoinOptions<Schema, Contract>,
+  ): Promise<Result<IRoom<Schema, Contract>, ClientError>> {
     return this._join(JoinMode.JOIN, roomType, options, join)
   }
 
+  public joinById<S extends Schema, C extends TypedOptionsContract>(
+    roomId: string,
+    options: NoInfer<InferJoinOptions<C>>,
+    join: TypedJoin<S, C>,
+  ): Promise<Result<IRoom<S, C>, ClientError>>
   public joinById<
     S extends Schema = Schema,
-    C extends Contract = EmptyContract,
+    C extends UntypedOptionsContract = EmptyContract,
   >(
     roomId: string,
     options?: unknown,
     join?: JoinOptions<S, C>,
-  ): Promise<Result<IRoom<S, C>, ClientError>> {
+  ): Promise<Result<IRoom<S, C>, ClientError>>
+  public joinById(
+    roomId: string,
+    options?: unknown,
+    join?: JoinOptions<Schema, Contract>,
+  ): Promise<Result<IRoom<Schema, Contract>, ClientError>> {
     return this._join(JoinMode.JOIN_BY_ID, roomId, options, join)
   }
 
+  public joinOrCreate<S extends Schema, C extends TypedOptionsContract>(
+    roomType: string,
+    options: NoInfer<CreateArg<C>>,
+    join: TypedJoin<S, C>,
+  ): Promise<Result<IRoom<S, C>, ClientError>>
   public joinOrCreate<
     S extends Schema = Schema,
-    C extends Contract = EmptyContract,
+    C extends UntypedOptionsContract = EmptyContract,
   >(
     roomType: string,
     options?: unknown,
     join?: JoinOptions<S, C>,
-  ): Promise<Result<IRoom<S, C>, ClientError>> {
+  ): Promise<Result<IRoom<S, C>, ClientError>>
+  public joinOrCreate(
+    roomType: string,
+    options?: unknown,
+    join?: JoinOptions<Schema, Contract>,
+  ): Promise<Result<IRoom<Schema, Contract>, ClientError>> {
     return this._join(JoinMode.JOIN_OR_CREATE, roomType, options, join)
+  }
+
+  public joinWith<
+    S extends Schema = Schema,
+    C extends Contract = EmptyContract,
+  >(
+    mode: JoinWithMode,
+    target: string,
+    options: unknown,
+    join?: JoinOptions<S, C>,
+  ): Promise<Result<IRoom<S, C>, ClientError>> {
+    return this._join(JOIN_WITH[mode], target, options, join)
   }
 
   /**
@@ -438,25 +574,21 @@ export class BungohanClient implements IBungohanClient {
     join: JoinOptions<S, C> = {},
     roomId?: string,
   ): Promise<Result<IRoom<S, C>, ClientError>> {
+    const hash = hashOf(join.contract)
+    // Typed options are encoded before anything is sent, so options that
+    // got past the types fail here, locally.
+    const body = joinBody(mode, target, options, hash, join.contract)
+    if (body.isErr()) return body
     const connected = await this.connect()
     if (connected.isErr()) return connected
-    const room = new Room<S, C>(this._host, join, hashOf(join.contract))
-    const result = await this._request(
-      room,
-      mode,
-      target,
-      options,
-      roomId,
-      false,
-    )
+    const room = new Room<S, C>(this._host, join, hash)
+    const result = await this._request(room, body.value, roomId, false)
     return result.isErr() ? result : ok(room)
   }
 
   private _request(
     room: RoomLink,
-    mode: number,
-    target: string,
-    options: unknown,
+    elements: unknown[],
     roomId: string | undefined,
     resume: boolean,
   ): Promise<Result<RoomLink, ClientError>> {
@@ -480,12 +612,7 @@ export class BungohanClient implements IBungohanClient {
           )
         }, this._joinTimeout)
       }
-      const body = this._serializer.encode([
-        mode,
-        target,
-        options ?? null,
-        room._hash,
-      ])
+      const body = this._serializer.encode(elements)
       const sent = body.isErr()
         ? err(new ClientError("ENCODE_FAILED", body.error.message))
         : this._sendFrame(ClientFrameType.JOIN, [requestId], body.value)
@@ -738,7 +865,12 @@ export class BungohanClient implements IBungohanClient {
         room._left(LeaveCode.DISCONNECTED)
         continue
       }
-      void this._request(room, JoinMode.RECONNECT, token, null, room.id, true)
+      void this._request(
+        room,
+        [JoinMode.RECONNECT, token, null, room._hash],
+        room.id,
+        true,
+      )
     }
   }
 

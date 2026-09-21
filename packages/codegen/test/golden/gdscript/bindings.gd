@@ -12,9 +12,13 @@ const Everything = preload("schemas/everything.gd")
 const G_Vec = preload("schemas/g_vec.gd")
 const Item = preload("schemas/item.gd")
 const EverythingMessage = preload("messages/everything_message.gd")
+const LobbyMessage = preload("messages/lobby_message.gd")
 const PingMessage = preload("messages/ping_message.gd")
 const PointMessage = preload("messages/point_message.gd")
+const SeatMessage = preload("messages/seat_message.gd")
 const FixtureContract = preload("contracts/fixture_contract.gd")
+const JoinOptionsContract = preload("contracts/join_options_contract.gd")
+const OptionsContract = preload("contracts/options_contract.gd")
 
 ## Every schema class.
 const SCHEMAS := [Everything, G_Vec, Item]

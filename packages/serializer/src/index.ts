@@ -15,6 +15,7 @@ export {
   unpackMessage,
 } from "./message-codec"
 export { MessagePackSerializer } from "./messagepack"
+export { decodeOptions, encodeOptions } from "./options"
 export { SchemaCodec } from "./schema-codec"
 export type { ISerializer } from "./serializer"
 export {

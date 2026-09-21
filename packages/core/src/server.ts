@@ -59,7 +59,11 @@ import {
 } from "./metrics"
 import { Room, type RoomHost } from "./room"
 import { RoomManager } from "./room-manager"
-import type { RoomTypeDef } from "./room-type"
+import {
+  type RoomTypeDef,
+  readClientOptions,
+  readServerOptions,
+} from "./room-type"
 import {
   type DefineRoomOptions,
   type ErrorContext,
@@ -133,12 +137,14 @@ function raceLost(forwarded: Result<Routed, BungohanError>): boolean {
 
 /**
  * A `JOIN` body (spec §6.7.3), or undefined if it has the wrong shape.
- * Trailing elements past the known four are ignored (spec §6.7.7), so a
- * newer client can add fields without breaking this server.
+ * Trailing elements past the known five are ignored (spec §6.7.7), so a
+ * newer client can add fields without breaking this server. The options
+ * stay as they came: typed ones can only be decoded once the room type is
+ * known (PROTOCOL.md §6.2.1).
  */
 function parseJoin(value: unknown): JoinRequest | undefined {
   if (!Array.isArray(value) || value.length < 2) return undefined
-  const [mode, target, options, hash] = value
+  const [mode, target, options, hash, createOptions] = value
   if (
     typeof mode !== "number" ||
     !Number.isInteger(mode) ||
@@ -149,7 +155,13 @@ function parseJoin(value: unknown): JoinRequest | undefined {
   ) {
     return undefined
   }
-  return [mode as JoinRequest[0], target, options ?? {}, hash ?? null]
+  return [
+    mode as JoinRequest[0],
+    target,
+    options ?? null,
+    hash ?? null,
+    createOptions ?? null,
+  ]
 }
 
 /**
@@ -864,7 +876,7 @@ export class BungohanServer {
   private async _route(
     connection: Connection,
     requestId: number,
-    [mode, target, options, hash]: JoinRequest,
+    [mode, target, options, hash, createOptions]: JoinRequest,
   ): Promise<Result<Routed, BungohanError>> {
     if (this._shuttingDown || !this._running) {
       return err(
@@ -925,9 +937,17 @@ export class BungohanServer {
           }
           const checked = this._checkRoom(connection, room, hash)
           if (checked.isErr()) return checked
+          const joinOptions = this._readOptions(room, options)
+          if (joinOptions.isErr()) return joinOptions
           const client = new Client(nanoid(12), connection)
           return local(
-            this._joinExisting(connection, room, client, options, false),
+            this._joinExisting(
+              connection,
+              room,
+              client,
+              joinOptions.value,
+              false,
+            ),
           )
         }
         const owner = await this._cluster?.locate("room", target)
@@ -955,6 +975,7 @@ export class BungohanServer {
           target,
           options,
           hash,
+          createOptions,
         )
     }
   }
@@ -966,11 +987,22 @@ export class BungohanServer {
     typeName: string,
     options: unknown,
     hash: string | null,
+    createOptions: unknown,
   ): Promise<Result<Routed, BungohanError>> {
     const type = this._matchMaker._getType(typeName)
+    // Typed join options are decoded as soon as the type is known: here,
+    // before any room is looked for (PROTOCOL.md §6.2.1). A process that
+    // doesn't define the type forwards them as they came, and the owner
+    // decodes them.
+    let joinOptions: unknown = options
     if (type !== undefined) {
       const contract = this._checkContract(type, hash)
       if (contract.isErr()) return contract
+      const read = readClientOptions(type, "join", options)
+      if (read.isErr()) {
+        return err(this._error("INVALID_OPTIONS", read.error.message))
+      }
+      joinOptions = read.value
     } else if (mode === JoinMode.CREATE || this._cluster === undefined) {
       // A clustered server may not define every room type: a join can
       // still land on a process that does, so the check waits until the
@@ -994,7 +1026,7 @@ export class BungohanServer {
       if (room !== undefined) {
         const client = new Client(nanoid(12), connection)
         return local(
-          this._joinExisting(connection, room, client, options, false),
+          this._joinExisting(connection, room, client, joinOptions, false),
         )
       }
       const found = await this._cluster?.findAvailable(
@@ -1039,18 +1071,27 @@ export class BungohanServer {
       )
     }
 
+    // Create options are read only by a join that creates (untyped ones
+    // are the join's own options, as they always were).
+    const roomOptions =
+      type.createOptions === undefined
+        ? ok(joinOptions)
+        : readClientOptions(type, "create", createOptions)
+    if (roomOptions.isErr()) {
+      return err(this._error("INVALID_OPTIONS", roomOptions.error.message))
+    }
     // Create: the static onAuth decides before the room exists.
     const client = new Client(nanoid(12), connection)
     const auth = await Room._authorizeCreate(
       type.ctor,
       client,
-      options,
+      joinOptions,
       connection.context,
       (error) => this._report(error, { source: "onAuth", client, connection }),
       (code, message) => this._error(code, message),
     )
     if (auth.isErr()) return auth
-    const room = this._manager._create(type, options)
+    const room = this._manager._create(type, roomOptions.value)
     const seated = room._seat(client, connection, false)
     if (seated.isErr()) return seated
     const ready = await room._readyPromise
@@ -1058,7 +1099,7 @@ export class BungohanServer {
       room._unseat(client)
       return err(this._error("JOIN_FAILED", "the room could not be created"))
     }
-    const joined = await room._runJoin(client, options, auth.value)
+    const joined = await room._runJoin(client, joinOptions, auth.value)
     return joined.isErr()
       ? joined
       : ok({ kind: "local", joined: { room, client, reconnected: false } })
@@ -1147,6 +1188,22 @@ export class BungohanServer {
       )
     }
     return ok(undefined)
+  }
+
+  /**
+   * A client's join options for a room this process owns, decoded against
+   * its type when they are typed (PROTOCOL.md §6.2.1).
+   */
+  private _readOptions(
+    room: Room,
+    options: unknown,
+  ): Result<unknown, BungohanError> {
+    const type = this._matchMaker._getType(room.roomType)
+    if (type === undefined) return ok(options)
+    const read = readClientOptions(type, "join", options)
+    return read.isErr()
+      ? err(this._error("INVALID_OPTIONS", read.error.message))
+      : ok(read.value)
   }
 
   private _checkContract(
@@ -1307,7 +1364,13 @@ export class BungohanServer {
         ),
       )
     }
-    const created = await this._manager._createReady(type, options)
+    // Typed create options arrive encoded from the requesting process (or,
+    // from one that doesn't define the type, as the caller built them).
+    const read = readServerOptions(type, "create", options)
+    if (read.isErr()) {
+      return err(this._error("INVALID_OPTIONS", read.error.message))
+    }
+    const created = await this._manager._createReady(type, read.value)
     return created.isErr()
       ? created
       : ok(this._matchMaker._roomInfo(created.value))
@@ -1450,12 +1513,14 @@ export class BungohanServer {
         }
         const checked = this._checkRoom(connection, room, hash)
         if (checked.isErr()) return checked
+        const joinOptions = this._readOptions(room, options)
+        if (joinOptions.isErr()) return joinOptions
         const client = new Client(nanoid(12), connection)
         return this._joinExisting(
           connection,
           room,
           client,
-          options,
+          joinOptions.value,
           false,
           roomRef,
         )

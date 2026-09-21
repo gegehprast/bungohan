@@ -52,7 +52,10 @@ async function createGame(
   playerName: string,
   isPrivate = false,
 ): Promise<ShooterView> {
-  const options = { playerName, maxPlayers: 4, isPrivate }
+  const options = {
+    create: { maxPlayers: 4, isPrivate },
+    join: { playerName },
+  }
   return (await client.create(ROOM_TYPE.SHOOTER, options, shooter)).unwrap()
 }
 
@@ -186,7 +189,10 @@ describe("shooter room", () => {
   })
 
   test("a full room starts on its own after the countdown", async () => {
-    const options = { playerName: "Solo", maxPlayers: 1, isPrivate: false }
+    const options = {
+      create: { maxPlayers: 1, isPrivate: false },
+      join: { playerName: "Solo" },
+    }
     const room = (
       await (await player()).create(ROOM_TYPE.SHOOTER, options, shooter)
     ).unwrap()
@@ -228,5 +234,36 @@ describe("lobby", () => {
     await open.leave()
     await h.tick(GAME_CONFIG.LOBBY_REFRESH_MS)
     expect(watcher.state.rooms.size).toBe(0)
+  })
+})
+
+describe("typed options", () => {
+  test("the shape is guaranteed; the game still clamps the values", async () => {
+    const long = "x".repeat(GAME_CONFIG.MAX_PLAYER_NAME_LENGTH + 20)
+    const room = (
+      await (
+        await player()
+      ).create(
+        ROOM_TYPE.SHOOTER,
+        {
+          create: { roomName: "  ", maxPlayers: 0, isPrivate: false },
+          join: { playerName: long },
+        },
+        shooter,
+      )
+    ).unwrap()
+    expect(room.state.roomName.get()).toBe("Game Room")
+    expect(room.state.maxPlayers.get()).toBe(1)
+    expect(room.state.players.get(room.sessionId)?.name.get()).toBe(
+      long.slice(0, GAME_CONFIG.MAX_PLAYER_NAME_LENGTH),
+    )
+  })
+
+  test("a blank name falls back to a generated one", async () => {
+    const alice = await createGame(await player(), "Alice")
+    const bob = (
+      await (await player()).joinById(alice.id, { playerName: " " }, shooter)
+    ).unwrap()
+    expect(bob.state.players.get(bob.sessionId)?.name.get()).toBe("Player2")
   })
 })

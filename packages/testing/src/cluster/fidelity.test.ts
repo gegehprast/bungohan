@@ -7,7 +7,7 @@
  * rooms that happened to live on another process.
  */
 import { beforeEach, describe, expect, test } from "bun:test"
-import { RoomProxy } from "@bungohan/core"
+import { type ProcessInfo, RoomProxy } from "@bungohan/core"
 import { type ClusterHarness, createClusterHarness } from "../cluster"
 import {
   EchoRoom,
@@ -15,7 +15,11 @@ import {
   expectTricky,
   received,
   resetReceived,
+  resetTypedReceived,
+  TypedEchoRoom,
   trickyPayload,
+  typedContract,
+  typedReceived,
 } from "./fixtures"
 
 const join = { state: EchoState } as const
@@ -23,7 +27,10 @@ const join = { state: EchoState } as const
 async function cluster(): Promise<ClusterHarness> {
   return createClusterHarness({
     size: 2,
-    rooms: { echo: [EchoRoom, { autoDispose: false }] },
+    rooms: {
+      echo: [EchoRoom, { autoDispose: false }],
+      typed: [TypedEchoRoom, { autoDispose: false }],
+    },
   })
 }
 
@@ -38,7 +45,10 @@ function owned(c: ClusterHarness, index: number, id: string): EchoRoom {
   return room
 }
 
-beforeEach(resetReceived)
+beforeEach(() => {
+  resetReceived()
+  resetTypedReceived()
+})
 
 describe("join options", () => {
   test("a local and a remote join deliver identical options", async () => {
@@ -139,6 +149,90 @@ describe("relayed frames", () => {
 
     expect(room.snapshots).toBe(1)
     expect(room.state?.turn.get()).toBe(0)
+    await c.stop()
+  })
+})
+
+describe("typed options (spec §4.1.2)", () => {
+  const typedJoin = { state: EchoState, contract: typedContract } as const
+  const onP1 = (processes: ProcessInfo[]): ProcessInfo => {
+    const remote = processes.find((p) => p.id === "p1")
+    if (remote === undefined) throw new Error("p1 missing")
+    return remote
+  }
+
+  test("a client's typed options reach a remote room as the same bytes", async () => {
+    const c = await cluster()
+    const create = { spin: -0, rounds: 1 }
+    const here = (
+      await c.run(mm(c, 0).createRoom(TypedEchoRoom, create))
+    ).unwrap()
+    const there = (
+      await c.run(mm(c, 1).createRoom(TypedEchoRoom, create))
+    ).unwrap()
+    const client = await c.connect(0)
+    const options = { name: "ann", aim: 1.234, spin: -0, team: -3 }
+    ;(await client.joinById(here.id, options, typedJoin)).unwrap()
+    ;(await client.joinById(there.id, options, typedJoin)).unwrap()
+
+    const [local, remote] = typedReceived.join
+    expect(local).toEqual({ name: "ann", aim: 1.23, spin: -0, team: -3 })
+    expect(remote).toEqual(local)
+    expect(Object.is((remote as { spin: number }).spin, -0)).toBe(true)
+    await c.stop()
+  })
+
+  test("createRoom's typed options are converted identically on either process", async () => {
+    const c = await cluster()
+    const create = { spin: -0, rounds: 300 }
+    ;(await c.run(mm(c, 0).createRoom(TypedEchoRoom, create))).unwrap()
+    ;(await c.run(mm(c, 0).createRoom(TypedEchoRoom, create, onP1))).unwrap()
+
+    const [local, remote] = typedReceived.create
+    expect(local).toEqual({ spin: -0, rounds: 255 })
+    expect(remote).toEqual(local)
+    // A MessagePack hop alone would have turned −0 into 0 (PROTOCOL.md §4).
+    expect(Object.is((remote as { spin: number }).spin, -0)).toBe(true)
+    await c.stop()
+  })
+
+  test("a reservation made from another process holds the same converted join options", async () => {
+    const c = await cluster()
+    const there = (
+      await c.run(mm(c, 1).createRoom(TypedEchoRoom, { spin: 0, rounds: 1 }))
+    ).unwrap()
+    const options = { name: "bo", aim: 0.125, spin: -0 }
+    // Made where the room is, and made from p0, which finds p1's room.
+    const owner = (
+      await c.run(mm(c, 1).reserve(TypedEchoRoom, options))
+    ).unwrap()
+    const remote = (
+      await c.run(mm(c, 0).reserve(TypedEchoRoom, options))
+    ).unwrap()
+    expect([owner.roomId, remote.roomId]).toEqual([there.id, there.id])
+    for (const reservation of [owner, remote]) {
+      const client = await c.connect(0)
+      ;(await client.consumeReservation(reservation, typedJoin)).unwrap()
+    }
+
+    const [here, relayed] = typedReceived.join
+    expect(here).toEqual({ name: "bo", aim: 0.13, spin: -0 })
+    expect(relayed).toEqual(here)
+    expect(Object.is((relayed as { spin: number }).spin, -0)).toBe(true)
+    await c.stop()
+  })
+
+  test("typed options that don't decode are refused by the owning process", async () => {
+    const c = await cluster()
+    const there = (
+      await c.run(mm(c, 1).createRoom(TypedEchoRoom, { spin: 0, rounds: 1 }))
+    ).unwrap()
+    const driver = c.node(0).driver()
+    const joined = await c.run(
+      driver.joinById(there.id, { name: "ann" }, { contractHash: null }),
+    )
+    expect(joined.isErr() && joined.error.code).toBe("INVALID_OPTIONS")
+    expect(typedReceived.join).toEqual([])
     await c.stop()
   })
 })

@@ -24,6 +24,7 @@ const MsgpackCodec = preload("../protocol/msgpack_codec.gd")
 const Result = preload("../protocol/result.gd")
 const Room = preload("bungohan_room.gd")
 const SchemaCodec = preload("../protocol/schema_codec.gd")
+const TypedOptions = preload("../protocol/typed_options.gd")
 const WebSocketClientTransport = preload("websocket_client_transport.gd")
 
 ## Largest header varint (§1.1).
@@ -216,6 +217,11 @@ func leave_all() -> void:
 
 
 # --- joins -----------------------------------------------------------------
+#
+# `options`: for a room type whose contract declares typed options
+# (PROTOCOL.md §6.2.1), the TypedOptions its generated contract script
+# builds: `create_options(create, join)` for join_or_create/create,
+# `join_options(join)` for join/join_by_id. Otherwise any MessagePack value.
 
 
 func join_or_create(room_type: String, options: Variant = null, settings: Dictionary = {}):
@@ -273,11 +279,23 @@ func _start_request(room, mode: int, target: String, options: Variant, room_id,
 		"waiter": waiter,
 		"deadline": (_now.call() + _join_timeout_ms) if _join_timeout_ms > 0 else INF,
 	}
-	var body = MsgPack.encode([mode, target, options, room.hash_or_null()])
+	var body = encode_join(mode, target, options, room.hash_or_null())
 	var sent = send_frame(Frames.CLIENT_JOIN, [request_id], body.value) if body.ok else body
 	if not sent.ok:
 		_settle(request_id, sent)
 	return waiter
+
+
+## A JOIN body (PROTOCOL.md §6.2): a Result holding its bytes. `options` is
+## untyped (any MessagePack value) or a TypedOptions (§6.2.1), which a
+## generated contract script builds.
+static func encode_join(mode: int, target: String, options: Variant, contract_hash):
+	if options is TypedOptions:
+		var elements = options.body(mode, target, contract_hash)
+		if not elements.ok:
+			return elements
+		return MsgPack.encode(elements.value)
+	return MsgPack.encode([mode, target, options, contract_hash])
 
 
 ## Resolves a pending join. A failure after JOIN_SUCCESS (a timeout, …)

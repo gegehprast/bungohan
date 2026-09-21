@@ -205,7 +205,7 @@ Client → server frames:
 |---|---|---|---|
 | `00` | `ROOM_MESSAGE` | `roomRef`, `messageId` (2) | codec: the contract message (§10) |
 | `01` | `ROOM_MESSAGE_RAW` | `roomRef` (1) | mp: `[type: string, payload: any]` |
-| `02` | `JOIN` | `requestId` (1) | mp: `[mode, target, options, contractHash]` (§6.2) |
+| `02` | `JOIN` | `requestId` (1) | mp: `[mode, target, options, contractHash, createOptions]` (§6.2) |
 | `03` | `LEAVE` | `roomRef` (1) | empty |
 | `04` | `PING` | `nonce`, `rtt` (2) | empty |
 
@@ -273,6 +273,7 @@ key `__proto__` is malformed.
 | string of `n` UTF-8 bytes | `a0\|n` fixstr (`n ≤ 31`), else `d9` str8, `da` str16, `db` str32 |
 | array of `n` elements | `90\|n` fixarray (`n ≤ 15`), else `dc` array16, `dd` array32 |
 | map of `n` entries | `80\|n` fixmap (`n ≤ 15`), else `de` map16, `df` map32; entries in insertion order |
+| byte string of `n` bytes | `c4` bin8 (`n ≤ 255`), else `c5` bin16, `c6` bin32 |
 
 "Integer" means a number with no fractional part whose magnitude is at most
 `2^53 − 1`. So `2.0` is written as `02`, **`−0` is written as `00`** (the
@@ -282,7 +283,13 @@ non-integers are never written as `float32`. A map entry whose value is absent
 is left out.
 
 Examples: `"é"` → `a2 c3 a9`; `[1, "a", null]` → `93 01 a1 61 c0`;
-`255` → `cc ff`; `-33` → `d0 df`; `1.5` → `cb 3f f8 00 00 00 00 00 00`.
+`255` → `cc ff`; `-33` → `d0 df`; `1.5` → `cb 3f f8 00 00 00 00 00 00`;
+the three bytes `01 01 05` → `c4 03 01 01 05`.
+
+The only byte string (MessagePack `bin`) the protocol itself defines is the
+typed join options of §6.2.1; an application's raw message payload (§5) may
+hold one too, since it is any value. The `ext` family is never used, and a
+decoder MAY reject it.
 
 ---
 
@@ -296,7 +303,7 @@ Examples: `"é"` → `a2 c3 a9`; `[1, "a", null]` → `93 01 a1 61 c0`;
 - **`ROOM_MESSAGE_RAW` (01)** `roomRef` + mp `[type, payload]`. An untyped
   message: `type` is its name and `payload` is any MessagePack value. Raw
   messages are never in the message tables.
-- **`JOIN` (02)** `requestId` + mp. See §6.2.
+- **`JOIN` (02)** `requestId` + mp. See §6.2; typed options in §6.2.1.
 - **`LEAVE` (03)** `roomRef`. Leave the room (§7.1).
 - **`PING` (04)** `nonce, rtt`. The server answers at once with
   `PONG(nonce)`. `nonce` is any value the client chooses. `rtt` is the
@@ -374,7 +381,8 @@ client                                        server
 ### 6.2 `JOIN` body
 
 ```
-[mode: uint, target: string, options: any, contractHash: string | null]
+[mode: uint, target: string, options: any, contractHash: string | null,
+ createOptions: bin | null]
 ```
 
 | mode | Name | `target` | Meaning |
@@ -388,30 +396,122 @@ client                                        server
 
 "Available" means public, unlocked, not full and not being disposed.
 
-- `options` is passed to the room's hooks as-is. `null` is treated as an empty
-  map.
-- `contractHash` is the client's contract hash (§6.5), or `null` to skip the
+- `options` are the **join options**: what this client tells the room about
+  itself (a player name, a team). How they are encoded depends on the room
+  type (§6.2.1).
+- `contractHash` is the client's contract hash (§6.3), or `null` to skip the
   check.
-- Only `mode` and `target` are required: a body of 2 or 3 elements is valid,
-  with `options` defaulting to an empty map and `contractHash` to `null`.
-  Elements after the fourth are ignored (§9.1).
+- `createOptions` are the **create options**: settings for a room this join
+  creates (a map, a round count). Only a room type with typed options reads
+  them, and only in modes 0 and 1 (§6.2.1).
+- Only `mode` and `target` are required: a body of 2, 3 or 4 elements is
+  valid, with `options` and `createOptions` defaulting to `null` and
+  `contractHash` to `null`. Elements after the fifth are ignored (§9.1).
 - A body that isn't a MessagePack array is a protocol violation (§8.2). An
   array whose `mode` isn't an integer `0 … 5`, whose `target` isn't a string,
   or whose `contractHash` is neither a string nor null fails with
   `JOIN_ERROR INVALID_OPTIONS`.
 
-Example, `JOIN(requestId 1, [0, "shooter", {"name": "ann"}, "1a2b3c4d"])`:
+Example, `JOIN(requestId 1, [0, "shooter", {"name": "ann"}, "1a2b3c4d"])`
+(untyped options):
 
 ```
 02 01 94 00 a7 73 68 6f 6f 74 65 72 81 a4 6e 61 6d 65 a3 61 6e 6e
 a8 31 61 32 62 33 63 34 64
 ```
 
+#### 6.2.1 Untyped and typed options
+
+A room type's contract (§6.3) either declares **no options**, or declares
+**typed options**: a create-options message, a join-options message, or
+both. They are message declarations like any contract message (§10); their
+names are not sent. Code generation gives a client the declarations along
+with the contract hash, and the hash covers them, so a client built against
+other declarations fails with `CONTRACT_MISMATCH` (§6.3) instead of sending
+options the room would misread.
+
+**Untyped options** (the contract declares none, or the room type has no
+contract). `options` is any MessagePack value and reaches the room's hooks
+as-is (`null` as an empty map). A room created by the join receives the same
+value as its create options. `createOptions` is ignored.
+
+**Typed options.** `options` and `createOptions` are each either a
+MessagePack **`bin`** (§4) holding one message encoded as a `schema` contract
+message (§13.1.6), or `null`/absent, which means **zero bytes**:
+
+| Element | Message | Read in modes |
+|---|---|---|
+| `options` | the join options | 0, 1, 2, 3 |
+| `createOptions` | the create options | 0 and 1, only when this join creates the room |
+
+- A declaration the contract leaves out is the message with **no fields**,
+  which encodes to zero bytes.
+- **Encoders** write all five elements. An encoding of zero bytes is written
+  as `null`, never as an empty `bin`. `createOptions` is `null` in modes 2
+  and 3, where it is never read. In modes 4 and 5 a client sends the body it
+  would send without typed options (`options` is ignored there).
+  **Decoders** accept an empty `bin` as zero bytes, any `bin` format (§4),
+  and a body that stops before either element.
+- The encoding is **always `schema`** (§13.1.6), whatever codec the room
+  uses. The room's codec is named in `JOIN_SUCCESS` (§6.4), which answers
+  this very frame, so a client can't know it yet.
+- The bytes are **opaque until the room type is known.** The encoding has no
+  type tags, so only the declaration can read it. In modes 0–2 the target
+  names the type and the server decodes before looking for a room; in mode 3
+  it can only decode once the room is found.
+- Decoding is **exact**, as for a contract message body (§10): every required
+  field present, every value of its declared kind and range, no bytes left
+  over. A value that isn't `bin` or `null` (for example a MessagePack map from
+  a client built without the declarations), or bytes that don't decode, fail
+  the join with **`JOIN_ERROR INVALID_OPTIONS`**, before a room is created, a
+  seat is taken or any of the room's code runs. It is not a protocol
+  violation: the connection and its other seats stay open.
+- The contract hash is checked first (§6.3). A client that sends `null` for
+  the hash skips that check, but its options are still decoded exactly.
+- Create options that are never read (mode 0 joining an existing room) are
+  not decoded, so they can't fail the join.
+
+What the room receives is what decoding produced, never the client's own
+values: integers truncated and saturated, `fixed:n` rounded, and so on
+(§12). A server that builds options itself (reserving a seat, creating a
+room from its own code) converts them through the same encoding, so its
+rooms see exactly what a client's options would have produced.
+
+Example: a room type `"options"` declares
+
+```
+create options  { mode: enum["duel" | "team"], rounds: uint8, friendlyFire: bool }
+join options    { name: string, aim: fixed:2, team: optional<uint8>, spectator: bool }
+```
+
+`JOIN(requestId 1, [1, "options", join, null, create])`, mode `CREATE`, with
+join options `{ name: "ann", aim: 1.5, spectator: false }` and create options
+`{ mode: "team", rounds: 5, friendlyFire: true }`:
+
+```
+02 01                        JOIN, requestId 1
+95                           array of 5
+   01                        mode 1 (CREATE)
+   a7 6f 70 74 69 6f 6e 73   "options"
+   c4 07                     bin, 7 bytes: the join options
+      00                        flags: team absent (bit 0), spectator false (bit 1)
+      03 61 6e 6e               name "ann"
+      ac 02                     aim: zigzag(150) = 300
+   c0                        contractHash null
+   c4 03                     bin, 3 bytes: the create options
+      01                        flags: friendlyFire true (bit 0)
+      01                        mode: index 1 ("team")
+      05                        rounds 5
+```
+
 ### 6.3 Contract hash
 
-A room type may declare a **contract**: its typed messages (§10). The server
-computes a hash of the contract: a string of 8 lowercase hexadecimal digits,
-such as `"1a2b3c4d"`. Any change to any message of the contract changes it.
+A room type may declare a **contract**: its typed messages (§10) and, if it
+has them, its typed options (§6.2.1). The server computes a hash of the
+contract: a string of 8 lowercase hexadecimal digits, such as `"1a2b3c4d"`.
+Any change to any message of the contract, or to either options
+declaration, changes it. A contract that declares no options hashes exactly
+as it did before options existed.
 
 A client does not compute this hash. Code generation bakes the hash of the
 contract a client was built against into the client, and the client sends it
@@ -544,7 +644,7 @@ server.
 
 | Code | When |
 |---|---|
-| `INVALID_OPTIONS` | the `JOIN` array has the wrong shape, or an unknown `mode` |
+| `INVALID_OPTIONS` | the `JOIN` array has the wrong shape, an unknown `mode`, or typed options that don't decode (§6.2.1) |
 | `SERVER_SHUTTING_DOWN` | the server is shutting down |
 | `ROOM_TYPE_NOT_DEFINED` | no room type of that name (modes 0–2) |
 | `CONTRACT_MISMATCH` | `contractHash` differs from the room type's |
@@ -638,12 +738,16 @@ These rules let a server and its clients evolve independently within
 
 Receivers of the `JOIN` body, the `JOIN_SUCCESS` handshake, `JOIN_ERROR`,
 `ERROR` and raw messages (`[type, payload]`) read the elements they know by
-position, require those, and **ignore any further elements**. A later version
+position, require those, and **ignore any further elements**. (The `JOIN`
+body's fifth element, `createOptions`, was added this way: a server that
+predates it ignores it, and a client that uses it has a contract hash such a
+server doesn't know.) A later version
 may append elements, but never reorder or remove them. Fewer elements than
 required is malformed (except `JOIN`, §6.2).
 
-Contract message bodies are **excluded**: they are strict (§10). Version skew
-there is caught at join by the contract hash, not tolerated field by field.
+Contract message bodies are **excluded**: they are strict (§10), and so are
+typed options (§6.2.1). Version skew there is caught at join by the contract
+hash, not tolerated field by field.
 
 ### 9.2 Unknown frame types
 
@@ -709,6 +813,10 @@ Rules for both codecs:
 
 The byte layout is defined by the codec: §13.1.6 (`schema`) and §13.2.2
 (`messagepack`).
+
+Typed join and create options (§6.2.1) are declared the same way and follow
+the same rules, but are always encoded as `schema` messages (§13.1.6),
+whatever the room's codec.
 
 ---
 
@@ -1458,6 +1566,23 @@ Case kinds (`"kind"`):
   from a connection holding one joined room at roomRef `1`, with no contract.
   Server-side cases start from a connection that has joined a room at
   roomRef `1` whose room type is `compat` and has no contract.
+
+- **`join`**: `{ declares, request?, hex, reply, received? }`: a `JOIN`
+  frame with typed options (§6.2.1). `declares` is `{ "create"?: declaration,
+  "join"?: declaration }`, the options the target room type declares (one
+  left out is the message with no fields). `request` is `{ requestId, mode,
+  target, contractHash, join?, create? }`, where `join` and `create` are
+  payloads as the application passes them (absent means `null` in the
+  frame); building the frame from it gives exactly `hex`. A case without
+  `request` holds bytes no encoder produces, and is only sent. `reply` is
+  what the server answers when `hex` is sent on a fresh connection:
+  `"JOIN_SUCCESS"`, or the code of the `JOIN_ERROR`. After a success,
+  `received` is `{ join, create }`, the options the room's code got (what
+  decoding produced, §12). Server-side, the target is the reference test
+  server's room type `options`, which declares exactly `declares`, is
+  private (so mode 0 always creates a room, and mode 2 never finds one),
+  and sends the joiner, as soon as it has joined, a raw message
+  (`ROOM_MESSAGE_RAW`) of type `"options"` whose payload is `received`.
 
 A message declaration is `{ "name": string, "fields": [[name, type], …] }`,
 where a type is a string (`"int8"`, `"fixed:2"`, `"string"`, …) or an object:

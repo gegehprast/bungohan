@@ -23,6 +23,8 @@ import {
   type Contract,
   type EmptyContract,
   type Infer,
+  type InferCreateOptions,
+  type InferJoinOptions,
   type JoinHandshake,
   LeaveCode,
   type RecvMap,
@@ -46,6 +48,7 @@ import {
 import {
   DETACHED_TYPE,
   type RoomTypeDef,
+  readServerOptions,
   validateStateClass,
 } from "./room-type"
 import {
@@ -54,7 +57,6 @@ import {
   type ResolvedLimits,
   type RoomOnCreateOptions,
   resolveLimits,
-  type UserDefinedRoomOnCreateOptions,
   type UserDefinedRoomOnJoinOptions,
 } from "./types"
 
@@ -96,6 +98,18 @@ interface HeldReservation {
   readonly reservation: Reservation
   readonly options: unknown
   readonly timer: TimerId
+}
+
+/**
+ * Join options as the hooks receive them. They were decoded against the
+ * contract's join options (or are untyped and made a plain object), which
+ * is exactly what `InferJoinOptions` describes.
+ */
+function joinOptions<C extends Contract>(
+  options: unknown,
+): InferJoinOptions<C> {
+  const plain: unknown = asOptions(options)
+  return plain as InferJoinOptions<C>
 }
 
 /** `options` as the plain object the hooks receive. */
@@ -228,7 +242,9 @@ export abstract class Room<
 
   /**
    * Runs only when a join *creates* the room, before `onCreate`. Return
-   * `false` to refuse, or an object to become `client.auth`.
+   * `false` to refuse, or an object to become `client.auth`. `options` are
+   * the joiner's options, as `onJoin` gets them (a static method can't see
+   * the class's contract type, so declare the parameter's type yourself).
    */
   protected static async onAuth(
     _client: Client,
@@ -238,22 +254,34 @@ export abstract class Room<
     return true
   }
 
-  /** Runs when joining an existing room (including through a reservation). */
+  /**
+   * Runs when joining an existing room (including through a reservation).
+   * `options` are typed by the contract's join options (spec §4.1.2) and
+   * were decoded against them: their shape is guaranteed, their values are
+   * still the client's, so check game rules (a name's length) here or in
+   * `onJoin`.
+   */
   protected async onAuth(
     _client: Client,
-    _options: UserDefinedRoomOnJoinOptions,
+    _options: InferJoinOptions<TContract>,
     _context: ConnectionContext,
   ): Promise<AuthResult> {
     return true
   }
 
+  /**
+   * The room was created. `options` are the framework's room settings plus
+   * the contract's create options (spec §4.1.2): typed and decoded when the
+   * contract declares them, otherwise whatever the creator sent.
+   */
   protected async onCreate(
-    _options: RoomOnCreateOptions & UserDefinedRoomOnCreateOptions,
+    _options: RoomOnCreateOptions & InferCreateOptions<TContract>,
   ): Promise<void> {}
 
+  /** A client joined. `options` are its join options (see `onAuth`). */
   protected async onJoin(
     _client: Client,
-    _options: UserDefinedRoomOnJoinOptions,
+    _options: InferJoinOptions<TContract>,
     _auth: Record<string, unknown>,
   ): Promise<void> {}
 
@@ -442,8 +470,14 @@ export abstract class Room<
    */
   public async join(
     client: Client,
-    options?: unknown,
+    options?: InferJoinOptions<TContract>,
   ): Promise<Result<void, BungohanError>> {
+    // Converted through the wire encoding, like any server-built options,
+    // so the hooks see what a client's options would decode to.
+    const read = readServerOptions(this._type ?? DETACHED_TYPE, "join", options)
+    if (read.isErr()) {
+      return err(this._error("INVALID_OPTIONS", read.error.message))
+    }
     const seated = this._seat(client, undefined, false)
     if (seated.isErr()) return seated
     const context: ConnectionContext = {
@@ -451,12 +485,12 @@ export abstract class Room<
       searchParams: new URLSearchParams(),
       headers: new Headers(),
     }
-    const auth = await this._authorize(client, options, context)
+    const auth = await this._authorize(client, read.value, context)
     if (auth.isErr()) {
       this._unseat(client)
       return auth
     }
-    const joined = await this._runJoin(client, options, auth.value)
+    const joined = await this._runJoin(client, read.value, auth.value)
     if (joined.isErr()) return joined
     this._activate(client)
     return ok(undefined)
@@ -685,7 +719,7 @@ export abstract class Room<
   public async _create(options: unknown): Promise<Result<void, BungohanError>> {
     const host = this._requireHost()
     const user = asOptions(options)
-    const full: RoomOnCreateOptions & UserDefinedRoomOnCreateOptions = {
+    const full: RoomOnCreateOptions & Record<string, unknown> = {
       ...user,
       roomId: this.id,
       roomType: this.roomType,
@@ -698,8 +732,13 @@ export abstract class Room<
       metadata: { ...this.metadata, ...asOptions(user["metadata"]) },
     }
     this.metadata = full.metadata
+    // `options` were decoded against the contract's create options (or are
+    // untyped), which is exactly what InferCreateOptions describes.
+    const typed: unknown = full
     const created = await this._hookAsync("onCreate", undefined, () =>
-      this.onCreate(full),
+      this.onCreate(
+        typed as RoomOnCreateOptions & InferCreateOptions<TContract>,
+      ),
     )
     if (!created) {
       return err(this._error("ROOM_CREATE_FAILED", "onCreate threw"))
@@ -800,7 +839,11 @@ export abstract class Room<
   ): Promise<Result<Record<string, unknown>, BungohanError>> {
     let result: AuthResult | undefined
     const ran = await this._hookAsync("onAuth", client, async () => {
-      result = await this.onAuth(client, asOptions(options), context)
+      result = await this.onAuth(
+        client,
+        joinOptions<TContract>(options),
+        context,
+      )
     })
     if (!ran) return err(this._error("JOIN_FAILED", "onAuth threw"))
     return authOutcome(result, (code, message) => this._error(code, message))
@@ -839,7 +882,7 @@ export abstract class Room<
   ): Promise<Result<void, BungohanError>> {
     client.auth = auth
     const ran = await this._hookAsync("onJoin", client, () =>
-      this.onJoin(client, asOptions(options), auth),
+      this.onJoin(client, joinOptions<TContract>(options), auth),
     )
     if (!ran) {
       this._unseat(client)

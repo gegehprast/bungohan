@@ -13,6 +13,27 @@
         "point",
         "everything"
       ]
+    },
+    {
+      "name": "joinOptionsContract",
+      "hash": "7abe481e",
+      "client": [],
+      "server": [],
+      "options": {
+        "join": "seat"
+      }
+    },
+    {
+      "name": "optionsContract",
+      "hash": "ced4c41b",
+      "client": [
+        "ping"
+      ],
+      "server": [],
+      "options": {
+        "create": "lobby",
+        "join": "seat"
+      }
     }
   ],
   "messages": [
@@ -244,6 +265,28 @@
       ]
     },
     {
+      "name": "lobby",
+      "fields": [
+        [
+          "map",
+          {
+            "enum": [
+              "dust",
+              "ice"
+            ]
+          }
+        ],
+        [
+          "rounds",
+          "uint8"
+        ],
+        [
+          "ranked",
+          "bool"
+        ]
+      ]
+    },
+    {
       "name": "ping",
       "fields": []
     },
@@ -257,6 +300,39 @@
         [
           "y",
           "fixed:2"
+        ]
+      ]
+    },
+    {
+      "name": "seat",
+      "fields": [
+        [
+          "name",
+          "string"
+        ],
+        [
+          "team",
+          {
+            "optional": "uint8"
+          }
+        ],
+        [
+          "at",
+          {
+            "nested": {
+              "name": "point",
+              "fields": [
+                [
+                  "x",
+                  "fixed:2"
+                ],
+                [
+                  "y",
+                  "fixed:2"
+                ]
+              ]
+            }
+          }
         ]
       ]
     }

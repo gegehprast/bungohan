@@ -7,12 +7,19 @@ import { BungohanError, type ErrorCode } from "./errors"
 import type { Logger } from "./logger"
 import type { Room } from "./room"
 import type { RoomManager } from "./room-manager"
-import { createRoomType, type RoomTypeDef } from "./room-type"
+import {
+  createRoomType,
+  packOptions,
+  type RoomTypeDef,
+  readServerOptions,
+} from "./room-type"
 import type {
+  CreateRoomArgs,
   DefineRoomOptions,
   MatchMakerQueryOptions,
   ProcessInfo,
   ProcessSelector,
+  ReserveArgs,
   RoomClass,
   RoomConstructor,
   RoomListingInfo,
@@ -94,26 +101,55 @@ export class MatchMaker {
     return this._types.get(name)
   }
 
-  public async createRoom(
+  /**
+   * Creates a room, here or (with a selector, in cluster mode) on another
+   * process. Pass the room **class** to have its create options typed
+   * (spec §4.1.2); a name takes anything, checked when it is converted.
+   * Either way, typed options go through the wire encoding, so the room
+   * gets what a client's would decode to, wherever it runs, and options
+   * that don't fit the declaration are `INVALID_OPTIONS`.
+   */
+  public createRoom<R extends Room>(
+    roomType: RoomClass<R>,
+    ...args: CreateRoomArgs<R>
+  ): Promise<Result<Room, BungohanError>>
+  public createRoom(
     roomType: string,
     options?: unknown,
     processSelector?: ProcessSelector,
+  ): Promise<Result<Room, BungohanError>>
+  public async createRoom(
+    roomType: string | RoomConstructor,
+    options?: unknown,
+    processSelector?: ProcessSelector,
   ): Promise<Result<Room, BungohanError>> {
+    const name = this._nameOf(roomType)
+    if (name.isErr()) return name
     const cluster = this._deps.cluster()
     if (cluster !== undefined && processSelector !== undefined) {
       const chosen = await this._select(cluster, processSelector)
       if (chosen.isErr()) return chosen
       if (chosen.value !== this._deps.processId) {
-        const info = await cluster.createRoom(chosen.value, roomType, options)
+        const packed = this._pack(name.value, "create", options)
+        if (packed.isErr()) return packed
+        const info = await cluster.createRoom(
+          chosen.value,
+          name.value,
+          packed.value,
+        )
         return info.isErr() ? info : ok(this._proxy(info.value))
       }
     } else {
       const local = this._selectLocal(processSelector)
       if (local.isErr()) return local
     }
-    const type = this._type(roomType)
+    const type = this._type(name.value)
     if (type.isErr()) return type
-    return this._deps.manager._createReady(type.value, options)
+    const read = readServerOptions(type.value, "create", options)
+    if (read.isErr()) {
+      return err(this._error("INVALID_OPTIONS", read.error.message))
+    }
+    return this._deps.manager._createReady(type.value, read.value)
   }
 
   /**
@@ -147,15 +183,30 @@ export class MatchMaker {
     )
   }
 
-  public async joinOrCreate(
+  /**
+   * An available room of the type, or a new one. `options` are create
+   * options, used only if a room is created (see `createRoom`).
+   */
+  public joinOrCreate<R extends Room>(
+    roomType: RoomClass<R>,
+    ...args: CreateRoomArgs<R>
+  ): Promise<Result<Room, BungohanError>>
+  public joinOrCreate(
     roomType: string,
     options?: unknown,
     processSelector?: ProcessSelector,
+  ): Promise<Result<Room, BungohanError>>
+  public async joinOrCreate(
+    roomType: string | RoomConstructor,
+    options?: unknown,
+    processSelector?: ProcessSelector,
   ): Promise<Result<Room, BungohanError>> {
-    const found = await this.joinRoom(roomType, options)
+    const name = this._nameOf(roomType)
+    if (name.isErr()) return name
+    const found = await this.joinRoom(name.value, options)
     if (found.isOk()) return found
     if (found.error.code !== "ROOM_NOT_FOUND") return found
-    return this.createRoom(roomType, options, processSelector)
+    return this.createRoom(name.value, options, processSelector)
   }
 
   public async joinById(
@@ -213,12 +264,48 @@ export class MatchMaker {
    * is held where the room is, and whichever process the client connects to
    * locates it (spec §6.4).
    */
-  public async reserve(
+  public reserve<R extends Room>(
+    roomType: RoomClass<R>,
+    ...args: ReserveArgs<R>
+  ): Promise<Result<Reservation, BungohanError>>
+  public reserve(
     roomType: string,
     options?: unknown,
     processSelector?: ProcessSelector,
+    createOptions?: unknown,
+  ): Promise<Result<Reservation, BungohanError>>
+  /**
+   * `options` are the seat's join options (typed by the class's contract,
+   * like `createRoom`'s); `createOptions` are used if a room has to be
+   * created for it. Without typed options, `options` serve as both, as
+   * they always did.
+   */
+  public async reserve(
+    roomType: string | RoomConstructor,
+    options?: unknown,
+    processSelector?: ProcessSelector,
+    createOptions?: unknown,
   ): Promise<Result<Reservation, BungohanError>> {
-    const found = await this.joinOrCreate(roomType, options, processSelector)
+    const name = this._nameOf(roomType)
+    if (name.isErr()) return name
+    const type = this._types.get(name.value)
+    // Converted before any room is found or created, so options that don't
+    // fit fail the call without side effects.
+    if (type !== undefined) {
+      const read = readServerOptions(type, "join", options)
+      if (read.isErr()) {
+        return err(this._error("INVALID_OPTIONS", read.error.message))
+      }
+    }
+    const roomOptions =
+      createOptions !== undefined || type?.createOptions !== undefined
+        ? createOptions
+        : options
+    const found = await this.joinOrCreate(
+      name.value,
+      roomOptions,
+      processSelector,
+    )
     if (found.isErr()) return found
     const room = found.value
     if (room instanceof RoomProxy) {
@@ -226,7 +313,9 @@ export class MatchMaker {
       if (cluster === undefined) {
         return err(this._error("INVALID_STATE", "cluster mode is not running"))
       }
-      return cluster.reserve(room.processId, room.id, options)
+      const packed = this._pack(name.value, "join", options)
+      if (packed.isErr()) return packed
+      return cluster.reserve(room.processId, room.id, packed.value)
     }
     return this._reserveIn(room, options)
   }
@@ -273,15 +362,24 @@ export class MatchMaker {
     return this._reservations.has(reservationId)
   }
 
-  /** @internal Holds a seat in a room this process owns. */
+  /**
+   * @internal Holds a seat in a room this process owns. Typed join options
+   * are converted here, where the room is (spec §6.4.1).
+   */
   public _reserveIn(
     room: Room,
-    options: unknown,
+    raw: unknown,
   ): Result<Reservation, BungohanError> {
     if (!room.isAvailable()) {
       return err(this._error("ROOM_FULL", "the room filled up"))
     }
     const type = this._types.get(room.roomType)
+    const read =
+      type === undefined ? ok(raw) : readServerOptions(type, "join", raw)
+    if (read.isErr()) {
+      return err(this._error("INVALID_OPTIONS", read.error.message))
+    }
+    const options = read.value
     const seconds = type?.options.reservationTimeout ?? 60
     const { clock, createId } = this._deps
     const reservation: Reservation = {
@@ -458,6 +556,61 @@ export class MatchMaker {
     if (info.isErr()) return info
     // The owning process answered an `info` op with its own `RoomInfo`.
     return ok(this._proxy(info.value as RoomInfo))
+  }
+
+  /**
+   * The room type name for a name or a registered class. A class
+   * registered under several names is ambiguous, and one this process
+   * never registered has no name here.
+   */
+  private _nameOf(
+    roomType: string | RoomConstructor,
+  ): Result<string, BungohanError> {
+    if (typeof roomType === "string") return ok(roomType)
+    const names = [...this._types.values()]
+      .filter((type) => type.ctor === roomType)
+      .map((type) => type.name)
+    const [name] = names
+    if (name === undefined) {
+      return err(
+        this._error(
+          "ROOM_TYPE_NOT_DEFINED",
+          `${roomType.name} is not a room type on this process; ` +
+            "pass the room type's name instead",
+        ),
+      )
+    }
+    if (names.length > 1) {
+      return err(
+        this._error(
+          "INVALID_OPTIONS",
+          `${roomType.name} is registered as ${names
+            .map((n) => `"${n}"`)
+            .join(", ")}; pass the room type's name instead`,
+        ),
+      )
+    }
+    return ok(name)
+  }
+
+  /**
+   * Server-built options bound for another process. Typed ones travel
+   * encoded, so the owner decodes exactly what a local room would get;
+   * a type this process doesn't define is sent as it is, for the owner to
+   * convert.
+   */
+  private _pack(
+    name: string,
+    kind: "create" | "join",
+    options: unknown,
+  ): Result<unknown, BungohanError> {
+    const type = this._types.get(name)
+    const def = kind === "create" ? type?.createOptions : type?.joinOptions
+    if (def === undefined) return ok(options)
+    const packed = packOptions(def, kind, options)
+    return packed.isErr()
+      ? err(this._error("INVALID_OPTIONS", packed.error.message))
+      : ok(packed.value)
   }
 
   private _type(name: string): Result<RoomTypeDef, BungohanError> {

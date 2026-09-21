@@ -107,7 +107,7 @@ export const ClientFrameType = {
   ROOM_MESSAGE: 0,
   /** `roomRef` + `[type, payload]`. */
   ROOM_MESSAGE_RAW: 1,
-  /** `requestId` + `[mode, target, options, contractHash]`. */
+  /** `requestId` + `[mode, target, options, contractHash, createOptions]`. */
   JOIN: 2,
   /** `roomRef`, empty body. */
   LEAVE: 3,
@@ -183,12 +183,17 @@ export const JoinMode = {
 
 export type JoinMode = (typeof JoinMode)[keyof typeof JoinMode]
 
-/** Body of a `JOIN` frame. */
+/**
+ * Body of a `JOIN` frame (PROTOCOL.md §6.2). With typed options,
+ * `options` and `createOptions` are `bin` (a `Uint8Array`) or `null`
+ * (§6.2.1); untyped `options` are any value and `createOptions` is unused.
+ */
 export type JoinRequest = [
   mode: JoinMode,
   target: string,
   options: unknown,
   contractHash: string | null,
+  createOptions: unknown,
 ]
 
 /** Body of a `JOIN_SUCCESS` frame (spec §6.7.4). */

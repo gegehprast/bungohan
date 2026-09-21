@@ -3,7 +3,13 @@
  * message contracts (spec §6.7.4). Hashes are computed in TypeScript only
  * (by the server and by codegen); other clients compare them as strings.
  */
-import type { Contract, Field, MessageDef, MessageMap } from "./contract"
+import type {
+  Contract,
+  ContractOptions,
+  Field,
+  MessageDef,
+  MessageMap,
+} from "./contract"
 import { isIntegerLikeKey } from "./contract"
 import { isIntKind } from "./ints"
 
@@ -42,12 +48,57 @@ function mapLayout(map: MessageMap): string {
     .join(";")
 }
 
+const OPTION_KINDS = ["create", "join"] as const
+
 /**
  * `client{…}server{…}`, messages sorted, so the hash doesn't depend on the
- * contract's key order (ids do, but ids are resolved by name).
+ * contract's key order (ids do, but ids are resolved by name). Typed
+ * options append `options{create:…;join:…}` (either part only when
+ * declared); a contract without them hashes as it always did.
  */
 export function contractLayout(contract: Contract): string {
-  return `client{${mapLayout(contract.client)}}server{${mapLayout(contract.server)}}`
+  const messages = `client{${mapLayout(contract.client)}}server{${mapLayout(contract.server)}}`
+  const parts: string[] = []
+  for (const kind of OPTION_KINDS) {
+    const def = contract.options?.[kind]
+    if (def !== undefined) parts.push(`${kind}:${messageLayout(def)}`)
+  }
+  return parts.length === 0
+    ? messages
+    : `${messages}options{${parts.join(";")}}`
+}
+
+/**
+ * The options message with no fields: what a kind the contract leaves out
+ * stands for once the other is declared (PROTOCOL.md §6.2.1). It encodes to
+ * zero bytes.
+ */
+export const NO_OPTIONS: MessageDef<
+  "noOptions",
+  Record<never, never>
+> = Object.freeze({
+  kind: "message",
+  name: "noOptions",
+  fields: Object.freeze({}),
+  fieldNames: Object.freeze([]),
+})
+
+/** True when the contract declares create options, join options or both. */
+export function hasTypedOptions(contract: Contract | undefined): boolean {
+  const options = contract?.options
+  return options?.create !== undefined || options?.join !== undefined
+}
+
+/**
+ * The declaration options of `kind` decode against, or `undefined` when the
+ * contract's options are untyped. A kind left out is {@link NO_OPTIONS}.
+ */
+export function optionsDef(
+  contract: Contract | undefined,
+  kind: keyof ContractOptions,
+): MessageDef | undefined {
+  if (!hasTypedOptions(contract)) return undefined
+  return contract?.options?.[kind] ?? NO_OPTIONS
 }
 
 const encoder = new TextEncoder()
@@ -209,6 +260,23 @@ export function validateContract(contract: unknown): string[] {
       problems.push(...messageProblems(def, path, new Set()))
       if (isRecord(def) && def["name"] !== key) {
         problems.push(`${path}: key must equal the message name`)
+      }
+    }
+  }
+  const options = contract["options"]
+  if (options !== undefined) {
+    if (!isRecord(options)) {
+      problems.push("contract.options: not an object")
+    } else {
+      for (const key of Object.keys(options)) {
+        const def = options[key]
+        if (key !== "create" && key !== "join") {
+          problems.push(
+            `options.${key}: unknown options kind (use "create" or "join")`,
+          )
+        } else if (def !== undefined) {
+          problems.push(...messageProblems(def, `options.${key}`, new Set()))
+        }
       }
     }
   }

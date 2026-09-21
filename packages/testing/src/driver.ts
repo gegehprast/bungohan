@@ -4,6 +4,8 @@
  * `applyDelta`, and decodes contract messages. It stands in for client-js
  * in core's tests, and is a reference for what any client must do.
  */
+
+import { joinBody } from "@bungohan/client-js"
 import { err, ok, type Result } from "@bungohan/result"
 import {
   decodeFrame,
@@ -143,9 +145,14 @@ export class TestClient {
   public readonly dropped: DroppedFrame[] = []
   /**
    * `JOIN_SUCCESS`/`JOIN_ERROR` whose requestId no `request()` is waiting
-   * for (replies to JOINs sent with `sendBytes`): `[frame type, requestId]`.
+   * for (replies to JOINs sent with `sendBytes`): `[frame type, requestId]`,
+   * plus the code for a `JOIN_ERROR`, and the roomRef for a `JOIN_SUCCESS`.
    */
-  public readonly unmatched: [type: number, requestId: number][] = []
+  public readonly unmatched: [
+    type: number,
+    requestId: number,
+    detail?: string | number,
+  ][] = []
   /** Close code and reason, once the connection closed. */
   public closeReason: string | undefined
   public closeCode: number | undefined
@@ -247,6 +254,10 @@ export class TestClient {
         : join.contract === undefined
           ? null
           : contractHash(join.contract)
+    const body = joinBody(mode, target, options, hash, join.contract)
+    if (body.isErr()) {
+      return err(new JoinFailure(body.error.code, body.error.message))
+    }
     const requestId = this._nextRequest++
     const room = new TestRoom<S, C>(this, join)
     const reply = new Promise<Result<JoinHandshake, JoinFailure>>((resolve) => {
@@ -260,7 +271,7 @@ export class TestClient {
     this.sendFrame(
       ClientFrameType.JOIN,
       [requestId],
-      [mode, target, options, hash, ...(join.trailing ?? [])],
+      [...body.value, ...(join.trailing ?? [])],
     )
     await this._flush()
     const pending = this._pending.get(requestId)
@@ -343,7 +354,7 @@ export class TestClient {
         const pending = this._pending.get(first)
         if (pending === undefined) {
           // A reply to a JOIN sent as raw bytes, not through request().
-          this.unmatched.push([type, first])
+          this.unmatched.push([type, first, header[1] ?? 0])
           return
         }
         this._pending.delete(first)
@@ -371,12 +382,12 @@ export class TestClient {
       }
       case ServerFrameType.JOIN_ERROR: {
         const pending = this._pending.get(first)
+        const [code, message] = parseError(this._decode(body), "JOIN_ERROR")
         if (pending === undefined) {
-          this.unmatched.push([type, first])
+          this.unmatched.push([type, first, code])
           return
         }
         this._pending.delete(first)
-        const [code, message] = parseError(this._decode(body), "JOIN_ERROR")
         pending.resolve(err(new JoinFailure(code, message)))
         return
       }

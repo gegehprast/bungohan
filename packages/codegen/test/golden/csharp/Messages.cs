@@ -254,6 +254,69 @@ namespace Bungohan.Codegen.Golden
         }
     }
 
+    /// <summary>Contract message <c>lobby</c>.</summary>
+    public sealed partial class LobbyMessage : IContractMessage
+    {
+        /// <summary>The message's name on the wire; its id comes from the handshake.</summary>
+        public const string MessageName = "lobby";
+
+        /// <summary>The declaration the codecs encode with.</summary>
+        public static readonly MessageDef Definition = new MessageDef(MessageName,
+            new MessageField("map", FieldType.Enum("dust", "ice")),
+            new MessageField("rounds", FieldType.UInt8),
+            new MessageField("ranked", FieldType.Bool));
+
+        /// <summary>The values of <see cref="MapValue"/>, in index order.</summary>
+        private static readonly object[] s_mapValues = { "dust", "ice" };
+
+        public enum MapValue
+        {
+            /// <summary><c>"dust"</c></summary>
+            Dust = 0,
+            /// <summary><c>"ice"</c></summary>
+            Ice = 1,
+        }
+
+        /// <summary><c>map</c>: <c>enum["dust"|"ice"]</c>.</summary>
+        public MapValue Map { get; set; }
+
+        /// <summary><c>rounds</c>: <c>uint8</c>.</summary>
+        public byte Rounds { get; set; }
+
+        /// <summary><c>ranked</c>: <c>bool</c>.</summary>
+        public bool Ranked { get; set; }
+
+        MessageDef IContractMessage.MessageDefinition => Definition;
+
+        public MsgMap ToPayload()
+        {
+            var payload = new MsgMap();
+            payload["map"] = s_mapValues[(int)Map];
+            payload["rounds"] = Rounds;
+            payload["ranked"] = Ranked;
+            return payload;
+        }
+
+        public static LobbyMessage FromPayload(MsgMap payload)
+        {
+            var message = new LobbyMessage();
+            message.Map = (MapValue)Math.Max(0, Array.IndexOf(s_mapValues, payload["map"]));
+            message.Rounds = (byte)Payloads.ToLong(payload["rounds"]);
+            message.Ranked = (payload["ranked"] is true);
+            return message;
+        }
+
+        /// <summary>Encodes with the room's codec.</summary>
+        public Result<byte[]> Encode(IStateCodec codec) => codec.EncodeMessage(Definition, ToPayload());
+
+        /// <summary>Decodes a body with the room's codec.</summary>
+        public static Result<LobbyMessage> Decode(IStateCodec codec, byte[] body)
+        {
+            Result<MsgMap> decoded = codec.DecodeMessage(Definition, body, 0, body.Length);
+            return decoded.IsOk ? Result<LobbyMessage>.Ok(FromPayload(decoded.Value)) : Result<LobbyMessage>.Fail(decoded.Error!);
+        }
+    }
+
     /// <summary>Contract message <c>ping</c>.</summary>
     public sealed partial class PingMessage : IContractMessage
     {
@@ -331,6 +394,60 @@ namespace Bungohan.Codegen.Golden
         {
             Result<MsgMap> decoded = codec.DecodeMessage(Definition, body, 0, body.Length);
             return decoded.IsOk ? Result<PointMessage>.Ok(FromPayload(decoded.Value)) : Result<PointMessage>.Fail(decoded.Error!);
+        }
+    }
+
+    /// <summary>Contract message <c>seat</c>.</summary>
+    public sealed partial class SeatMessage : IContractMessage
+    {
+        /// <summary>The message's name on the wire; its id comes from the handshake.</summary>
+        public const string MessageName = "seat";
+
+        /// <summary>The declaration the codecs encode with.</summary>
+        public static readonly MessageDef Definition = new MessageDef(MessageName,
+            new MessageField("name", FieldType.String),
+            new MessageField("team", FieldType.OptionalOf(FieldType.UInt8)),
+            new MessageField("at", FieldType.NestedOf(PointMessage.Definition)));
+
+        /// <summary><c>name</c>: <c>string</c>.</summary>
+        public string Name { get; set; } = "";
+
+        /// <summary><c>team</c>: <c>optional&lt;uint8&gt;</c>.</summary>
+        public byte? Team { get; set; }
+
+        /// <summary><c>at</c>: <c>nested&lt;point&gt;</c>.</summary>
+        public PointMessage At { get; set; } = new PointMessage();
+
+        MessageDef IContractMessage.MessageDefinition => Definition;
+
+        public MsgMap ToPayload()
+        {
+            var payload = new MsgMap();
+            payload["name"] = Name;
+            if (Team != null) payload["team"] = Team.Value;
+            payload["at"] = At.ToPayload();
+            return payload;
+        }
+
+        public static SeatMessage FromPayload(MsgMap payload)
+        {
+            var message = new SeatMessage();
+            message.Name = (payload["name"] as string ?? "");
+            message.Team = payload.TryGetValue("team", out object? v1) && v1 != null
+                ? (byte?)(byte)Payloads.ToLong(v1)
+                : null;
+            message.At = PointMessage.FromPayload(Payloads.AsMap(payload["at"]));
+            return message;
+        }
+
+        /// <summary>Encodes with the room's codec.</summary>
+        public Result<byte[]> Encode(IStateCodec codec) => codec.EncodeMessage(Definition, ToPayload());
+
+        /// <summary>Decodes a body with the room's codec.</summary>
+        public static Result<SeatMessage> Decode(IStateCodec codec, byte[] body)
+        {
+            Result<MsgMap> decoded = codec.DecodeMessage(Definition, body, 0, body.Length);
+            return decoded.IsOk ? Result<SeatMessage>.Ok(FromPayload(decoded.Value)) : Result<SeatMessage>.Fail(decoded.Error!);
         }
     }
 }

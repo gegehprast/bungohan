@@ -18,6 +18,8 @@ export {
   Ready,
   RefreshRooms,
   RoomFound,
+  ShooterCreateOptions,
+  ShooterJoinOptions,
   StartGame,
   shooterContract,
 } from "./contract"
@@ -33,4 +35,5 @@ export type {
   GameStatus,
   JoinShooterOptions,
   ShooterListing,
+  ShooterSettings,
 } from "./types"

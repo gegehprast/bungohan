@@ -28,6 +28,14 @@ export interface ContractModel {
   readonly client: readonly MessageDef[]
   /** Server → client messages, in the contract's key order. */
   readonly server: readonly MessageDef[]
+  /**
+   * Typed join and create options (spec §4.1.2), or `undefined` when the
+   * contract declares none. A kind left out of a typed contract is absent
+   * here and means the empty message.
+   */
+  readonly options:
+    | { readonly create?: MessageDef; readonly join?: MessageDef }
+    | undefined
 }
 
 export interface SchemaFieldModel {
@@ -137,7 +145,17 @@ export function buildModel(
     problems.push(...validateContract(contract).map((p) => `${name}: ${p}`))
     const client = Object.values(contract.client)
     const server = Object.values(contract.server)
-    for (const def of [...client, ...server]) {
+    const create = contract.options?.create
+    const join = contract.options?.join
+    const options =
+      create === undefined && join === undefined
+        ? undefined
+        : {
+            ...(create === undefined ? {} : { create }),
+            ...(join === undefined ? {} : { join }),
+          }
+    const optionDefs = [create, join].filter((def) => def !== undefined)
+    for (const def of [...client, ...server, ...optionDefs]) {
       const reached: MessageDef[] = [def]
       for (const field of def.fieldNames) {
         const inner = def.fields[field]
@@ -145,7 +163,13 @@ export function buildModel(
       }
       for (const message of reached) addMessage(message, name)
     }
-    contractModels.push({ name, hash: contractHash(contract), client, server })
+    contractModels.push({
+      name,
+      hash: contractHash(contract),
+      client,
+      server,
+      options,
+    })
   }
 
   const classes = new Map<string, SchemaModel>()
