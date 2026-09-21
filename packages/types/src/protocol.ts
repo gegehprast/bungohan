@@ -40,6 +40,12 @@ export enum CloseCode {
   PROTOCOL_ERROR = 1002,
   POLICY_VIOLATION = 1008,
   INTERNAL_ERROR = 1011,
+  /**
+   * The server is shedding this connection: it read too slowly (its send
+   * queue grew past the limit) or sent too fast (spec §6.9). Nothing it
+   * sent was malformed, so it may reconnect after a delay.
+   */
+  TRY_AGAIN_LATER = 1013,
 }
 
 export type ConnectionState =
@@ -212,3 +218,8 @@ export type JoinErrorCode =
   | "INVALID_TOKEN"
   | "RESERVATION_NOT_FOUND"
   | "RESERVATION_EXPIRED"
+  /**
+   * Too many `JOIN` attempts on this connection (spec §6.9). The
+   * connection stays open; a later attempt may succeed.
+   */
+  | "RATE_LIMITED"

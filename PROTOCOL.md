@@ -554,6 +554,7 @@ server.
 | `ALREADY_JOINED` | this connection already holds a seat in that room |
 | `AUTH_FAILED` | the room refused the client |
 | `JOIN_FAILED` | the room's code failed while creating the room or admitting the client (no details are given) |
+| `RATE_LIMITED` | too many `JOIN`s on this connection (§8.4); the connection stays open and a later attempt may succeed |
 | `INVALID_TOKEN` | mode 4: unknown token, or the seat is no longer held |
 | `RESERVATION_NOT_FOUND` | mode 5 |
 | `RESERVATION_EXPIRED` | mode 5 |
@@ -598,10 +599,33 @@ reason (a longer one ends in `...`). A client that never receives the
 | 1002 | protocol version not supported (§2.2) |
 | 1008 | protocol violation (§8.2) |
 | 1009 | a message exceeded the server's size limit |
+| 1013 | the server shed this connection for passing a limit (§8.4) |
 
-A client SHOULD treat 1001 and abnormal closes (1006, no close frame) as
-unexpected and reconnect (§7.3). It SHOULD NOT reconnect after 1002 or 1008,
-or after 1000 from the server.
+A client SHOULD treat 1001, 1013 and abnormal closes (1006, no close frame)
+as unexpected and reconnect (§7.3). It SHOULD NOT reconnect after 1002 or
+1008, or after 1000 from the server. After 1013 a client MAY wait longer
+than its usual backoff, since the server is already shedding load; the
+reference clients simply use their normal backoff.
+
+### 8.4 Limits
+
+A server MAY cap what one connection costs it, and close with **1013** when
+a cap is passed. The close reason says which one. Nothing about this is
+negotiated: the caps are the server's, a client cannot ask for them, and a
+client that stays within the protocol will not meet them. Two kinds exist:
+
+- **Reading too slowly.** Frames the server has sent but the client has not
+  read pile up. A server may stop sending that client `STATE_PATCH`es while
+  the backlog drains and then re-sync it with a fresh `STATE_SNAPSHOT`
+  (§11.9), which is why a snapshot may arrive at any time. If the backlog
+  keeps growing, the server closes with 1013.
+- **Sending too fast.** Too many frames, or too many bytes, in too short a
+  time closes the connection with 1013. Too many `JOIN`s instead fails
+  those joins with `RATE_LIMITED` (§8.1) and leaves the connection open.
+
+A client needs no special handling beyond treating 1013 as an unexpected
+close: reconnect (§7.3), ideally after a longer delay. There is no frame to
+implement.
 
 ---
 

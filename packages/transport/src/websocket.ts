@@ -241,6 +241,11 @@ export class WebSocketTransport implements ITransport {
     return this._clients.has(clientId)
   }
 
+  /** Bytes Bun has queued for this socket but not yet written (spec §6.9). */
+  public bufferedAmount(clientId: string): number {
+    return this._clients.get(clientId)?.getBufferedAmount() ?? 0
+  }
+
   /** The bound port (useful after `listen(0)`), or undefined if stopped. */
   public getPort(): number | undefined {
     return this._server?.port

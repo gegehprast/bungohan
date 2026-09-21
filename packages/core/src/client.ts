@@ -87,6 +87,13 @@ export class Client {
   public _queue: Uint8Array[] | undefined = []
   /** @internal True once a snapshot was sent on the current connection. */
   public _synced = false
+  /**
+   * @internal When this seat's socket fell behind and state sync was
+   * paused (spec §6.9), by the server's clock; undefined when keeping up.
+   * A paused seat is sent no patches, and gets a fresh snapshot once its
+   * queue drains, because patches are deltas and can't be skipped.
+   */
+  public _pausedSince: number | undefined
   /** @internal */
   public _reconnectionToken: string | undefined
   /** @internal The room this seat belongs to. */

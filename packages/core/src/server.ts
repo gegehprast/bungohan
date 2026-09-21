@@ -48,6 +48,7 @@ import {
 import { isRemoteConnection, RemoteConnection } from "./cluster/remote"
 import { BungohanError, type ErrorCode } from "./errors"
 import { HttpServer } from "./http"
+import { ConnectionLimiter } from "./limits"
 import { Logger } from "./logger"
 import { MatchMaker, setMatchMaker } from "./matchmaker"
 import {
@@ -59,11 +60,13 @@ import {
 import { Room, type RoomHost } from "./room"
 import { RoomManager } from "./room-manager"
 import type { RoomTypeDef } from "./room-type"
-import type {
-  DefineRoomOptions,
-  ErrorContext,
-  RoomClass,
-  ServerOptions,
+import {
+  type DefineRoomOptions,
+  type ErrorContext,
+  type ResolvedLimits,
+  type RoomClass,
+  resolveLimits,
+  type ServerOptions,
 } from "./types"
 
 const DEFAULT_PORT = 6060
@@ -168,6 +171,9 @@ export class BungohanServer {
   private readonly _matchMaker: MatchMaker
   private readonly _host: RoomHost
   private readonly _connections = new Map<string, Connection>()
+  private readonly _limits: ResolvedLimits
+  /** Inbound rate state, one per live connection (spec §6.9). */
+  private readonly _limiters = new Map<string, ConnectionLimiter>()
   /** Connections of *other* processes holding seats in rooms here (§6.4). */
   private readonly _remoteConnections = new Map<string, RemoteConnection>()
   private readonly _clusterTimings: ClusterTimings
@@ -187,6 +193,7 @@ export class BungohanServer {
   public constructor(options: ServerOptions = {}) {
     this._options = options
     this._clock = options.clock ?? new SystemClock()
+    this._limits = resolveLimits(options.limits)
     this._logger = new Logger(options.logger)
     this._serializer = options.serializer ?? new MessagePackSerializer()
     this._stateCodec = options.stateCodec ?? new SchemaCodec()
@@ -476,6 +483,7 @@ export class BungohanServer {
       bytesReceived: m.bytesReceived,
       bytesSent: m.bytesSent,
       totalErrors: m.totalErrors,
+      totalShed: m.totalShed,
       memoryUsage: {
         heapUsed: memory.heapUsed,
         heapTotal: memory.heapTotal,
@@ -546,6 +554,10 @@ export class BungohanServer {
     }
     const connection = new Connection(id, context, this._clock.now())
     this._connections.set(id, connection)
+    this._limiters.set(
+      id,
+      new ConnectionLimiter(this._limits, this._clock.now()),
+    )
     if (this._metrics !== undefined) this._metrics.totalConnections++
     this._emit(this._onConnect, connection)
   }
@@ -554,6 +566,7 @@ export class BungohanServer {
     const connection = this._connections.get(id)
     if (connection === undefined) return
     this._connections.delete(id)
+    this._limiters.delete(id)
     connection._open = false
     if (this._metrics !== undefined) this._metrics.totalDisconnections++
     for (const client of [...connection._seats.values()]) {
@@ -579,6 +592,14 @@ export class BungohanServer {
     if (metrics !== undefined) {
       metrics.totalMessages++
       metrics.bytesReceived += data.byteLength
+    }
+    // Charged before decoding, so a flood costs a clock read, not a parse.
+    const over = this._limiters
+      .get(id)
+      ?.frameProblem(data.byteLength, this._clock.now())
+    if (over !== undefined) {
+      this._shed(connection, over)
+      return
     }
     const frame = decodeFrame(data, CLIENT_FRAME_HEADERS)
     if (frame.isErr()) {
@@ -616,11 +637,22 @@ export class BungohanServer {
         }
         return
       }
-      case ClientFrameType.JOIN:
+      case ClientFrameType.JOIN: {
+        const limiter = this._limiters.get(id)
+        if (limiter !== undefined && !limiter.allowJoin(this._clock.now())) {
+          this._joinError(
+            connection,
+            ref,
+            "RATE_LIMITED",
+            "too many join attempts; try again shortly",
+          )
+          return
+        }
         void this._handleJoin(connection, ref, body).catch((error: unknown) =>
           this._report(error, { source: "protocol", connection }),
         )
         return
+      }
       case ClientFrameType.LEAVE: {
         const client = connection._seats.get(ref)
         if (client === undefined) {
@@ -662,6 +694,44 @@ export class BungohanServer {
    * frame arrives, so a client that only ever sees the close would
    * otherwise be left with a bare 1008 and no explanation.
    */
+  /**
+   * Drops a connection that is over a limit (spec §6.9): 1013, not the
+   * 1008 of a protocol violation, because nothing it sent was malformed
+   * and it may come back. No `ERROR` frame: it is already reading too
+   * slowly, or sending too fast to be listening.
+   */
+  private _shed(connection: Connection, why: string): void {
+    if (!connection._open) return
+    this._logger.warn(`shedding ${connection.id}: ${why}`)
+    this._metrics?.countShed()
+    connection._open = false
+    this._transport.disconnect(
+      connection.id,
+      CloseCode.TRY_AGAIN_LATER,
+      clipCloseReason(why),
+    )
+  }
+
+  /**
+   * Bytes queued for a connection, or `undefined` when this process can't
+   * know: a seat whose socket lives on another process is that process's
+   * to watch (spec §6.4, §6.9).
+   */
+  private _queuedFor(connection: Connection): number | undefined {
+    if (isRemoteConnection(connection)) return undefined
+    return this._transport.bufferedAmount(connection.id)
+  }
+
+  /** Sheds a connection whose queue has passed the hard limit. */
+  private _checkQueue(connection: Connection): void {
+    const limit = this._limits.disconnectBytes
+    if (limit <= 0 || !connection._open) return
+    const queued = this._queuedFor(connection)
+    if (queued !== undefined && queued > limit) {
+      this._shed(connection, `send queue over ${limit} bytes`)
+    }
+  }
+
   private _violation(connection: Connection, why: string): void {
     this._logger.warn(`protocol violation from ${connection.id}: ${why}`)
     if (isRemoteConnection(connection)) {
@@ -1568,6 +1638,9 @@ export class BungohanServer {
       maxCatchUpSteps: options.simulation?.maxCatchUpSteps ?? 5,
       syncTickRate: options.sync?.tickRate ?? 20,
       isShuttingDown: () => this._shuttingDown,
+      limits: this._limits,
+      queuedFor: (connection) => this._queuedFor(connection),
+      shed: (connection, why) => this._shed(connection, why),
       sendFrame: (connection, frame) => {
         if (!connection._open) return
         if (this._metrics !== undefined) {
@@ -1587,6 +1660,7 @@ export class BungohanServer {
         const sent = this._transport.send(connection.id, frame)
         if (sent.isErr())
           this._logger.debug(`send failed: ${sent.error.message}`)
+        this._checkQueue(connection)
       },
       broadcastFrame: (connections, frame) => {
         const ids: string[] = []
@@ -1616,6 +1690,9 @@ export class BungohanServer {
         const sent = this._transport.broadcast(ids, frame)
         if (sent.isErr()) {
           this._logger.debug(`broadcast failed: ${sent.error.message}`)
+        }
+        for (const connection of connections) {
+          if (!isRemoteConnection(connection)) this._checkQueue(connection)
         }
       },
       reportError: (error, context) => this._report(error, context),

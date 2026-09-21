@@ -100,6 +100,94 @@ export interface ServerOptions {
   logger?: LoggerOptions
   /** Time source for every loop and timeout. Default `SystemClock`. */
   clock?: Clock
+  /**
+   * Per-connection limits (spec §6.9). On by default, with headroom a
+   * normal game never reaches. `false` turns every limit off.
+   */
+  limits?: LimitOptions | false
+}
+
+/**
+ * Per-connection limits (spec §6.9). Every number is a maximum, and `0`
+ * means "no limit" for that one.
+ */
+export interface LimitOptions {
+  /**
+   * Outgoing bytes a connection may have queued. A client that stops
+   * reading (a backgrounded tab, a stalled link) would otherwise grow the
+   * server's memory without bound, because state patches can't simply be
+   * dropped: they are deltas, so a skipped one desyncs that client for
+   * good.
+   */
+  backpressure?: {
+    /**
+     * Above this, the client stops being sent state patches and gets a
+     * fresh snapshot once it drains. Default 262,144 (256 KiB).
+     */
+    pauseBytes?: number
+    /** Resume at or below this. Default 65,536 (64 KiB). */
+    resumeBytes?: number
+    /** Close (1013) above this, however briefly. Default 4,194,304 (4 MiB). */
+    disconnectBytes?: number
+    /** Close (1013) after this long paused. Default 15,000 ms. */
+    maxPausedMs?: number
+  }
+  /** Incoming frames, counted per connection. */
+  messages?: {
+    /** Sustained frames per second. Default 200. */
+    perSecond?: number
+    /** Frames a burst may add on top of the sustained rate. Default 400. */
+    burst?: number
+    /** Sustained bytes per second. Default 1,048,576 (1 MiB). */
+    bytesPerSecond?: number
+  }
+  /** `JOIN` frames, which are also what create rooms. */
+  joins?: {
+    /** Attempts per connection per minute. Default 60. */
+    perMinute?: number
+  }
+}
+
+/** {@link LimitOptions} with every default filled in; `0` means no limit. */
+export interface ResolvedLimits {
+  readonly pauseBytes: number
+  readonly resumeBytes: number
+  readonly disconnectBytes: number
+  readonly maxPausedMs: number
+  readonly messagesPerSecond: number
+  readonly messageBurst: number
+  readonly bytesPerSecond: number
+  readonly joinsPerMinute: number
+}
+
+const NO_LIMITS: ResolvedLimits = {
+  pauseBytes: 0,
+  resumeBytes: 0,
+  disconnectBytes: 0,
+  maxPausedMs: 0,
+  messagesPerSecond: 0,
+  messageBurst: 0,
+  bytesPerSecond: 0,
+  joinsPerMinute: 0,
+}
+
+/** Fills in {@link LimitOptions}; `false` disables every limit. */
+export function resolveLimits(
+  options: LimitOptions | false | undefined,
+): ResolvedLimits {
+  if (options === false) return NO_LIMITS
+  const backpressure = options?.backpressure
+  const messages = options?.messages
+  return {
+    pauseBytes: backpressure?.pauseBytes ?? 256 * 1024,
+    resumeBytes: backpressure?.resumeBytes ?? 64 * 1024,
+    disconnectBytes: backpressure?.disconnectBytes ?? 4 * 1024 * 1024,
+    maxPausedMs: backpressure?.maxPausedMs ?? 15_000,
+    messagesPerSecond: messages?.perSecond ?? 200,
+    messageBurst: messages?.burst ?? 400,
+    bytesPerSecond: messages?.bytesPerSecond ?? 1024 * 1024,
+    joinsPerMinute: options?.joins?.perMinute ?? 60,
+  }
 }
 
 /** Per room type (`defineRoomType`); every field is optional. */

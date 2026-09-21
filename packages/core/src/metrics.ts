@@ -22,6 +22,8 @@ export interface ServerMetrics {
   bytesReceived: number
   bytesSent: number
   totalErrors: number
+  /** Connections closed with 1013 for passing a limit (spec §6.9). */
+  totalShed: number
   memoryUsage: {
     heapUsed: number
     heapTotal: number
@@ -102,6 +104,8 @@ export class RoomStats {
   public readonly syncDuration = new Average()
   public readonly deltaBytes = new Average()
   public readonly snapshotBytes = new Average()
+  /** Times a seat's state sync was paused for backpressure (spec §6.9). */
+  public syncPauses = 0
 
   public constructor(now: number) {
     this.createdAt = now
@@ -135,10 +139,16 @@ export class MetricsCollector {
   public bytesReceived = 0
   public bytesSent = 0
   public totalErrors = 0
+  public totalShed = 0
 
   public constructor(clock: Clock) {
     this.clock = clock
     this.startedAt = clock.now()
+  }
+
+  /** A connection was shed for passing a limit (spec §6.9). */
+  public countShed(): void {
+    this.totalShed++
   }
 
   public uptimeSeconds(since = this.startedAt): number {

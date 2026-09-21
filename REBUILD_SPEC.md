@@ -1307,6 +1307,51 @@ A state first assigned in `onCreate` isn't visible to the probe. It is validated
 - `ServerHarness` / `createServerHarness({ define, server, transport })` is the server half of §11.2: a real `BungohanServer` on `LoopbackTransport` + `ManualClock`, with `connect()`, `tick(ms)`, `flush()`, `flushSync()`, `bytesSent()`/`bytesReceived()` (**[DECIDED]** semantics in §11.2: no shortcuts past the rooms' loops). **[DECIDED]** `createTestHarness` (with client-js) is built; see §11.2.
 - `TestClient` / `TestRoom` is a wire-level driver. It builds and parses frames byte by byte, keeps a replica with `applyDelta` (a fresh one per snapshot), decodes contract messages, and records raw frames for byte assertions. It stands in for client-js now and serves as an executable reference for non-JS client authors. **[DECIDED]** Like a real client, it picks the codec the handshake names from `DriverOptions.stateCodecs` (default `schema` and `messagepack`), leaves the seat with `CODEC_MISMATCH` when it lacks it, and encodes and decodes contract messages with it. A frame for a `roomRef` it doesn't hold is dropped silently (PROTOCOL.md §7.1), and a `JOIN_SUCCESS`/`JOIN_ERROR` for a JOIN it didn't send through `request()` is recorded in `unmatched`, not thrown.
 
+### 6.9 Per-connection limits — **[DECIDED]** (`packages/core`)
+
+A server with no limits can be exhausted by one connection: a client that
+stops reading makes the server queue frames for it without bound, and a
+client that floods makes it decode without bound. Both are **on by
+default** with headroom normal play never reaches (`ServerOptions.limits`,
+`false` to disable; every number `0` means "no limit").
+
+- **Why patches can't just be dropped.** State patches are deltas, so
+  skipping one desyncs that client permanently. A slow client is therefore
+  *paused* rather than skipped: above `pauseBytes` (default 256 KiB) the
+  seat leaves `generateDeltas` exactly as a reconnecting seat does, and at
+  or below `resumeBytes` (64 KiB) it returns through the snapshot path and
+  is re-synced in full. The two thresholds are hysteresis: one value would
+  re-snapshot a flapping client on every tick.
+- **Shedding.** A paused seat whose queue is still over `pauseBytes` after
+  `maxPausedMs` (15 s), or any connection over `disconnectBytes` (4 MiB) at
+  send time, is closed with **1013 `TRY_AGAIN_LATER`** (PROTOCOL.md §8.3),
+  not 1008: nothing it sent was malformed, and it may come back. No `ERROR`
+  frame is sent first, since the connection is already the problem.
+- **Inbound.** Token buckets per connection: `messages.perSecond` (200)
+  with `messages.burst` (400) on top, and `messages.bytesPerSecond` (1 MiB).
+  Both are charged **before the frame is decoded**, so a flood costs a clock
+  read rather than a parse. `joins.perMinute` (60) is separate and fails the
+  join with `RATE_LIMITED` instead of closing the connection: a bad join is
+  not a reason to drop a player who is otherwise fine.
+- **`ITransport.bufferedAmount(clientId)`** is how core sees a queue, and is
+  **required**, like `acceptProtocols`: a transport that answered `0` while
+  queueing without limit would silently defeat the whole mechanism.
+  `WebSocketTransport` returns Bun's `getBufferedAmount()`;
+  `LoopbackTransport` counts what `flush()` has not delivered.
+- **Cluster (§6.4).** The owning process cannot see a seat whose socket is
+  on another process, so `queuedFor` returns `undefined` there and the
+  pause never applies; the edge process, which owns that socket, still
+  enforces the hard limit. A remote seat is therefore shed rather than
+  paused. Noted as a limitation rather than solved: forwarding queue depth
+  would cost a backplane message per seat per tick.
+- **Metrics:** `ServerMetrics.totalShed`, and `RoomStats.syncPauses`.
+- **Testing:** `LoopbackTransport.stall(clientId)` / `unstall(clientId)`
+  simulate a client that has stopped reading, which is what backpressure is
+  about; `ServerHarness.tick` delivers in slices of one sync period rather
+  than all at the end, because a real socket drains while time passes and a
+  client that received nothing for a whole 60-second `tick` would otherwise
+  look like one that stopped reading.
+
 ## 7. `@bungohan/client-js` — Reference Client Implementation
 
 ### 7.1 Client — **[KEEP]**

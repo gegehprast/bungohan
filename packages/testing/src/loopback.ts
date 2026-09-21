@@ -79,6 +79,12 @@ export class LoopbackTransport implements ITransport {
   private readonly _maxFlushEvents: number
   private readonly _sockets = new Map<string, LoopbackSocket>()
   private readonly _queue: Event[] = []
+  /** Queued-but-undelivered bytes per client, for `bufferedAmount`. */
+  private readonly _buffered = new Map<string, number>()
+  /** Clients that are not reading: their frames stay queued (`stall`). */
+  private readonly _stalled = new Set<string>()
+  /** Frames held back for stalled clients, in order, per client. */
+  private readonly _held = new Map<string, Event[]>()
   private readonly _stats: LoopbackStats = {
     bytesToClients: 0,
     framesToClients: 0,
@@ -260,6 +266,15 @@ export class LoopbackTransport implements ITransport {
         if (this._queue.length === 0) return ok(delivered)
         continue
       }
+      if (event.to === "client" && this._stalled.has(event.socket.clientId)) {
+        // A client that has stopped reading: the frame stays queued (and
+        // counted by bufferedAmount), exactly like an unread socket.
+        const { clientId } = event.socket
+        const held = this._held.get(clientId)
+        if (held === undefined) this._held.set(clientId, [event])
+        else held.push(event)
+        continue
+      }
       if (++delivered > this._maxFlushEvents) {
         return err(
           new TransportError(
@@ -276,6 +291,25 @@ export class LoopbackTransport implements ITransport {
   /** Events waiting for `flush()`. */
   public pending(): number {
     return this._queue.length
+  }
+
+  /**
+   * Stops delivering to this client, so what the server sends piles up and
+   * `bufferedAmount` grows: a client that stopped reading (a backgrounded
+   * tab, a stalled link), which is what backpressure is about (spec §6.9).
+   * The server still thinks it is connected.
+   */
+  public stall(clientId: string): void {
+    this._stalled.add(clientId)
+  }
+
+  /** Lets a stalled client read again; held frames go out on the next flush. */
+  public unstall(clientId: string): void {
+    if (!this._stalled.delete(clientId)) return
+    const held = this._held.get(clientId)
+    if (held === undefined) return
+    this._held.delete(clientId)
+    this._queue.unshift(...held)
   }
 
   public stats(): LoopbackStats {
@@ -326,6 +360,11 @@ export class LoopbackTransport implements ITransport {
   private _toClient(socket: LoopbackSocket, data: Uint8Array): void {
     this._stats.bytesToClients += data.byteLength
     this._stats.framesToClients++
+    const { clientId } = socket
+    this._buffered.set(
+      clientId,
+      (this._buffered.get(clientId) ?? 0) + data.byteLength,
+    )
     this._queue.push({
       to: "client",
       kind: "message",
@@ -334,10 +373,27 @@ export class LoopbackTransport implements ITransport {
     })
   }
 
+  /**
+   * Bytes queued for this client that `flush()` hasn't delivered yet. A test
+   * that holds off flushing is how a slow reader is simulated (spec §6.9).
+   */
+  public bufferedAmount(clientId: string): number {
+    return this._buffered.get(clientId) ?? 0
+  }
+
+  private _delivered(socket: LoopbackSocket, bytes: number): void {
+    const { clientId } = socket
+    const left = (this._buffered.get(clientId) ?? 0) - bytes
+    if (left > 0) this._buffered.set(clientId, left)
+    else this._buffered.delete(clientId)
+  }
+
   private _deliver(event: Event): void {
     if (event.to === "client") {
-      if (event.kind === "message") event.socket._receive(event.data)
-      else event.socket._closed(event.code, event.reason)
+      if (event.kind === "message") {
+        this._delivered(event.socket, event.data.byteLength)
+        event.socket._receive(event.data)
+      } else event.socket._closed(event.code, event.reason)
       return
     }
     const { clientId } = event.socket

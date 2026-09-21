@@ -115,8 +115,28 @@ abstract class HarnessBase {
    */
   public async tick(ms: number): Promise<void> {
     await this.flush()
-    await this.clock.advance(ms)
+    // Delivered in slices, not all at the end: a real socket drains while
+    // time passes, and a client that received nothing for the whole span
+    // would look to the server like one that stopped reading (spec §6.9).
+    const step = this._deliveryStep()
+    for (let left = ms; left > 0; ) {
+      const slice = Math.min(step, left)
+      await this.clock.advance(slice)
+      await this.flush()
+      left -= slice
+    }
+    if (ms <= 0) await this.clock.advance(ms)
     await this.flush()
+  }
+
+  /** How far the clock may move between deliveries: one sync period. */
+  private _deliveryStep(): number {
+    let step = Number.POSITIVE_INFINITY
+    for (const room of this.server.getRoomManager().getRooms()) {
+      const period = room._syncPeriodMs
+      if (period !== undefined && period > 0) step = Math.min(step, period)
+    }
+    return Number.isFinite(step) ? Math.max(1, step) : Number.POSITIVE_INFINITY
   }
 
   /**

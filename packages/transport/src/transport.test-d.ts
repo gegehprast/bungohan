@@ -11,6 +11,7 @@ const base = {
   send: (): Result<void, Error> => ok(undefined),
   broadcast: (): Result<void, Error> => ok(undefined),
   disconnect: (): Result<void, Error> => ok(undefined),
+  bufferedAmount: () => 0,
   getName: () => "custom",
 }
 
@@ -36,5 +37,6 @@ export class MissingTransport implements ITransport {
   public send = base.send
   public broadcast = base.broadcast
   public disconnect = base.disconnect
+  public bufferedAmount = base.bufferedAmount
   public getName = base.getName
 }

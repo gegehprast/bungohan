@@ -48,12 +48,14 @@ import {
   type RoomTypeDef,
   validateStateClass,
 } from "./room-type"
-import type {
-  ErrorContext,
-  ErrorSource,
-  RoomOnCreateOptions,
-  UserDefinedRoomOnCreateOptions,
-  UserDefinedRoomOnJoinOptions,
+import {
+  type ErrorContext,
+  type ErrorSource,
+  type ResolvedLimits,
+  type RoomOnCreateOptions,
+  resolveLimits,
+  type UserDefinedRoomOnCreateOptions,
+  type UserDefinedRoomOnJoinOptions,
 } from "./types"
 
 /** What a room needs from its server. Internal: implemented by `BungohanServer`. */
@@ -68,6 +70,15 @@ export interface RoomHost {
   readonly maxCatchUpSteps: number
   readonly syncTickRate: number
   isShuttingDown(): boolean
+  /** Per-connection limits (spec §6.9). */
+  readonly limits: ResolvedLimits
+  /**
+   * Bytes queued for this connection, or `undefined` when this process
+   * can't know (a seat whose socket is on another process).
+   */
+  queuedFor(connection: Connection): number | undefined
+  /** Closes a connection that is over a limit, with 1013 (spec §6.9). */
+  shed(connection: Connection, why: string): void
   sendFrame(connection: Connection, frame: Uint8Array): void
   broadcastFrame(connections: Connection[], frame: Uint8Array): void
   reportError(error: unknown, context: ErrorContext): void
@@ -1085,6 +1096,46 @@ export abstract class Room<
   }
 
   /**
+   * Pauses, resumes or sheds seats by how much they have queued (spec
+   * §6.9). A paused seat is taken out of `generateDeltas` the same way a
+   * reconnecting one is, and comes back through the snapshot path, because
+   * patches are deltas: skipping one would desync that client for good.
+   */
+  private _applyBackpressure(host: RoomHost): void {
+    const limits = host.limits
+    if (limits.pauseBytes <= 0) return
+    const now = host.clock.now()
+    for (const client of this.clients.values()) {
+      const connection = client._connection
+      if (client._status !== "joined" || connection === undefined) continue
+      const queued = host.queuedFor(connection)
+      if (queued === undefined) continue // socket on another process
+      if (client._pausedSince === undefined) {
+        if (queued <= limits.pauseBytes) continue
+        client._pausedSince = now
+        client._synced = false
+        const stats = this._stats
+        if (stats !== undefined) stats.syncPauses++
+        host.logger.debug(
+          `sync paused for ${client.sessionId}: ${queued} bytes queued`,
+        )
+        continue
+      }
+      if (queued <= limits.resumeBytes) {
+        // Drained: the snapshot pass re-syncs it from scratch.
+        client._pausedSince = undefined
+        continue
+      }
+      if (
+        limits.maxPausedMs > 0 &&
+        now - client._pausedSince > limits.maxPausedMs
+      ) {
+        host.shed(connection, `read too slowly for ${limits.maxPausedMs}ms`)
+      }
+    }
+  }
+
+  /**
    * @internal One sync boundary (spec §5.7.10, §6.7.2): patches to clients
    * that have a snapshot, `clearChangeTrees`, then snapshots for clients
    * waiting for one. Sends nothing on an idle tick.
@@ -1096,6 +1147,8 @@ export abstract class Room<
     const start = stats === undefined ? 0 : host.clock.now()
     this._hook("onBeforeSync", () => this.onBeforeSync())
     this._adoptReplacedState()
+
+    this._applyBackpressure(host)
 
     const root = this._root
     if (root !== undefined) {
@@ -1128,6 +1181,8 @@ export abstract class Room<
     for (const client of this.clients.values()) {
       if (client._status !== "joined" || client._synced) continue
       if (client._connection === undefined) continue
+      // Still draining: a snapshot now would only add to the queue.
+      if (client._pausedSince !== undefined) continue
       let ops: WireOp[] = []
       if (root !== undefined) {
         const snapshot = encodeSnapshot(root, client)
@@ -1557,6 +1612,9 @@ function detachedHost(): RoomHost {
     maxCatchUpSteps: 5,
     syncTickRate: 20,
     isShuttingDown: () => false,
+    limits: resolveLimits(undefined),
+    queuedFor: () => undefined,
+    shed: () => {},
     sendFrame: () => {},
     broadcastFrame: () => {},
     reportError: (error, context) =>

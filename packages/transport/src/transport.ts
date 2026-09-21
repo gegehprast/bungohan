@@ -64,5 +64,16 @@ export interface ITransport {
    * connection without one. `negotiateProtocol` does the choosing.
    */
   acceptProtocols(protocols: readonly string[]): void
+  /**
+   * Bytes accepted for this client but not yet written to its socket, so
+   * core can tell a client that has stopped reading from one that is
+   * keeping up (spec §6.9). `0` for an unknown or disconnected client, and
+   * for a transport that delivers synchronously and never queues.
+   *
+   * Required, not optional: a transport that always answered `0` while
+   * queueing without limit would let one slow client grow the server's
+   * memory until it died, which is what this guards against.
+   */
+  bufferedAmount(clientId: string): number
   getName(): string
 }
