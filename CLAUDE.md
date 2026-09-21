@@ -47,6 +47,7 @@ clients/csharp   clients/godot   clients/fixtures      # outside the Bun workspa
 ## Commands
 
 ```sh
+bun run verify                  # ALL SIX CHECKS — run this before calling anything done
 bun test                        # all tests
 bun --filter @bungohan/state test
 bun run check                   # biome check --write
@@ -59,7 +60,7 @@ bun run codegen:interop         # same, for the interop test server's bindings
 
 When a change touches `clients/`, `packages/codegen`, PROTOCOL.md or the vectors, also run the C# and Godot runners (`tests/run_vectors.gd` alone runs just the vectors). Both `test:*` scripts boot a real server through `scripts/interop.ts` (`packages/testing/src/interop/`) and pass its URL as `BUNGOHAN_INTEROP_URL`; the server-side `behavior` vectors and the end-to-end suites need it, and skip without it. `UPDATE_GOLDEN=1 bun test packages/codegen` rewrites the codegen goldens; review their diff.
 
-**Before considering any task done, run `bun test` and `bunx tsc --noEmit` and make them pass.** Writing tests without running them doesn't count as verification.
+**Before considering any task done, run `bun run verify` and make it pass.** It runs all six checks the same way every time: `bun test` (with `REDIS_URL`, and it fails if anything was skipped), `tsc --noEmit`, `biome check`, `test:csharp`, `test:godot`, and `check:browser`. Don't substitute a subset: `bun test` alone silently skips the Redis suites and still reports success. If Valkey/Redis or Chromium genuinely isn't available, pass `--no-redis` / `--no-browser`; those show as SKIPPED, and your summary must say so. Writing tests without running them doesn't count as verification.
 
 ## Code style
 

@@ -4,6 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "verify": "bun scripts/verify.ts",
     "test": "bun test",
     "check": "bunx --bun biome check --write",
     "format": "bunx --bun biome format --write",
