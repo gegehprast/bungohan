@@ -13,14 +13,14 @@
     "bun"
   ],
   "license": "MIT",
-  "homepage": "https://github.com/gegehprast/bungohan-alpha2/tree/main/packages/backplane#readme",
+  "homepage": "https://github.com/gegehprast/bungohan/tree/main/packages/backplane#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/gegehprast/bungohan-alpha2.git",
+    "url": "git+https://github.com/gegehprast/bungohan.git",
     "directory": "packages/backplane"
   },
   "bugs": {
-    "url": "https://github.com/gegehprast/bungohan-alpha2/issues"
+    "url": "https://github.com/gegehprast/bungohan/issues"
   },
   "type": "module",
   "sideEffects": false,

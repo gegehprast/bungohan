@@ -40,4 +40,4 @@ export async function version(): Promise<string> {
 }
 
 /** `https://github.com/<owner>/<repo>`, from the manifests' repository field. */
-export const REPO_URL = "https://github.com/gegehprast/bungohan-alpha2"
+export const REPO_URL = "https://github.com/gegehprast/bungohan"

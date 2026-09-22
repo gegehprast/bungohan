@@ -36,6 +36,8 @@ export async function docFiles(root = ROOT): Promise<string[]> {
   for await (const path of new Bun.Glob("packages/*/README.md").scan(root)) {
     files.push(path)
   }
+  // The repo's front page: its example and links must not rot either.
+  files.push("README.md")
   return files.sort()
 }
 

@@ -13,14 +13,14 @@
     "codec"
   ],
   "license": "MIT",
-  "homepage": "https://github.com/gegehprast/bungohan-alpha2/tree/main/packages/serializer#readme",
+  "homepage": "https://github.com/gegehprast/bungohan/tree/main/packages/serializer#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/gegehprast/bungohan-alpha2.git",
+    "url": "git+https://github.com/gegehprast/bungohan.git",
     "directory": "packages/serializer"
   },
   "bugs": {
-    "url": "https://github.com/gegehprast/bungohan-alpha2/issues"
+    "url": "https://github.com/gegehprast/bungohan/issues"
   },
   "type": "module",
   "sideEffects": false,

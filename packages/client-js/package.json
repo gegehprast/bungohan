@@ -13,14 +13,14 @@
     "websocket"
   ],
   "license": "MIT",
-  "homepage": "https://github.com/gegehprast/bungohan-alpha2/tree/main/packages/client-js#readme",
+  "homepage": "https://github.com/gegehprast/bungohan/tree/main/packages/client-js#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/gegehprast/bungohan-alpha2.git",
+    "url": "git+https://github.com/gegehprast/bungohan.git",
     "directory": "packages/client-js"
   },
   "bugs": {
-    "url": "https://github.com/gegehprast/bungohan-alpha2/issues"
+    "url": "https://github.com/gegehprast/bungohan/issues"
   },
   "type": "module",
   "sideEffects": false,
