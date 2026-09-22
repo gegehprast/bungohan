@@ -204,6 +204,36 @@ describe("a draining process takes no new rooms", () => {
   })
 })
 
+describe("query()", () => {
+  test("leaves out a draining process's rooms unless asked", async () => {
+    const c = await cluster(3, false)
+    const kept = (await c.run(mm(c, 1).createRoom("game"))).unwrap()
+    const drained = (await c.run(mm(c, 2).createRoom("game"))).unwrap()
+    void c.node(2).server.drain()
+    await c.flush()
+
+    const listed = (await c.run(mm(c, 0).query({ type: "game" }))).unwrap()
+    expect(listed.map((r) => [r.id, r.draining])).toEqual([[kept.id, false]])
+    // Asked from the draining process itself, too.
+    const fromIt = (await c.run(mm(c, 2).query({ type: "game" }))).unwrap()
+    expect(fromIt.map((r) => r.id)).toEqual([kept.id])
+
+    const all = (
+      await c.run(mm(c, 0).query({ type: "game", includeDraining: true }))
+    ).unwrap()
+    expect(all.map((r) => [r.id, r.processId, r.draining]).sort()).toEqual(
+      [
+        [kept.id, "p1", false],
+        [drained.id, "p2", true],
+      ].sort(),
+    )
+    // What a tool finds that way can still be joined by id.
+    const joined = await (await c.connect(0)).joinById(drained.id, {}, game)
+    expect(joined.isOk() && joined.value.id).toBe(drained.id)
+    await c.stop()
+  })
+})
+
 describe("explicit paths keep working on a draining process", () => {
   test("joinById, reconnection and an earlier reservation", async () => {
     const c = await cluster(3, false)

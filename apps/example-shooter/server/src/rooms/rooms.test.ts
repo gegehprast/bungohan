@@ -13,7 +13,11 @@ import {
   ROOM_TYPE,
   shooterContract,
 } from "@bungohan/example-shooter-shared"
-import { createTestHarness, type TestHarness } from "@bungohan/testing"
+import {
+  createClusterHarness,
+  createTestHarness,
+  type TestHarness,
+} from "@bungohan/testing"
 import { setupShooterServer } from "../app"
 
 type ShooterView = IRoom<GameState, typeof shooterContract>
@@ -234,6 +238,78 @@ describe("lobby", () => {
     await open.leave()
     await h.tick(GAME_CONFIG.LOBBY_REFRESH_MS)
     expect(watcher.state.rooms.size).toBe(0)
+  })
+
+  test("stops listing rooms while the server drains; codes still work", async () => {
+    const watcher = (
+      await (await player()).joinOrCreate(ROOM_TYPE.LOBBY, {}, lobby)
+    ).unwrap()
+    const open = await createGame(await player(), "Alice")
+    await h.tick(GAME_CONFIG.LOBBY_REFRESH_MS)
+    expect([...watcher.state.rooms.keys()]).toEqual([open.id])
+
+    void h.server.drain()
+    await h.tick(GAME_CONFIG.LOBBY_REFRESH_MS)
+    expect(watcher.state.rooms.size).toBe(0)
+
+    // An invite by code still finds it, and joining by id still works.
+    const found: string[] = []
+    watcher.onMessage("roomFound", ({ roomId }) => found.push(roomId))
+    watcher.send("joinByCode", { roomCode: open.state.roomCode.get() })
+    await h.tick(50)
+    expect(found).toEqual([open.id])
+    const bob = await (await player()).joinById(
+      open.id,
+      { playerName: "Bob" },
+      shooter,
+    )
+    expect(bob.isOk()).toBe(true)
+
+    h.server.cancelDrain()
+    await h.tick(GAME_CONFIG.LOBBY_REFRESH_MS)
+    expect([...watcher.state.rooms.keys()]).toEqual([open.id])
+  })
+})
+
+describe("lobby in a cluster", () => {
+  test("a lobby leaves out rooms on a draining process", async () => {
+    const c = await createClusterHarness({
+      size: 2,
+      define: (server) => setupShooterServer(server, { log: false }),
+      client: { pingInterval: 0, logger: { warn() {}, error() {} } },
+    })
+    // A lobby refresh, plus the 200 ms its cluster-wide query collects.
+    const relist = () => c.tick(GAME_CONFIG.LOBBY_REFRESH_MS + 200)
+    const watcher = (
+      await (await c.connect(0)).joinOrCreate(ROOM_TYPE.LOBBY, {}, lobby)
+    ).unwrap()
+    // A game on the other process.
+    const alice = await c.connect(1)
+    const open = (
+      await alice.create(
+        ROOM_TYPE.SHOOTER,
+        {
+          create: { maxPlayers: 4, isPrivate: false },
+          join: { playerName: "A" },
+        },
+        shooter,
+      )
+    ).unwrap()
+    expect(c.node(1).server.getMatchMaker().getRoom(open.id)).toBeDefined()
+    await relist()
+    expect([...watcher.state.rooms.keys()]).toEqual([open.id])
+
+    void c.node(1).server.drain()
+    await relist()
+    expect(watcher.state.rooms.size).toBe(0)
+    // The game itself is untouched, and still reachable by id.
+    const bob = await (await c.connect(0)).joinById(
+      open.id,
+      { playerName: "B" },
+      shooter,
+    )
+    expect(bob.isOk()).toBe(true)
+    await c.stop()
   })
 })
 

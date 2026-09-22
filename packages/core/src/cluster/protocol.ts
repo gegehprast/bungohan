@@ -230,6 +230,8 @@ export interface QueryRequest extends Envelope {
   roomType: string
   metadata?: Record<string, unknown>
   includePrivate: boolean
+  /** A draining process answers with no rooms unless this is set. */
+  includeDraining: boolean
 }
 
 export interface QueryReply extends Envelope {

@@ -83,8 +83,11 @@ export async function openMatches(map: "dunes" | "docks") {
 <!-- /snippet -->
 
 Each listing (`RoomListingInfo`) has `id`, `type`, `clients`,
-`maxClients`, `visibility`, `locked`, `metadata` and `processId`. Private
-rooms are left out unless you pass `includePrivate: true`. Clients can't
+`maxClients`, `visibility`, `locked`, `metadata`, `processId` and
+`draining`. Private rooms are left out unless you pass
+`includePrivate: true`, and rooms on a
+[draining](scaling.md#draining-a-process) process unless you pass
+`includeDraining: true`. Clients can't
 query directly: a lobby room that sends them the list is the usual way.
 
 Get the matchmaker from `server.getMatchMaker()`, or `getMatchMaker()`

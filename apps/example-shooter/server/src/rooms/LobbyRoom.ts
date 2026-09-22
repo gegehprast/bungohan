@@ -25,11 +25,13 @@ export class LobbyRoom extends Room<LobbyState, typeof lobbyContract> {
 
     this.onMessage("joinByCode", async (client, { roomCode }) => {
       const code = roomCode.trim().toUpperCase()
-      // Private rooms too: a code is how you get into one.
+      // Private rooms, and rooms on a draining server, too: a code is an
+      // invite, and invites keep working while a server drains.
       const found = await getMatchMaker().query({
         type: ROOM_TYPE.SHOOTER,
         metadata: { code },
         includePrivate: true,
+        includeDraining: true,
         limit: 1,
       })
       const room = found.isOk() ? found.value[0] : undefined
@@ -52,6 +54,8 @@ export class LobbyRoom extends Room<LobbyState, typeof lobbyContract> {
   }
 
   private async refresh(): Promise<void> {
+    // Rooms on a draining server are left out, so the lobby stops sending
+    // new players to a server that is trying to empty for a deploy.
     const listed = await getMatchMaker().query({ type: ROOM_TYPE.SHOOTER })
     if (listed.isErr() || this.isDisposed) return
 

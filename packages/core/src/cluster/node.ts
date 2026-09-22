@@ -74,6 +74,7 @@ export interface ClusterHandlers {
     roomType: string,
     metadata: Record<string, unknown> | undefined,
     includePrivate: boolean,
+    includeDraining: boolean,
   ): RoomListingInfo[]
   /** Creates a room here, for a peer's `createRoom`. */
   createRoom(
@@ -330,6 +331,7 @@ export class ClusterNode {
     roomType: string,
     metadata: Record<string, unknown> | undefined,
     includePrivate: boolean,
+    includeDraining: boolean,
   ): Promise<RoomListingInfo[]> {
     if (!this._running) return []
     const { rid, answer } = this._pending.gather<RoomListingInfo[]>(
@@ -341,6 +343,7 @@ export class ClusterNode {
       roomType,
       ...(metadata === undefined ? {} : { metadata }),
       includePrivate,
+      includeDraining,
     })
     return (await answer).flat()
   }
@@ -594,6 +597,7 @@ export class ClusterNode {
             message.roomType,
             message.metadata,
             message.includePrivate,
+            message.includeDraining === true,
           ),
         })
         return

@@ -1678,8 +1678,13 @@ export class BungohanServer {
         this._shuttingDown
           ? undefined
           : this._matchMaker._findAvailable(roomType, exclude)?.id,
-      listRooms: (roomType, metadata, includePrivate) =>
-        this._matchMaker._listLocal(roomType, metadata, includePrivate),
+      listRooms: (roomType, metadata, includePrivate, includeDraining) =>
+        this._matchMaker._listLocal(
+          roomType,
+          metadata,
+          includePrivate,
+          includeDraining,
+        ),
       createRoom: (roomType, options) =>
         this._clusterCreateRoom(roomType, options),
       reserve: (roomId, options) => this._clusterReserve(roomId, options),

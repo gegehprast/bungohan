@@ -165,7 +165,13 @@ it already runs carries on:
   static `onAuth`, `onCreate`, then `onJoin`). The client doesn't notice.
 - **Matchmaking steers away from it.** `joinOrCreate`, `joinRoom` and
   `reserve` no longer pick its rooms, so random matchmaking stops feeding
-  it.
+  it. `matchMaker.query()` leaves them out too, so a lobby that lists
+  rooms and sends players to one by id stops sending them there. Without
+  that, the drain would only end at its timeout.
+- **Tools can still see every room.** `query({ type, includeDraining:
+  true })` lists them all, and each listing's `draining` field says which
+  are on a draining process. Use it for an admin view, or to resolve an
+  invite such as a room code, since invites still work.
 - **Explicit paths keep working.** `joinById` (an invite), reconnection,
   and reservations made before the drain all still reach its rooms, so
   draining never breaks a game in progress or a player's reconnect.
@@ -286,6 +292,3 @@ clock). `cluster.kill(index)` makes a process vanish, to test failures.
   If that matters, route a room type's matchmaking through one process.
 - A custom `ServerOptions.serializer` must carry binary data unchanged.
   `start()` checks it and refuses to start a cluster otherwise.
-- `matchMaker.query()` still lists a draining process's rooms, and
-  `joinById` still joins them. A lobby that lists rooms for players to
-  pick keeps showing them until they end.

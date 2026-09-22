@@ -179,6 +179,27 @@ describe("draining a single process", () => {
     await h.stop()
   })
 
+  test("query() leaves out rooms while draining unless asked", async () => {
+    const { h, join } = await setup()
+    const mm = h.server.getMatchMaker()
+    const room = await join()
+    const before = (await mm.query({ type: "game" })).unwrap()
+    expect(before.map((r) => [r.id, r.draining])).toEqual([
+      [room.roomId, false],
+    ])
+
+    void h.server.drain()
+    expect((await mm.query({ type: "game" })).unwrap()).toEqual([])
+    const all = (
+      await mm.query({ type: "game", includeDraining: true })
+    ).unwrap()
+    expect(all.map((r) => [r.id, r.draining])).toEqual([[room.roomId, true]])
+    // A listing opted into is still joinable by id.
+    const byId = await h.connect().joinById(room.roomId, {}, game)
+    expect(byId.isOk()).toBe(true)
+    await h.stop()
+  })
+
   test("drain() on a stopped server is INVALID_STATE", async () => {
     const { h } = await setup()
     await h.stop()

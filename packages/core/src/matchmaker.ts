@@ -254,16 +254,19 @@ export class MatchMaker {
    * Ready, undisposed rooms of the type, from this process and (in cluster
    * mode) every process that answers within the collection window. Custom
    * `filters` run here, over the merged list, since a filter is a function
-   * this process holds; `metadata` is matched on each process.
+   * this process holds; `metadata` is matched on each process. Rooms on
+   * draining processes are left out unless `includeDraining` is set.
    */
   public async query(
     options: MatchMakerQueryOptions,
   ): Promise<Result<RoomListingInfo[], BungohanError>> {
     const includePrivate = options.includePrivate === true
+    const includeDraining = options.includeDraining === true
     const listings = this._listLocal(
       options.type,
       options.metadata,
       includePrivate,
+      includeDraining,
     )
     const cluster = this._deps.cluster()
     if (cluster !== undefined) {
@@ -272,6 +275,7 @@ export class MatchMaker {
           options.type,
           options.metadata,
           includePrivate,
+          includeDraining,
         )),
       )
     }
@@ -605,13 +609,19 @@ export class MatchMaker {
     return undefined
   }
 
-  /** @internal This process's listings, for a peer's `query`. */
+  /**
+   * @internal This process's listings, for a peer's `query`. None while it
+   * drains, unless the caller asked for draining rooms: filtered here, at
+   * the source, so they don't cross the backplane for nothing.
+   */
   public _listLocal(
     roomType: string,
     metadata: Record<string, unknown> | undefined,
     includePrivate: boolean,
+    includeDraining: boolean,
   ): RoomListingInfo[] {
     const out: RoomListingInfo[] = []
+    if (this._deps.draining() && !includeDraining) return out
     for (const room of this._deps.manager.getRooms()) {
       if (room.roomType !== roomType || room.isDisposed) continue
       if (!room._isReady) continue
@@ -883,6 +893,7 @@ export class MatchMaker {
       locked: room.locked,
       metadata: { ...room.metadata },
       processId: this._deps.processId,
+      draining: this._deps.draining(),
     }
   }
 }

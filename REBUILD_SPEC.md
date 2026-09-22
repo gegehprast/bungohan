@@ -1164,8 +1164,17 @@ Semantics:
   `_findOrCreate` now retries on it as on `ROOM_FULL`). "Prefer" was
   read strictly — there is **no fallback into a draining room** when
   nothing else exists: filling its rooms would keep it alive and make the
-  drain unbounded. `query()` still lists its rooms (informational), which
-  is documented.
+  drain unbounded. **`query()` leaves out a draining process's rooms by
+  default** (a first cut listed them as "informational", but a lobby that
+  lists with `query()` and joins by id, like `apps/example-shooter`'s,
+  then kept feeding the drain until its timeout). The opt-in is
+  `MatchMakerQueryOptions.includeDraining`, and `RoomListingInfo.draining`
+  says which listed rooms are draining (always false without the
+  opt-in). The filter runs at the **source**: `q?` carries
+  `includeDraining`, and a draining process answers with no rooms rather
+  than shipping listings the requester would drop. `joinById` is
+  unaffected, so a listing opted into is still joinable. The shooter's
+  code lookup opts in (a room code is an invite); its public list doesn't.
 - **Explicit paths are untouched**: `joinById` (client and matchmaker),
   reconnection, consuming a reservation made before the drain, and
   `RoomProxy` control. `_route` refuses only on `_shuttingDown`, as
@@ -1225,10 +1234,13 @@ draining excluded from selection; `createRoom` and a client's
 `onAuth` run once on the owner; a refusing candidate skipped; matchmaking
 and `reserve` avoiding draining rooms while `joinById`, reconnection and
 an earlier reservation work; `drain()` on the last room and on timeout;
-every process draining; the three races), `core/drain.test.ts`
-(single-process drain, metadata limits, `/ready`, drain-first SIGTERM
-including the timeout and a second signal) and two cases in
-`redis.integration.test.ts`. Each owner-side draining guard was checked
+every process draining; the three races; `query()` with and without
+`includeDraining`), `core/drain.test.ts` (single-process drain, `query()`,
+metadata limits, `/ready`, drain-first SIGTERM including the timeout and
+a second signal), two cases in `redis.integration.test.ts`, and the
+shooter lobby (`apps/example-shooter/server/src/rooms/rooms.test.ts`)
+dropping a draining room from its list, single-process and across two
+processes, while its code lookup and `joinById` still reach it. Each owner-side draining guard was checked
 by disabling it: a race test fails for each.
 
 ### 6.5 Error codes

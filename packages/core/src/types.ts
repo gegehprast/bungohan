@@ -392,6 +392,12 @@ export interface RoomListingInfo {
   metadata: Record<string, unknown>
   /** The process the room runs on (this one, outside cluster mode). */
   processId: string
+  /**
+   * True when that process is draining (`server.drain()`): the room still
+   * runs and `joinById` still reaches it, but it wants no new players.
+   * Only listed with `includeDraining`, so this is false otherwise.
+   */
+  draining: boolean
 }
 
 /**
@@ -460,6 +466,15 @@ export interface MatchMakerQueryOptions {
   limit?: number
   /** Include private rooms. Default false. */
   includePrivate?: boolean
+  /**
+   * Include rooms on draining processes (`server.drain()`). Default
+   * false: a lobby that lists rooms and sends players to them by id would
+   * otherwise keep feeding a process that is trying to empty, so its
+   * drain ends only at its timeout. Pass true for tools that need every
+   * room (an admin view, a room-code lookup for an invite); the listings
+   * say which rooms are draining.
+   */
+  includeDraining?: boolean
 }
 
 /** Where an error reported to `server.onError` came from. */
