@@ -1,0 +1,48 @@
+{
+  // Base for the per-package `tsconfig.build.json` files, used only by
+  // `bun run build`. The monorepo itself never needs a build: packages are
+  // resolved to their raw TypeScript through the workspace symlinks and the
+  // `main`/`exports` fields, and the root `tsconfig.json` type checks that.
+  //
+  // `paths` points every cross-package import at the *built* declarations of
+  // its sibling, so each package is compiled against the same `.d.ts` a user
+  // installing from npm will see. That means packages must be built in
+  // dependency order (scripts/build.ts does this).
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM"],
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "verbatimModuleSyntax": true,
+
+    "declaration": true,
+    "declarationMap": false,
+    "inlineSources": true,
+    "sourceMap": true,
+    "noEmit": false,
+    // Emitting means no `.ts` specifiers: they would survive into the output.
+    "allowImportingTsExtensions": false,
+
+    "strict": true,
+    "skipLibCheck": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+
+    "paths": {
+      "@bungohan/backplane": ["./packages/backplane/dist/index.d.ts"],
+      "@bungohan/client-js": ["./packages/client-js/dist/index.d.ts"],
+      "@bungohan/client-js/react": ["./packages/client-js/dist/react/index.d.ts"],
+      "@bungohan/core": ["./packages/core/dist/index.d.ts"],
+      "@bungohan/result": ["./packages/result/dist/index.d.ts"],
+      "@bungohan/schema": ["./packages/schema/dist/index.d.ts"],
+      "@bungohan/serializer": ["./packages/serializer/dist/index.d.ts"],
+      "@bungohan/state": ["./packages/state/dist/index.d.ts"],
+      "@bungohan/store": ["./packages/store/dist/index.d.ts"],
+      "@bungohan/transport": ["./packages/transport/dist/index.d.ts"],
+      "@bungohan/types": ["./packages/types/dist/index.d.ts"]
+    }
+  }
+}

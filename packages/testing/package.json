@@ -1,12 +1,57 @@
 {
   "name": "@bungohan/testing",
-  "version": "0.0.0",
+  "version": "0.1.0-alpha.1",
+  "description": "In-process test harness for Bungohan: a real server and real clients on one manual clock",
+  "keywords": [
+    "bungohan",
+    "multiplayer",
+    "game-server",
+    "realtime",
+    "testing",
+    "harness",
+    "deterministic",
+    "bun"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/gegehprast/bungohan-alpha2/tree/main/packages/testing#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gegehprast/bungohan-alpha2.git",
+    "directory": "packages/testing"
+  },
+  "bugs": {
+    "url": "https://github.com/gegehprast/bungohan-alpha2/issues"
+  },
   "type": "module",
+  "sideEffects": false,
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": "./src/index.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "main": "./dist/index.js",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./package.json": "./package.json"
+    }
+  },
+  "engines": {
+    "bun": ">=1.3.3"
+  },
   "scripts": {
-    "test": "bun test"
+    "test": "bun test",
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "bun ../../scripts/guard-publish.ts"
   },
   "dependencies": {
     "@bungohan/backplane": "workspace:*",
@@ -18,10 +63,6 @@
     "@bungohan/transport": "workspace:*",
     "@bungohan/types": "workspace:*"
   },
-  "engines": {
-    "bun": ">=1.3.3"
-  },
-  "license": "MIT",
   "devDependencies": {
     "@bungohan/store": "workspace:*",
     "@happy-dom/global-registrator": "catalog:",

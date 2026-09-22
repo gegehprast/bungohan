@@ -1,0 +1,21 @@
+{
+  // The app's own check: does game code written against the *published*
+  // declarations compile? Run under TypeScript 7 and under the latest 5.x.
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM"],
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "skipLibCheck": true,
+    "types": ["bun"]
+  },
+  "include": ["src"],
+  "exclude": ["src/typecheck-node16.ts", "src/typecheck-dts.ts"]
+}

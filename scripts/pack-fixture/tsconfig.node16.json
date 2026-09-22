@@ -1,0 +1,13 @@
+{
+  // The same declarations under Node's own resolution rules, where a
+  // relative specifier must carry its extension. `bundler` forgives an
+  // unextended `./room` in a published .d.ts; `node16` does not.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "node16",
+    "moduleResolution": "node16",
+    "verbatimModuleSyntax": false
+  },
+  "include": ["src/typecheck-node16.ts"],
+  "exclude": []
+}

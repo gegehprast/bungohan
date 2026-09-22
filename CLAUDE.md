@@ -50,7 +50,7 @@ clients/csharp   clients/godot   clients/fixtures      # outside the Bun workspa
 ## Commands
 
 ```sh
-bun run verify                  # ALL SEVEN CHECKS — run this before calling anything done
+bun run verify                  # ALL EIGHT CHECKS — run this before calling anything done
 bun test                        # all tests
 bun --filter @bungohan/state test
 bun run check                   # biome check --write
@@ -59,11 +59,23 @@ bun run test:csharp             # interop server + dotnet run --project clients/
 bun run test:godot              # interop server + godot-mono --headless --script tests/run_all.gd
 bun run codegen:example         # regenerate the example bindings after a codegen or shared-module change
 bun run codegen:interop         # same, for the interop test server's bindings
+bun run build                   # tsc → packages/*/dist (ESM + .d.ts); the repo itself never needs it
+bun run pack                    # → .pack/*.tgz, exactly what gets published
+bun run check:pack              # install those tarballs in a fresh project outside the repo and prove them
 ```
 
 When a change touches `clients/`, `packages/codegen`, PROTOCOL.md or the vectors, also run the C# and Godot runners (`tests/run_vectors.gd` alone runs just the vectors). Both `test:*` scripts boot a real server through `scripts/interop.ts` (`packages/testing/src/interop/`) and pass its URL as `BUNGOHAN_INTEROP_URL`; the server-side `behavior` vectors and the end-to-end suites need it, and skip without it. `UPDATE_GOLDEN=1 bun test packages/codegen` rewrites the codegen goldens; review their diff.
 
-**Before considering any task done, run `bun run verify` and make it pass.** It runs all seven checks the same way every time: `bun test` (with `REDIS_URL`, and it fails if anything was skipped), `tsc --noEmit`, `biome check`, `test:csharp`, `test:godot`, `check:browser` (Chromium) and `check:firefox` (Firefox engine). Don't substitute a subset: `bun test` alone silently skips the Redis suites and still reports success. If Valkey/Redis, Chromium or Firefox/Zen genuinely isn't available, pass `--no-redis` / `--no-browser` / `--no-firefox`; those show as SKIPPED, and your summary must say so. Writing tests without running them doesn't count as verification.
+**Before considering any task done, run `bun run verify` and make it pass.** It runs all eight checks the same way every time: `bun test` (with `REDIS_URL`, and it fails if anything was skipped), `tsc --noEmit`, `biome check`, `test:csharp`, `test:godot`, `check:browser` (Chromium), `check:firefox` (Firefox engine) and `check:pack` (the packages installed from tarballs). Don't substitute a subset: `bun test` alone silently skips the Redis suites and still reports success. If Valkey/Redis, Chromium or Firefox/Zen genuinely isn't available, or there's no network for `check:pack`, pass `--no-redis` / `--no-browser` / `--no-firefox` / `--no-pack`; those show as SKIPPED, and your summary must say so. Writing tests without running them doesn't count as verification.
+
+## Publishing
+
+`RELEASING.md` is the checklist; spec §13 is the reasoning. What to keep in mind while changing code:
+
+- **The monorepo runs on raw TypeScript.** `packages/*/package.json` points `main`/`exports` at `./src`, and the *published* entry points live in `publishConfig`. Neither `bun pm pack` nor `npm pack` applies `publishConfig`, so `bun run pack` does, and the tarball is what gets published — never a package directory (a `prepublishOnly` guard refuses that).
+- **Lockstep versions.** Every published package carries the same version, and `@bungohan/state` is an *exact-version* peer dependency of core, client-js and schema so an app resolves exactly one copy (spec §6.10). Bump with `bun run version <semver>`, never by hand.
+- `@bungohan/codegen` is not published (its targets are the deferred clients), and every app and docs example is `"private": true`.
+- A new public export, a new package file, or a JSDoc change is covered by `check:pack`: it typechecks the emitted `.d.ts` under TypeScript 7 *and* the latest 5.x and asserts the JSDoc survived emit.
 
 ## Code style
 

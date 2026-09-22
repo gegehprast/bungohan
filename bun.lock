@@ -116,26 +116,27 @@
     },
     "packages/backplane": {
       "name": "@bungohan/backplane",
-      "version": "0.0.0",
+      "version": "0.1.0-alpha.1",
       "dependencies": {
         "@bungohan/result": "workspace:*",
       },
     },
     "packages/client-js": {
       "name": "@bungohan/client-js",
-      "version": "0.0.0",
+      "version": "0.1.0-alpha.1",
       "dependencies": {
         "@bungohan/result": "workspace:*",
         "@bungohan/schema": "workspace:*",
         "@bungohan/serializer": "workspace:*",
-        "@bungohan/state": "workspace:*",
         "@bungohan/types": "workspace:*",
       },
       "devDependencies": {
+        "@bungohan/state": "workspace:*",
         "@types/react": "catalog:",
         "react": "catalog:",
       },
       "peerDependencies": {
+        "@bungohan/state": "0.1.0-alpha.1",
         "react": ">=18",
       },
       "optionalPeers": [
@@ -160,34 +161,44 @@
     },
     "packages/core": {
       "name": "@bungohan/core",
-      "version": "0.0.0",
+      "version": "0.1.0-alpha.1",
       "dependencies": {
         "@bungohan/backplane": "workspace:*",
         "@bungohan/result": "workspace:*",
         "@bungohan/schema": "workspace:*",
         "@bungohan/serializer": "workspace:*",
-        "@bungohan/state": "workspace:*",
         "@bungohan/store": "workspace:*",
         "@bungohan/transport": "workspace:*",
         "@bungohan/types": "workspace:*",
         "nanoid": "catalog:",
       },
+      "devDependencies": {
+        "@bungohan/state": "workspace:*",
+      },
+      "peerDependencies": {
+        "@bungohan/state": "0.1.0-alpha.1",
+      },
     },
     "packages/result": {
       "name": "@bungohan/result",
-      "version": "0.0.0",
+      "version": "0.1.0-alpha.1",
     },
     "packages/schema": {
       "name": "@bungohan/schema",
-      "version": "0.0.0",
+      "version": "0.1.0-alpha.1",
       "dependencies": {
-        "@bungohan/state": "workspace:*",
         "@bungohan/types": "workspace:*",
+      },
+      "devDependencies": {
+        "@bungohan/state": "workspace:*",
+      },
+      "peerDependencies": {
+        "@bungohan/state": "0.1.0-alpha.1",
       },
     },
     "packages/serializer": {
       "name": "@bungohan/serializer",
-      "version": "0.0.0",
+      "version": "0.1.0-alpha.1",
       "dependencies": {
         "@bungohan/result": "workspace:*",
         "@bungohan/types": "workspace:*",
@@ -199,7 +210,7 @@
     },
     "packages/state": {
       "name": "@bungohan/state",
-      "version": "0.0.0",
+      "version": "0.1.0-alpha.1",
       "dependencies": {
         "@bungohan/result": "workspace:*",
         "@bungohan/types": "workspace:*",
@@ -211,14 +222,14 @@
     },
     "packages/store": {
       "name": "@bungohan/store",
-      "version": "0.0.0",
+      "version": "0.1.0-alpha.1",
       "dependencies": {
         "@bungohan/result": "workspace:*",
       },
     },
     "packages/testing": {
       "name": "@bungohan/testing",
-      "version": "0.0.0",
+      "version": "0.1.0-alpha.1",
       "dependencies": {
         "@bungohan/backplane": "workspace:*",
         "@bungohan/client-js": "workspace:*",
@@ -240,7 +251,7 @@
     },
     "packages/transport": {
       "name": "@bungohan/transport",
-      "version": "0.0.0",
+      "version": "0.1.0-alpha.1",
       "dependencies": {
         "@bungohan/result": "workspace:*",
         "nanoid": "catalog:",
@@ -248,7 +259,7 @@
     },
     "packages/types": {
       "name": "@bungohan/types",
-      "version": "0.0.0",
+      "version": "0.1.0-alpha.1",
     },
   },
   "catalog": {

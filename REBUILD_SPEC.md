@@ -1589,6 +1589,12 @@ covers it directly, since every game ships it to the browser. When
 publishing, `@bungohan/state` should be a peer dependency of core,
 client-js and schema, so an app always resolves exactly one copy.
 
+**[DECIDED] As published (§13.3):** an *exact-version* peer dependency, not a
+range, with every other internal dependency exact-pinned too, which is what
+makes the release lockstep. `bun run check:pack` fails unless a project
+installed from the tarballs holds exactly one copy, in its lockfile and on
+disk.
+
 ## 7. `@bungohan/client-js` — Reference Client Implementation
 
 ### 7.1 Client — **[KEEP]**
@@ -2173,3 +2179,150 @@ Given package dependencies, implement in this order so each layer can be tested 
 12. `@bungohan/codegen` — depends on `types`; emits C#/GDScript/JSON bindings (§4.2). **[DECIDED] Done**, with the C# and GDScript protocol cores it binds to (§4.2.1).
 13. Cluster mode (§6.4) — depends on `core` + `backplane`. **[DECIDED] Done**, with no wire change (§6.4.1).
 14. `apps/example-shooter` — exercises everything end-to-end; port the existing app's server/client/shared code onto the rebuilt API, adjusting call sites for the **[NEW]**/**[FIX]** items above (it can now use `server.onJoin(...)` instead of hand-rolling it via `RoomManager`, should declare its messages through a §4.1 contract, and should switch from its bespoke `useBungohan` hook to the real `@bungohan/client-js/react` one).
+
+## 13. Publishing to npm — **[DECIDED]**
+
+Eleven packages ship: `result`, `types`, `state`, `schema`, `serializer`,
+`transport`, `store`, `backplane`, `core`, `client-js` (with its `/react`
+subpath) and `testing`. `@bungohan/codegen` stays unpublished — its targets
+are the deferred C#/Godot clients — and every app and docs example is
+`"private": true`. The operational checklist is `RELEASING.md`; this section
+is why it looks the way it does.
+
+### 13.1 Build: `tsc`, and why declaration emit decided it
+
+The repo is on TypeScript 7 (the native port), so the first question was what
+7.0.2 can actually emit, not what a bundler could. It emits `.d.ts` and keeps
+JSDoc verbatim, which settled it: `tsc` alone, no second tool, no `.d.ts`
+bundler. The JSDoc mattering is the point of the §JSDoc rule — the contract
+lives on the interface, and an editor only shows it if it survives emit, so
+`check:pack` asserts it in the shipped declarations for members like
+`IBungohanClient.connect` and `Room.onJoin`.
+
+Two things TypeScript 7 changed that the build had to absorb:
+
+- **`baseUrl` was removed** (TS5102). `paths` in `tsconfig.build.json` are
+  therefore written relative to that file, with no `baseUrl`.
+- Each package compiles against its siblings' **built** `.d.ts`, via those
+  `paths`, and so must be built in dependency order. That is deliberate: it
+  typechecks the emitted declarations the way an installed copy sees them,
+  rather than against source that will never ship.
+
+`declarationMap` is off (its maps would point at a `src/` that isn't
+shipped); `sourceMap` with `inlineSources` is on, so a user stepping into
+the library sees the TypeScript without a separate `src/` in the tarball.
+
+**Extensions.** `tsc` emits `from "./room"` unchanged, which only a bundler
+resolves. `scripts/build.ts` rewrites relative specifiers to an explicit
+`.js` in both `.js` and `.d.ts` output, then fails if any relative target
+doesn't exist. That is what makes the packages valid under `node16`
+resolution, which `check:pack` checks with a config of its own.
+
+### 13.2 `publishConfig`, and why the pack step is a script
+
+The monorepo must keep running on raw TypeScript: `bun test`, the apps and
+the docs examples all resolve `@bungohan/*` through the workspace symlinks to
+`src/index.ts`, with no build. So `packages/*/package.json` keeps `main` and
+`exports` pointing at `./src`, and the published entry points live under
+`publishConfig` — npm's own place for exactly this.
+
+A custom export condition (`"development": "./src/index.ts"`) was the
+obvious alternative and was rejected on evidence: Bun does not apply
+`development` by default (verified — it resolves to the `default` branch),
+and a condition that needs `--conditions` on every `bun test`, `bun run`,
+`vite` and `bun build` invocation is a dev workflow that breaks the first
+time someone forgets a flag.
+
+**Neither `bun pm pack` nor `npm pack` applies `publishConfig`** — verified
+directly: both packed a manifest still claiming `"main": "./src/index.ts"`,
+a file absent from the tarball. `npm publish` applies its directives and
+`bun publish` does not, so relying on it would make the published artifact
+depend on which tool ran. `bun run pack` therefore applies it itself, and:
+
+- resolves `workspace:*` and `catalog:` to exact versions (rather than
+  trusting `bun publish` to, since the tarball is what gets published);
+- drops `scripts` and `devDependencies` (a `prepare` script in a tarball
+  runs on install);
+- rewrites the READMEs' relative links to absolute GitHub URLs — npm's
+  viewer resolves relative links against `repository.directory`, which
+  `../../docs/…` escapes;
+- stages `dist` + `README.md` + `LICENSE` and packs that, so the tarball
+  cannot contain more than `files` lists.
+
+**The tarball is what gets published**, never a package directory: `bun
+publish .pack/bungohan-core-<v>.tgz`. Each package carries a
+`prepublishOnly` guard that refuses a publish from its own directory, since
+that path would produce the broken manifest above.
+
+### 13.3 One `@bungohan/state`: exact peers
+
+§6.10's requirement, applied. `@bungohan/state` is a **peer dependency at an
+exact version** (`"0.1.0-alpha.1"`, not a range) of `core`, `client-js` and
+`schema`, and a `devDependency` for the monorepo. A range would let two
+satisfying versions coexist under some resolvers; an exact pin makes a
+mismatched pair an install error rather than a silent second `Schema` class.
+Every other internal dependency is exact-pinned too, so resolvers dedupe.
+
+That is what makes the release **lockstep**: a package bumped on its own
+would stop satisfying its siblings' pins. `bun run version <semver>` moves
+them together.
+
+Versions and engines: `0.1.0-alpha.1` on the `alpha` dist-tag. Server
+packages (`transport`, `store`, `backplane`, `core`, `testing`) declare
+`engines.bun`; the browser-safe ones (`result`, `types`, `state`, `schema`,
+`serializer`, `client-js`) declare none, because they must run in a browser
+and a bundler. `sideEffects: false` everywhere — every module-level binding
+in these packages is a local constant, nothing mutates shared state on
+import.
+
+### 13.4 `check:pack`: proof from tarballs, outside the repo
+
+`bun run check:pack` (part of `bun run verify`, opt out with `--no-pack`)
+builds, packs, and installs **only the tarballs** into a fresh project in the
+system temp directory — outside this repo, so nothing can resolve through a
+workspace symlink and pass on source that is not in any tarball. The fixture
+(`scripts/pack-fixture/`) is an ordinary small game: a shared module
+importing only `@bungohan/schema`, a Bun server on `@bungohan/core`, a
+browser client on `@bungohan/client-js` and its React subpath, and a
+`@bungohan/testing` suite.
+
+**A local registry, not `file:` deps.** A tarball's own `@bungohan/*`
+dependencies are version ranges, and only a registry answers those. Installing
+the tarballs as `file:` paths fails outright (they resolve to npm, where the
+packages don't exist yet), and forcing them with `overrides` would guarantee
+one `@bungohan/state` by construction and prove nothing. So
+`scripts/mini-registry.ts` serves the packed tarballs over HTTP — a packument
+and a tarball per package, which is all `bun install` asks for a fixed
+version — and the fixture points only the `@bungohan` scope at it. React,
+Vite and both TypeScripts come from npm as usual, which is why the check
+needs the network.
+
+What it asserts: no `workspace:`/`catalog:` reached a manifest and every
+entry point resolves to a file that is in the tarball; the lockfile *and*
+`node_modules` hold exactly one `@bungohan/state`, including from the two
+install lines the docs actually give (`bun add @bungohan/core
+@bungohan/schema` and the client's), where `state` is named in neither and
+arrives only as a peer; the published `.d.ts`
+typecheck under TypeScript 7 and the latest 5.x, as declarations with
+`skipLibCheck` off and `types: []` (so they stand alone — no published
+declaration references a Bun global), and under `node16` as well as
+`bundler` resolution; the JSDoc survived emit; the harness runs a test; a
+real client joins a real server over a socket and receives state; and the
+browser entry bundles with both `bun build --target=browser` and Vite with
+no server code in the graph.
+
+**Tree-shaking hides modules from an audit.** `sideEffects: false` is right
+for users, and it means a library entry that nothing consumes is dead code:
+bundling `client-js/src/index.ts` on its own dropped its graph from 50 inputs
+to 17, losing `@bungohan/serializer` and `@msgpack/msgpack` — modules the
+browser audit then never looked at. Both audits (this one and
+`packages/client-js/src/browser-safety.test.ts`) therefore bundle through a
+generated wrapper that assigns the entry's namespace to a global, which
+nothing can shake out.
+
+**The browser audit runs against both bundlers' module graphs**, not against
+text. `@bungohan/core` is named in a couple of module-header comments that a
+non-minifying bundler keeps, so matching the package name in the output says
+nothing; Bun's `--metafile` and Vite's source-map `sources` say what actually
+got bundled. Both were checked by importing `createBungohanServer` into the
+fixture's browser entry and confirming both fail.

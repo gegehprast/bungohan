@@ -1,10 +1,11 @@
 /**
  * Runs every check a change must pass, the same way every time:
  *
- *     bun run verify               # all seven
+ *     bun run verify               # all eight
  *     bun run verify --no-redis    # without Valkey/Redis (shown as SKIPPED)
  *     bun run verify --no-browser  # without Chromium (shown as SKIPPED)
  *     bun run verify --no-firefox  # without Firefox/Zen (shown as SKIPPED)
+ *     bun run verify --no-pack     # without the npm-install check (SKIPPED)
  *
  * The point is that nothing passes by quietly skipping. `bun test` without
  * REDIS_URL skips the Redis suites and still reports success, and a check
@@ -19,6 +20,9 @@ const args = new Set(process.argv.slice(2))
 const withRedis = !args.has("--no-redis")
 const withBrowser = !args.has("--no-browser")
 const withFirefox = !args.has("--no-firefox")
+// check:pack installs the fixture's own devDependencies (Vite, React, both
+// TypeScripts) from npm, so it needs the network.
+const withPack = !args.has("--no-pack")
 const redisUrl = process.env["REDIS_URL"] ?? "redis://127.0.0.1:6379"
 
 interface Step {
@@ -105,12 +109,16 @@ const steps: Step[] = [
     cmd: ["bun", "run", "check:firefox"],
     cwd: `${ROOT}apps/tutorial/server`,
   },
+  // The packages as a user installs them: built, packed, and proven from
+  // tarballs in a project outside this repo.
+  { name: "check:pack", cmd: ["bun", "run", "check:pack"] },
 ]
 
 /** Steps skipped on request, and the flag that skipped them. */
 const optedOut = new Map<string, string>([
   ...(withBrowser ? [] : [["check:browser", "--no-browser"] as const]),
   ...(withFirefox ? [] : [["check:firefox", "--no-firefox"] as const]),
+  ...(withPack ? [] : [["check:pack", "--no-pack"] as const]),
 ])
 
 const results: [string, Outcome][] = []

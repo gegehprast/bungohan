@@ -33,7 +33,9 @@ export async function docFiles(root = ROOT): Promise<string[]> {
     if (path.includes("node_modules")) continue
     files.push(path)
   }
-  files.push("packages/core/README.md", "packages/client-js/README.md")
+  for await (const path of new Bun.Glob("packages/*/README.md").scan(root)) {
+    files.push(path)
+  }
   return files.sort()
 }
 

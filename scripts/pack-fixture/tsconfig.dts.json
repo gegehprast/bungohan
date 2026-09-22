@@ -1,0 +1,12 @@
+{
+  // The published `.d.ts` files checked as declarations, not just used:
+  // `skipLibCheck` off, so an error *inside* one fails. `types: []` proves
+  // they stand alone — a consumer needs no `@types/bun` to typecheck them.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "skipLibCheck": false,
+    "types": []
+  },
+  "include": ["src/typecheck-dts.ts"],
+  "exclude": []
+}

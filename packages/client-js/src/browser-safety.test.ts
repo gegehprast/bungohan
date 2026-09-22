@@ -82,6 +82,31 @@ afterAll(async () => {
   await rm(scratch, { recursive: true, force: true })
 })
 
+/**
+ * Bundling a library entry directly audits less than it looks like it does:
+ * these packages declare `sideEffects: false`, so with nothing consuming the
+ * entry's exports the bundler drops most of the graph as dead code — and a
+ * module that isn't bundled isn't audited. (Measured: 50 inputs down to 17,
+ * losing `@bungohan/serializer` and `@msgpack/msgpack` entirely.) So each
+ * entry is bundled through a wrapper that keeps its whole namespace alive.
+ */
+async function wrapper(entry: Entry, n: number): Promise<string> {
+  const path = join(scratch, `entry-${n}.ts`)
+  const target = isAbsolute(entry.path)
+    ? entry.path
+    : join(packages, entry.path)
+  await Bun.write(
+    path,
+    [
+      `import * as everything from ${JSON.stringify(target)}`,
+      // An assignment to a global is a side effect, so nothing below it can
+      // be shaken out.
+      ";(globalThis as Record<string, unknown>)['__audit'] = everything",
+    ].join("\n"),
+  )
+  return path
+}
+
 async function audit(entry: Entry): Promise<Audit> {
   const n = builds++
   const outfile = join(scratch, `out-${n}.js`)
@@ -90,7 +115,7 @@ async function audit(entry: Entry): Promise<Audit> {
     [
       process.execPath,
       "build",
-      isAbsolute(entry.path) ? entry.path : join(packages, entry.path),
+      await wrapper(entry, n),
       "--target=browser",
       `--outfile=${outfile}`,
       `--metafile=${metafile}`,

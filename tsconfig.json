@@ -29,5 +29,5 @@
   },
   // `reference/` is the frozen alpha-1 snapshot. It imports `gungohan-*` packages
   // that are not installed here, so type checking it produces only noise.
-  "exclude": ["reference", "**/node_modules", "**/dist"]
+  "exclude": ["reference", "scripts/pack-fixture", "**/node_modules", "**/dist"]
 }

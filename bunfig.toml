@@ -1,4 +1,6 @@
 [test]
 # `reference/` is the frozen alpha-1 snapshot. Its test files target the old
 # `gungohan-*` packages and must not run as part of this project's suite.
-pathIgnorePatterns = ["reference/**"]
+# `scripts/pack-fixture/` is the check:pack fixture: it is meant to run
+# against installed tarballs, not against the workspace sources.
+pathIgnorePatterns = ["reference/**", "scripts/pack-fixture/**"]

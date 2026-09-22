@@ -1,25 +1,71 @@
 {
   "name": "@bungohan/client-js",
-  "version": "0.0.0",
+  "version": "0.1.0-alpha.1",
+  "description": "Browser client for Bungohan game servers, with optional React hooks",
+  "keywords": [
+    "bungohan",
+    "multiplayer",
+    "game-server",
+    "realtime",
+    "client",
+    "browser",
+    "react",
+    "websocket"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/gegehprast/bungohan-alpha2/tree/main/packages/client-js#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gegehprast/bungohan-alpha2.git",
+    "directory": "packages/client-js"
+  },
+  "bugs": {
+    "url": "https://github.com/gegehprast/bungohan-alpha2/issues"
+  },
   "type": "module",
+  "sideEffects": false,
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
     "./react": "./src/react/index.ts"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "main": "./dist/index.js",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./package.json": "./package.json",
+      "./react": {
+        "types": "./dist/react/index.d.ts",
+        "default": "./dist/react/index.js"
+      }
+    }
+  },
   "scripts": {
-    "test": "bun test"
+    "test": "bun test",
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "bun ../../scripts/guard-publish.ts"
   },
   "dependencies": {
     "@bungohan/result": "workspace:*",
     "@bungohan/schema": "workspace:*",
     "@bungohan/serializer": "workspace:*",
-    "@bungohan/state": "workspace:*",
     "@bungohan/types": "workspace:*"
   },
   "peerDependencies": {
-    "react": ">=18"
+    "react": ">=18",
+    "@bungohan/state": "0.1.0-alpha.1"
   },
   "peerDependenciesMeta": {
     "react": {
@@ -28,10 +74,7 @@
   },
   "devDependencies": {
     "@types/react": "catalog:",
-    "react": "catalog:"
-  },
-  "engines": {
-    "bun": ">=1.3.3"
-  },
-  "license": "MIT"
+    "react": "catalog:",
+    "@bungohan/state": "workspace:*"
+  }
 }

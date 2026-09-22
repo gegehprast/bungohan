@@ -15,7 +15,13 @@
     "codegen:example": "bun packages/codegen/src/cli.ts --contract apps/example-shooter/shared/src/index.ts --state apps/example-shooter/shared/src/index.ts --lang csharp --namespace Bungohan.Example.Shooter --out clients/csharp/Bungohan.Bindings/Shooter && bun packages/codegen/src/cli.ts --contract apps/example-shooter/shared/src/index.ts --state apps/example-shooter/shared/src/index.ts --lang gdscript --out clients/godot/example/shooter && bun packages/codegen/src/cli.ts --contract apps/example-shooter/shared/src/index.ts --state apps/example-shooter/shared/src/index.ts --lang json --out clients/fixtures",
     "test:csharp": "bun scripts/interop.ts dotnet run --project clients/csharp/Bungohan.Protocol.Tests",
     "test:godot": "bun scripts/interop.ts --cwd clients/godot godot-mono --headless --script tests/run_all.gd",
-    "docs:sync": "bun scripts/docs-snippets.ts --write"
+    "docs:sync": "bun scripts/docs-snippets.ts --write",
+    "build": "bun scripts/build.ts",
+    "pack": "bun scripts/pack.ts",
+    "check:pack": "bun scripts/check-pack.ts",
+    "version": "bun scripts/version.ts",
+    "publish:dry": "bun scripts/publish.ts --tag alpha --dry-run",
+    "publish:alpha": "bun scripts/publish.ts --tag alpha"
   },
   "workspaces": {
     "packages": [
