@@ -19,14 +19,8 @@ test("the production server starts, serves HTTP and stops cleanly", async () => 
   const http = server.getHttpServer()?.getPort()
   const health = await fetch(`http://127.0.0.1:${http}/health`)
   expect(await health.json()).toMatchObject({ status: "ok", rooms: 0 })
-  const rooms = await fetch(`http://127.0.0.1:${http}/rooms`)
-  expect(rooms.status).toBe(404) // switched off
 
-  const transport = server.getTransport()
-  const port =
-    "getPort" in transport && typeof transport.getPort === "function"
-      ? transport.getPort()
-      : undefined
+  const port = server.getPort() // the one port 0 picked
   const client = createBungohanClient({ url: `ws://127.0.0.1:${port}` })
   const joined = await client.joinOrCreate(
     "arena",
@@ -35,6 +29,9 @@ test("the production server starts, serves HTTP and stops cleanly", async () => 
   )
   expect(joined.isOk()).toBe(true)
   expect(report(server)).toBe("1 connected, 1 rooms, 0 shed")
+
+  const rooms = await fetch(`http://127.0.0.1:${http}/rooms`)
+  expect(await rooms.json()).toMatchObject([{ type: "arena", clients: 1 }])
 
   const metrics = await fetch(`http://127.0.0.1:${http}/metrics`)
   expect(await metrics.json()).toMatchObject({ server: { activeRooms: 1 } })

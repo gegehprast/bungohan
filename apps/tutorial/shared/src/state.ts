@@ -4,9 +4,9 @@ import {
   createInt,
   createSchemaMap,
   createString,
+  f,
   Schema,
-} from "@bungohan/state"
-import { f } from "@bungohan/types"
+} from "@bungohan/client-js"
 // #endregion imports
 
 // #region player

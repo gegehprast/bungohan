@@ -22,8 +22,8 @@ export class ArenaRoom extends Room<ArenaState, typeof arenaContract> {
   // The contract, again, as a value: the type parameter is erased at
   // runtime, and the server needs the descriptors to decode messages.
   public static override contract = arenaContract
-  // `public` (widening Room's `protected`) so tests can read it.
-  public override state = new ArenaState()
+  // The synchronized state. Tests read it with the harness's `stateOf`.
+  protected override state = new ArenaState()
 
   // Server-only bookkeeping: plain fields, never sent to anyone.
   private readonly directions = new Map<string, Direction>()

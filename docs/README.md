@@ -39,12 +39,18 @@ state patches.
 
 | Package | Where | For |
 |---|---|---|
-| `@bungohan/core` | server | `createBungohanServer`, `Room`, the matchmaker |
-| `@bungohan/client-js` | browser | the client; React hooks at `@bungohan/client-js/react` |
-| `@bungohan/state` | shared | `Schema` and the field factories |
-| `@bungohan/types` | shared | `defineMessage`, `defineContract`, `f` |
+| `@bungohan/core` | server | `createBungohanServer`, `Room`, the matchmaker, and everything a room file needs: `Schema`, the field factories, `f`, `defineMessage`, `defineContract`, `ConnectionContext`, `MemoryStore` |
+| `@bungohan/client-js` | browser | the client, and the same `Schema`, factories, `f`, `defineMessage` and `defineContract` for the state and contract module both sides import; React hooks at `@bungohan/client-js/react` |
 | `@bungohan/testing` | tests | the harness and the manual clock |
-| `@bungohan/store`, `@bungohan/transport`, `@bungohan/serializer`, `@bungohan/backplane` | server | stores, the `ConnectionContext` type, wire encodings, cluster backplanes |
+
+A server file imports from `@bungohan/core`, a client file from
+`@bungohan/client-js`. The module that holds the state and the contract is
+imported by both, so it imports from `@bungohan/client-js`, which runs
+anywhere (core would drag the server into the browser bundle). Both
+packages re-export the same classes, so the two sides agree. The packages
+they're built from (`@bungohan/state`, `@bungohan/types`,
+`@bungohan/store`, `@bungohan/transport`, `@bungohan/serializer`,
+`@bungohan/backplane`) are for custom transports, stores and tooling.
 
 ## About these docs
 

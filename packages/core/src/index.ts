@@ -1,5 +1,46 @@
 // Defined in @bungohan/types (shared with client-js); re-exported here.
-export { type Clock, SystemClock, type TimerId } from "@bungohan/types"
+
+// The schema, contract and option building blocks, so a room file needs
+// no other @bungohan package. Same objects as the packages they come from
+// (and as client-js re-exports).
+export {
+  createArray,
+  createBoolean,
+  createFiltered,
+  createFixedPoint,
+  createFloat32,
+  createInt,
+  createMap,
+  createNumber,
+  createSchemaArray,
+  createSchemaMap,
+  createSchemaSet,
+  createSet,
+  createString,
+  type FilterClient,
+  Schema,
+  type SchemaConstructor,
+  SchemaRegistry,
+} from "@bungohan/state"
+export { type IStore, MemoryStore, RedisStore } from "@bungohan/store"
+export type { ConnectionContext, ITransport } from "@bungohan/transport"
+export {
+  type Clock,
+  type Contract,
+  type CreateArg,
+  defineContract,
+  defineMessage,
+  type EmptyContract,
+  f,
+  type Infer,
+  type InferCreateOptions,
+  type InferJoinOptions,
+  LeaveCode,
+  type MessageDef,
+  type Reservation,
+  SystemClock,
+  type TimerId,
+} from "@bungohan/types"
 export {
   Client,
   type ClientStatus,
@@ -39,6 +80,7 @@ export type {
   RoomListingInfo,
   RoomOnCreateOptions,
   ServerOptions,
+  StateOf,
   UserDefinedRoomOnCreateOptions,
   UserDefinedRoomOnJoinOptions,
 } from "./types"

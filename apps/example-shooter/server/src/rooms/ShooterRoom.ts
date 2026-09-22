@@ -1,4 +1,9 @@
-import { type Client, Room, type RoomOnCreateOptions } from "@bungohan/core"
+import {
+  type Client,
+  Room,
+  type RoomOnCreateOptions,
+  type TimerId,
+} from "@bungohan/core"
 import {
   GAME_CONFIG,
   type GameResult,
@@ -10,7 +15,6 @@ import {
   type ShooterSettings,
   shooterContract,
 } from "@bungohan/example-shooter-shared"
-import type { TimerId } from "@bungohan/types"
 import { CollectionSystem } from "../systems/CollectionSystem"
 import { CombatSystem } from "../systems/CombatSystem"
 import { MovementSystem } from "../systems/MovementSystem"
@@ -25,7 +29,7 @@ import { generateRoomCode } from "../utils/roomCodes"
  */
 export class ShooterRoom extends Room<GameState, typeof shooterContract> {
   public static override contract = shooterContract
-  public override state = new GameState()
+  protected override state = new GameState()
 
   private readonly inputs = new Map<string, PlayerInput>()
   private readonly movement = new MovementSystem()

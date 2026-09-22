@@ -25,10 +25,9 @@ test("reading the room on the server", async () => {
     await client.joinOrCreate("arena", options("Ada"), arena)
   ).unwrap()
 
-  // The real Room instance: narrow with instanceof to reach its state.
-  const room = h.server.getMatchMaker().getRoom(view.id)
-  if (!(room instanceof ArenaRoom)) throw new Error("no arena")
-  room.state.players.get(view.sessionId)?.score.set(7)
+  // The room's real state on the server, typed by the room class.
+  const state = h.stateOf(ArenaRoom, view)
+  state.players.get(view.sessionId)?.score.set(7)
 
   await h.flushSync() // runs every room to its next sync boundary
   expect(view.state.players.get(view.sessionId)?.score.get()).toBe(7)
@@ -117,16 +116,15 @@ test("a client that stops reading is paused, then re-synced", async () => {
     mover.send("move", { dx: i % 20 < 10 ? 1 : -1, dy: 1 })
     await h.tick(50)
   }
-  const room = h.server.getMatchMaker().getRoom(slow.id)
-  if (!(room instanceof ArenaRoom)) throw new Error("no arena")
-  const truth = room.state.players.get(mover.sessionId)?.y.get()
+  const server = h.stateOf(ArenaRoom, slow)
+  const truth = server.players.get(mover.sessionId)?.y.get()
   expect(slow.state.players.get(mover.sessionId)?.y.get()).not.toBe(truth)
 
   // Reading again: the backlog drains, then a fresh snapshot catches up.
   h.transport.unstall(h.socketOf(slowClient).clientId)
   mover.send("move", { dx: 0, dy: 0 })
   await h.tick(200)
-  const now = room.state.players.get(mover.sessionId)?.y.get()
+  const now = server.players.get(mover.sessionId)?.y.get()
   expect(slow.state.players.get(mover.sessionId)?.y.get()).toBe(now)
   // Re-synced by a snapshot, which always builds a new replica.
   expect(slow.state).not.toBe(replica)

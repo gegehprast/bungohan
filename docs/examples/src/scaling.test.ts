@@ -40,12 +40,8 @@ afterEach(async () => {
 })
 
 function portOf(server: BungohanServer): number {
-  const transport = server.getTransport()
-  const port =
-    "getPort" in transport && typeof transport.getPort === "function"
-      ? transport.getPort()
-      : undefined
-  if (typeof port !== "number") throw new Error("no port")
+  const port = server.getPort()
+  if (port === undefined) throw new Error("not listening")
   return port
 }
 

@@ -27,8 +27,7 @@ test("server-built options go through the same declaration", async () => {
   h = await createTestHarness({ rooms: { race: RaceRoom } })
   const room = (await openRace(h.server)).unwrap()
   expect(room).toBeInstanceOf(RaceRoom)
-  if (!(room instanceof RaceRoom)) return
-  expect(room.state.track.get()).toBe("canyon")
+  expect(h.stateOf(RaceRoom, room).track.get()).toBe("canyon")
 })
 
 test("untyped options arrive as sent", async () => {

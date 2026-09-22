@@ -1,5 +1,4 @@
-import type { IBungohanClient } from "@bungohan/client-js"
-import type { Reservation } from "@bungohan/types"
+import type { IBungohanClient, Reservation } from "@bungohan/client-js"
 import { lobbyContract, MatchState, matchContract } from "./matchmaking"
 
 // #region consume

@@ -75,5 +75,11 @@ export interface ITransport {
    * memory until it died, which is what this guards against.
    */
   bufferedAmount(clientId: string): number
+  /**
+   * The port this transport is listening on (useful after `listen(0)`), or
+   * `undefined` when it isn't listening or has no ports at all (an
+   * in-memory transport). Optional: `server.getPort()` reads it.
+   */
+  getPort?(): number | undefined
   getName(): string
 }

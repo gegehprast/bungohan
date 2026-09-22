@@ -1,5 +1,4 @@
-import { createSchemaMap, Schema } from "@bungohan/state"
-import { f } from "@bungohan/types"
+import { createSchemaMap, f, Schema } from "@bungohan/client-js"
 import { RoomInfo } from "./RoomInfo"
 
 /** Lobby state: the public shooter rooms, by room id. */

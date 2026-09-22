@@ -1,5 +1,4 @@
-import { createFixedPoint, createInt, Schema } from "@bungohan/state"
-import { f } from "@bungohan/types"
+import { createFixedPoint, createInt, f, Schema } from "@bungohan/client-js"
 
 /** A pickup dropped by a dead enemy, keyed by a numeric id in `GameState.loot`. */
 export class Loot extends Schema {

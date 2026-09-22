@@ -3,9 +3,9 @@ import {
   createFixedPoint,
   createInt,
   createString,
+  f,
   Schema,
-} from "@bungohan/state"
-import { f } from "@bungohan/types"
+} from "@bungohan/client-js"
 
 /**
  * A player, keyed by `sessionId` in `GameState.players`.

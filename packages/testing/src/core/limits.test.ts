@@ -72,6 +72,30 @@ describe("backpressure", () => {
     await h.stop()
   })
 
+  test("RoomMetrics.syncPauses counts each pause", async () => {
+    const { h, join } = await setup(
+      {},
+      {
+        metrics: { enabled: true },
+        limits: { backpressure: { pauseBytes: 300, resumeBytes: 100 } },
+      },
+    )
+    const client = h.connect()
+    const view = await join(client)
+    const pauses = () => h.server.getAllRoomMetrics().unwrap()[0]?.syncPauses
+    expect(pauses()).toBe(0)
+
+    for (let round = 1; round <= 2; round++) {
+      h.transport.stall(client.socket.clientId)
+      await churn(h, view, 80)
+      expect(pauses()).toBe(round) // once per pause, not per tick paused
+      h.transport.unstall(client.socket.clientId)
+      await h.flushSync()
+      await h.flushSync()
+    }
+    await h.stop()
+  })
+
   test("a client that never reads is shed with 1013", async () => {
     const { h, join } = await setup(
       {},

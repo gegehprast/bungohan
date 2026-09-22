@@ -1,18 +1,18 @@
 import {
   type BungohanServer,
   type Client,
-  Room,
-  type RoomOnCreateOptions,
-} from "@bungohan/core"
-import { createInt, createString, Schema } from "@bungohan/state"
-import {
   type CreateArg,
+  createInt,
+  createString,
   defineContract,
   defineMessage,
   f,
   type InferCreateOptions,
   type InferJoinOptions,
-} from "@bungohan/types"
+  Room,
+  type RoomOnCreateOptions,
+  Schema,
+} from "@bungohan/core"
 
 export class RaceState extends Schema {
   public static override readonly schemaName = "RaceState"
@@ -48,7 +48,7 @@ export type RaceCreateArg = CreateArg<typeof raceContract>
 // #region room
 export class RaceRoom extends Room<RaceState, typeof raceContract> {
   public static override contract = raceContract
-  public override state = new RaceState()
+  protected override state = new RaceState()
 
   protected override async onCreate(
     options: RoomOnCreateOptions & RaceCreate,

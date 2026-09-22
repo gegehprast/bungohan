@@ -1,12 +1,15 @@
-import { type Client, Room, type RoomOnCreateOptions } from "@bungohan/core"
 import {
+  type Client,
+  type ConnectionContext,
   createInt,
   createSchemaMap,
   createString,
+  f,
+  Room,
+  type RoomOnCreateOptions,
   Schema,
-} from "@bungohan/state"
-import type { ConnectionContext } from "@bungohan/transport"
-import { f, type TimerId } from "@bungohan/types"
+  type TimerId,
+} from "@bungohan/core"
 
 export class Member extends Schema {
   public static override readonly schemaName = "Member"
@@ -31,7 +34,7 @@ export async function verifyToken(
 
 // #region auth
 export class GuildRoom extends Room<GuildState> {
-  public override state = new GuildState()
+  protected override state = new GuildState()
   public banned = new Set<string>()
   private saveTimer: TimerId | undefined
 

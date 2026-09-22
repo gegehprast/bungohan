@@ -26,7 +26,6 @@ export function createGameServer(env: {
     http: {
       enabled: true, // /health, /metrics, /rooms on their own port
       port: env.httpPort,
-      enableRoomsList: false, // /rooms lists private rooms too
     },
     gracefulShutdown: {
       timeout: 10_000, // exit(1) if stopping takes longer

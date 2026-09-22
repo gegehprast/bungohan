@@ -154,6 +154,8 @@ export abstract class Room<
 
   /** Type-only link to `TContract` (never set at runtime). */
   declare public readonly __contract?: TContract
+  /** Type-only link to `TState` (never set at runtime). */
+  declare public readonly __state?: TState
 
   /** The synchronized state. Assign it as a field or in `onCreate`. */
   protected state!: TState
@@ -685,6 +687,7 @@ export abstract class Room<
       avgStateDeltaBytes: stats.deltaBytes.value,
       avgStateSnapshotBytes: stats.snapshotBytes.value,
       droppedSimulationMs: this._simulation?.droppedMs ?? 0,
+      syncPauses: stats.syncPauses,
       timestamp: now,
     }
   }
@@ -693,7 +696,10 @@ export abstract class Room<
   // Internals: setup and creation
   // ==========================================================================
 
-  /** @internal The state as a probe instance sees it (definition-time checks). */
+  /**
+   * @internal The state, unchecked: for definition-time checks on a probe
+   * instance, and for the test harness (`stateOf`).
+   */
   public _peekState(): unknown {
     return this.state
   }

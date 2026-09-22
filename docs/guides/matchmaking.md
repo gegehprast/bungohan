@@ -16,9 +16,12 @@ places players) uses reservations.
 | `client.reconnect(roomId, token, …)` | a held seat, after a page reload (see the [client guide](client.md#resuming-after-a-reload)) |
 
 "Available" means public, unlocked, not full, and not being disposed.
-Concurrent `joinOrCreate` joins from clients don't overfill a room or
-create a second one: the seat is taken before any of your code runs, and a
-room being created is found by the joins that arrive meanwhile.
+Concurrent joins don't overfill a room: the seat is taken before any of
+your code runs. Nor does a concurrent `joinOrCreate` create a second room:
+while one is creating a room, the others wait for it and then join it,
+whether they come from clients or from the server's `matchMaker`
+(`joinOrCreate`, `reserve`). If that room fills up before they get a seat,
+or fails to create, they look again and create their own.
 
 A private room (`makePrivate()`, or `visibility: "private"` in
 `defineRoomType`) is reachable only by id. That makes it the basis for
@@ -41,7 +44,7 @@ about a room (its map, mode, host name) goes in `this.metadata`:
 ```ts
 export class MatchRoom extends Room<MatchState, typeof matchContract> {
   public static override contract = matchContract
-  public override state = new MatchState()
+  protected override state = new MatchState()
 
   protected override async onCreate(
     options: RoomOnCreateOptions & InferCreateOptions<typeof matchContract>,
@@ -108,25 +111,20 @@ client the reservation, and the client consumes it:
  */
 export class LobbyRoom extends Room<Schema, typeof lobbyContract> {
   public static override contract = lobbyContract
-  private queue = Promise.resolve()
 
   protected override async onCreate(): Promise<void> {
-    this.onMessage("find", (client) => {
-      // One reservation at a time: two concurrent reserve() calls can't
-      // see each other's new room, so each would create one.
-      this.queue = this.queue.then(() => this.reserveFor(client))
+    this.onMessage("find", async (client) => {
+      // Concurrent calls are safe: a reserve() that arrives while another
+      // is creating a match waits for that match instead of making one.
+      const reserved = await getMatchMaker().reserve(
+        MatchRoom,
+        { rating: 1200 }, // the seat's join options
+        undefined, // a process selector, in cluster mode
+        { map: "dunes" }, // create options, if a room has to be created
+      )
+      if (reserved.isErr()) return // log it, tell the client…
+      this.send(client, "found", reserved.value)
     })
-  }
-
-  private async reserveFor(client: Client) {
-    const reserved = await getMatchMaker().reserve(
-      MatchRoom,
-      { rating: 1200 }, // the seat's join options
-      undefined, // a process selector, in cluster mode
-      { map: "dunes" }, // create options, if a room has to be created
-    )
-    if (reserved.isErr()) return // log it, tell the client…
-    this.send(client, "found", reserved.value)
   }
 }
 ```
@@ -167,10 +165,9 @@ export async function findMatch(client: IBungohanClient) {
   options given at reservation time. The client's own options don't
   count.
 
-**Serialize server-side reservations.** Two `reserve` (or
-`matchMaker.joinOrCreate`) calls running at the same time can't see the
-room the other is creating, so each creates one. That's why the lobby
-above queues its calls. Client joins don't have this problem.
+Concurrent `reserve` calls need no queue: like `joinOrCreate`, one that
+arrives while another is creating a room waits for that room, and takes a
+seat in it if one is left.
 
 ## Server-side rooms
 

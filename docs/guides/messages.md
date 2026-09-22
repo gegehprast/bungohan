@@ -11,8 +11,6 @@ both ends against it.
 [`docs/examples/src/messages.ts`](../examples/src/messages.ts)
 
 ```ts
-import { defineContract, defineMessage, f, type Infer } from "@bungohan/types"
-
 export const Say = defineMessage("say", {
   text: f.string,
   channel: f.enum("all", "team"), // "all" | "team", sent as an index
@@ -42,6 +40,10 @@ export const chatContract = defineContract({
 })
 ```
 <!-- /snippet -->
+
+`defineMessage`, `defineContract`, `f` and `Infer` come from
+`@bungohan/core` in a server file, or from `@bungohan/client-js` in a
+module the client imports too (usually where the contract lives).
 
 `defineMessage(name, fields)` declares one message. `defineContract`
 groups them by direction: `client` is client → server, `server` is
@@ -81,7 +83,7 @@ and as `static contract`:
 ```ts
 export class ChatRoom extends Room<ChatState, typeof chatContract> {
   public static override contract = chatContract
-  public override state = new ChatState()
+  protected override state = new ChatState()
 
   protected override async onCreate(): Promise<void> {
     // `text` is a string, `channel` is "all" | "team": decoded, not trusted.
@@ -188,7 +190,7 @@ chain each client's work yourself:
  */
 export class OrderedRoom extends Room<ChatState, typeof chatContract> {
   public static override contract = chatContract
-  public override state = new ChatState()
+  protected override state = new ChatState()
   private readonly queues = new Map<string, Promise<void>>()
 
   protected override async onCreate(): Promise<void> {

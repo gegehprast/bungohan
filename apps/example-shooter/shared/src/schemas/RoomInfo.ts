@@ -1,5 +1,4 @@
-import { createInt, createString, Schema } from "@bungohan/state"
-import { f } from "@bungohan/types"
+import { createInt, createString, f, Schema } from "@bungohan/client-js"
 import type { GameStatus } from "../types"
 
 /** A shooter room as the lobby lists it, keyed by room id. */

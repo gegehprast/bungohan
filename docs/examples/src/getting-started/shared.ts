@@ -1,6 +1,11 @@
 // #region shared
-import { createInt, Schema } from "@bungohan/state"
-import { defineContract, defineMessage, f } from "@bungohan/types"
+import {
+  createInt,
+  defineContract,
+  defineMessage,
+  f,
+  Schema,
+} from "@bungohan/client-js"
 
 /** The state every client sees, kept in sync by the server. */
 export class CounterState extends Schema {

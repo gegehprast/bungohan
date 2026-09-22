@@ -1,5 +1,6 @@
 import type { IBackplane } from "@bungohan/backplane"
 import type { ISerializer, IStateCodec } from "@bungohan/serializer"
+import type { Schema } from "@bungohan/state"
 import type { IStore } from "@bungohan/store"
 import type { ITransport } from "@bungohan/transport"
 import type {
@@ -20,7 +21,7 @@ export interface ServerOptions {
   transport?: {
     provider?: ITransport
     config?: {
-      /** Default 6060. */
+      /** Default 6060. `0` picks a free port; `server.getPort()` says which. */
       port?: number
       maxPayloadLength?: number
       idleTimeout?: number
@@ -264,6 +265,13 @@ export type ContractOf<R> = R extends { readonly __contract?: infer C }
     ? C
     : EmptyContract
   : EmptyContract
+
+/** The state class a room is typed with (`Room<S, C>` → `S`). */
+export type StateOf<R> = R extends { readonly __state?: infer S }
+  ? S extends Schema
+    ? S
+    : Schema
+  : Schema
 
 /**
  * A room class as `defineRoomType` accepts it: a class typed with a

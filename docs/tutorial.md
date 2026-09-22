@@ -42,9 +42,10 @@ The shared package is the important idea. The server and the client
 import the same classes and declarations directly, with no build step or
 generated code, so they can't drift apart. In your own project it can be
 a folder, a workspace package, or anything both sides can import. Its
-dependencies are `@bungohan/state` and `@bungohan/types`; the server adds
-`@bungohan/core`, and the client `@bungohan/client-js` (and `react` for
-step 6).
+one dependency is `@bungohan/client-js`, which runs on the server as well
+as in the browser and exports `Schema`, the field factories, `f` and
+`defineContract`. The server adds `@bungohan/core`, and the client uses
+`@bungohan/client-js` itself (and `react` for step 6).
 
 Some constants both sides use:
 
@@ -79,9 +80,9 @@ import {
   createInt,
   createSchemaMap,
   createString,
+  f,
   Schema,
-} from "@bungohan/state"
-import { f } from "@bungohan/types"
+} from "@bungohan/client-js"
 ```
 <!-- /snippet -->
 
@@ -173,7 +174,7 @@ import {
   f,
   type InferCreateOptions,
   type InferJoinOptions,
-} from "@bungohan/types"
+} from "@bungohan/client-js"
 
 /** Client → server: which way the player is holding the keys. */
 export const Move = defineMessage("move", { dx: f.int8, dy: f.int8 })
@@ -251,8 +252,8 @@ export class ArenaRoom extends Room<ArenaState, typeof arenaContract> {
   // The contract, again, as a value: the type parameter is erased at
   // runtime, and the server needs the descriptors to decode messages.
   public static override contract = arenaContract
-  // `public` (widening Room's `protected`) so tests can read it.
-  public override state = new ArenaState()
+  // The synchronized state. Tests read it with the harness's `stateOf`.
+  protected override state = new ArenaState()
 
   // Server-only bookkeeping: plain fields, never sent to anyone.
   private readonly directions = new Map<string, Direction>()

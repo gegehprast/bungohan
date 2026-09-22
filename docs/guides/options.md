@@ -53,7 +53,7 @@ message with no fields. `InferJoinOptions`, `InferCreateOptions` and
 ```ts
 export class RaceRoom extends Room<RaceState, typeof raceContract> {
   public static override contract = raceContract
-  public override state = new RaceState()
+  protected override state = new RaceState()
 
   protected override async onCreate(
     options: RoomOnCreateOptions & RaceCreate,

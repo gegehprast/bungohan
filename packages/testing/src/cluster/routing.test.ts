@@ -63,6 +63,50 @@ describe("joinOrCreate", () => {
   })
 })
 
+describe("concurrent find-or-create on one process", () => {
+  // Asking the cluster is an await between "no room here" and "create
+  // one", so without a registry of rooms being created each of these
+  // would create its own (spec §6.7.2).
+  test("client joins share one room", async () => {
+    const c = await cluster()
+    const [a, b] = [await c.connect(0), await c.connect(0)]
+    const rooms = await c.run(Promise.all([joinOrCreate(a), joinOrCreate(b)]))
+    const [first, second] = rooms.map((r) => r.unwrap().id)
+    expect(second).toBe(first)
+    expect(mm(c, 0).getRoomCount()).toBe(1)
+    expect(mm(c, 1).getRoomCount()).toBe(0)
+    await c.stop()
+  })
+
+  test("server-side calls and a client join share one room", async () => {
+    const c = await cluster()
+    const client = await c.connect(0)
+    const [room, reservation, joined] = await c.run(
+      Promise.all([
+        mm(c, 0).joinOrCreate("game"),
+        mm(c, 0).reserve("game"),
+        joinOrCreate(client),
+      ]),
+    )
+    const id = room.unwrap().id
+    expect(reservation.unwrap().roomId).toBe(id)
+    expect(joined.unwrap().id).toBe(id)
+    expect(mm(c, 0).getRoomCount()).toBe(1)
+    await c.stop()
+  })
+
+  test("a one-seat room being created: the others create their own", async () => {
+    const c = await cluster(2, { autoDispose: false, maxClients: 1 })
+    const [a, b] = [await c.connect(0), await c.connect(0)]
+    const [reservation, ja, jb] = await c.run(
+      Promise.all([mm(c, 0).reserve("game"), joinOrCreate(a), joinOrCreate(b)]),
+    )
+    const ids = [reservation.unwrap().roomId, ja.unwrap().id, jb.unwrap().id]
+    expect(new Set(ids).size).toBe(3)
+    await c.stop()
+  })
+})
+
 describe("mode JOIN", () => {
   test("takes a room on another process", async () => {
     const c = await cluster()

@@ -31,7 +31,7 @@ and carries on. One bad hook doesn't crash a room.
 
 ```ts
 export class GuildRoom extends Room<GuildState> {
-  public override state = new GuildState()
+  protected override state = new GuildState()
   public banned = new Set<string>()
   private saveTimer: TimerId | undefined
 
@@ -61,7 +61,7 @@ export class GuildRoom extends Room<GuildState> {
   It arrives as `context.token` (from `?token=` or an
   `Authorization: Bearer` header).
   `context` also has `ip`, `headers` and `searchParams`. Its type,
-  `ConnectionContext`, comes from `@bungohan/transport`.
+  `ConnectionContext`, comes from `@bungohan/core`.
 - Return `false` to refuse (the client gets `AUTH_FAILED`), `true` to
   admit, or an object to admit *and* attach it as `client.auth`.
 - **The static `onAuth`** runs only when the join would *create* the

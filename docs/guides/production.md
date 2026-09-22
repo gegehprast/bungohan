@@ -31,7 +31,6 @@ export function createGameServer(env: {
     http: {
       enabled: true, // /health, /metrics, /rooms on their own port
       port: env.httpPort,
-      enableRoomsList: false, // /rooms lists private rooms too
     },
     gracefulShutdown: {
       timeout: 10_000, // exit(1) if stopping takes longer
@@ -121,8 +120,10 @@ export function report(server: BungohanServer): string {
 - `server.getServerMetrics()`: connections, rooms, messages and bytes
   in and out, errors, `totalShed` (connections closed with 1013), memory.
 - `server.getAllRoomMetrics()`: per room, tick and sync durations,
-  `avgStateDeltaBytes` and `avgStateSnapshotBytes`, and
-  `droppedSimulationMs` (time lost to the catch-up cap).
+  `avgStateDeltaBytes` and `avgStateSnapshotBytes`,
+  `droppedSimulationMs` (time lost to the catch-up cap), and `syncPauses`
+  (how often a client that stopped reading was paused, see
+  [limits](#limits)).
 - `server.getAllClientMetrics()`: per seat, frames and bytes each way,
   and `avgLatency` from the clients' pings.
 
@@ -136,13 +137,13 @@ default) with:
 | Endpoint | Returns |
 |---|---|
 | `GET /health` | `{ status, processId, uptime, rooms, connections }`; `status` is `"shutting_down"` during a graceful stop |
-| `GET /metrics` | `{ server, rooms }` from the getters above (404 when metrics are off) |
-| `GET /rooms` | every ready room: id, type, clients, visibility, … |
+| `GET /metrics` | `{ server, rooms }` from the getters above (404 when metrics are off); private rooms are counted without their `roomId` |
+| `GET /rooms` | every ready **public** room: id, type, clients, maxClients, visibility, locked, metadata |
 
 Each can be switched off (`enableHealthCheck`, `enableMetrics`,
-`enableRoomsList`), and CORS headers are on unless `cors: false`. `/rooms`
-lists **private rooms too**, ids included, so keep it off (or behind your
-own network) if room ids are meant to be secret.
+`enableRoomsList`), and CORS headers are on unless `cors: false`.
+Private rooms never appear with their ids: a private room can be joined
+by id, so its id is what keeps it private.
 
 ## Graceful shutdown
 

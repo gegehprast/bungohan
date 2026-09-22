@@ -129,5 +129,10 @@ clock). `cluster.kill(index)` makes a process vanish, to test failures.
   `createRoom`/`reserve` for another process cross the backplane as
   MessagePack. A `Map` or `Set` arrives as a plain object, and `-0` as `0`.
   Typed options (declared in the contract) don't have this problem.
+- Concurrent `joinOrCreate` (or `reserve`) calls share one room only
+  when they run on the same process. Two that start on different
+  processes at the same moment, with no room available anywhere, can
+  each create one, since preventing it would take a cluster-wide lock.
+  If that matters, route a room type's matchmaking through one process.
 - A custom `ServerOptions.serializer` must carry binary data unchanged.
   `start()` checks it and refuses to start a cluster otherwise.

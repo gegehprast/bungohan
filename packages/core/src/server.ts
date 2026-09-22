@@ -334,15 +334,26 @@ export class BungohanServer {
           metrics: () => {
             const server = this.getServerMetrics()
             if (server.isErr()) return undefined
-            return {
-              server: server.value,
-              rooms: this.getAllRoomMetrics().unwrapOr([]),
-            }
+            // A private room is reachable by its id, so the id is all
+            // that keeps it private: counted here, never identified.
+            const all: RoomMetrics[] = this.getAllRoomMetrics().unwrapOr([])
+            const rooms = all.map(({ roomId, ...rest }) =>
+              this._manager.getRoom(roomId)?.visibility === "public"
+                ? { roomId, ...rest }
+                : rest,
+            )
+            return { server: server.value, rooms }
           },
+          // Public rooms only, for the same reason.
           rooms: () =>
             this._manager
               .getRooms()
-              .filter((room) => room._isReady && !room.isDisposed)
+              .filter(
+                (room) =>
+                  room._isReady &&
+                  !room.isDisposed &&
+                  room.visibility === "public",
+              )
               .map((room) => ({
                 id: room.id,
                 type: room.roomType,
@@ -422,6 +433,15 @@ export class BungohanServer {
 
   public getTransport(): ITransport {
     return this._transport
+  }
+
+  /**
+   * The port the transport listens on, so a server started with port `0`
+   * can say which one it got. `undefined` before `start()`, after
+   * `stop()`, and for a transport without ports (the test loopback).
+   */
+  public getPort(): number | undefined {
+    return this._running ? this._transport.getPort?.() : undefined
   }
 
   public getClock(): Clock {
@@ -1014,63 +1034,118 @@ export class BungohanServer {
         ),
       )
     }
-    if (mode !== JoinMode.CREATE) {
-      const room = this._manager
-        .getRooms()
-        .find(
-          (r) =>
-            r.roomType === typeName &&
-            r.isAvailable() &&
-            !this._seatedIn(connection, r),
-        )
-      if (room !== undefined) {
-        const client = new Client(nanoid(12), connection)
-        return local(
-          this._joinExisting(connection, room, client, joinOptions, false),
-        )
-      }
-      const found = await this._cluster?.findAvailable(
-        typeName,
-        seatedRooms(connection),
-      )
-      if (found !== undefined) {
-        const forwarded = await this._forwardJoin(
-          connection,
-          requestId,
-          found.processId,
-          options,
-          hash,
-          { kind: "room", roomId: found.roomId, mode },
-        )
-        // A room can fill up or vanish between answering and being joined.
-        // `JOIN_OR_CREATE` then creates one here, as it would locally;
-        // anything else is the client's answer.
-        if (
-          forwarded.isOk() ||
-          mode === JoinMode.JOIN ||
-          !raceLost(forwarded)
-        ) {
-          return forwarded
+    // A client's JOIN_OR_CREATE and the matchmaker's joinOrCreate/reserve
+    // share one registry of rooms being created, so none of them creates a
+    // second room while another is creating one (spec §6.7.2).
+    const matchMaker = this._matchMaker
+    let askCluster = true
+    for (;;) {
+      let release: (() => void) | undefined
+      if (mode !== JoinMode.CREATE) {
+        const creating =
+          mode === JoinMode.JOIN_OR_CREATE
+            ? matchMaker._creation(typeName)
+            : undefined
+        if (creating !== undefined) {
+          await creating
+          continue
+        }
+        const room = this._manager
+          .getRooms()
+          .find(
+            (r) =>
+              r.roomType === typeName &&
+              r.isAvailable() &&
+              !this._seatedIn(connection, r),
+          )
+        if (room !== undefined) {
+          // JOIN_OR_CREATE waits for a room still being created before
+          // taking a seat, so a room that fails leaves it free to create
+          // one; JOIN takes the seat now and shares the room's fate.
+          if (mode === JoinMode.JOIN_OR_CREATE && !room._isReady) {
+            await room._readyPromise
+            continue
+          }
+          const client = new Client(nanoid(12), connection)
+          return local(
+            this._joinExisting(connection, room, client, joinOptions, false),
+          )
+        }
+        if (mode === JoinMode.JOIN_OR_CREATE && type !== undefined) {
+          release = matchMaker._claimCreation(typeName)
+        }
+        const found = askCluster
+          ? await this._cluster?.findAvailable(
+              typeName,
+              seatedRooms(connection),
+            )
+          : undefined
+        if (found !== undefined) {
+          release?.() // it creates nothing: let the others look too
+          const forwarded = await this._forwardJoin(
+            connection,
+            requestId,
+            found.processId,
+            options,
+            hash,
+            { kind: "room", roomId: found.roomId, mode },
+          )
+          // A room can fill up or vanish between answering and being
+          // joined. `JOIN_OR_CREATE` then creates one here, as it would
+          // locally; anything else is the client's answer.
+          if (
+            forwarded.isOk() ||
+            mode === JoinMode.JOIN ||
+            !raceLost(forwarded)
+          ) {
+            return forwarded
+          }
+          askCluster = false
+          continue
+        }
+        if (mode === JoinMode.JOIN) {
+          return err(
+            this._error(
+              "ROOM_NOT_FOUND",
+              `no available room of type "${typeName}"`,
+            ),
+          )
         }
       }
-      if (mode === JoinMode.JOIN) {
+      if (type === undefined) {
         return err(
           this._error(
-            "ROOM_NOT_FOUND",
-            `no available room of type "${typeName}"`,
+            "ROOM_TYPE_NOT_DEFINED",
+            `room type "${typeName}" is not defined`,
           ),
         )
       }
+      try {
+        return await this._createAndJoin(
+          connection,
+          type,
+          joinOptions,
+          createOptions,
+          release,
+        )
+      } finally {
+        release?.()
+      }
     }
-    if (type === undefined) {
-      return err(
-        this._error(
-          "ROOM_TYPE_NOT_DEFINED",
-          `room type "${typeName}" is not defined`,
-        ),
-      )
-    }
+  }
 
+  /**
+   * The creating half of a join: static onAuth, create the room, seat,
+   * onJoin. `release` ends this join's claim on creating a room of the
+   * type (`JOIN_OR_CREATE`), once the room is ready or won't be.
+   */
+  private async _createAndJoin(
+    connection: Connection,
+    type: RoomTypeDef,
+    joinOptions: unknown,
+    createOptions: unknown,
+    release: (() => void) | undefined,
+  ): Promise<Result<Routed, BungohanError>> {
     // Create options are read only by a join that creates (untyped ones
     // are the join's own options, as they always were).
     const roomOptions =
@@ -1095,6 +1170,9 @@ export class BungohanServer {
     const seated = room._seat(client, connection, false)
     if (seated.isErr()) return seated
     const ready = await room._readyPromise
+    // Ready (or failed), with this seat taken: the joins waiting on the
+    // claim may look now, and see the room's real remaining capacity.
+    release?.()
     if (ready?.isErr()) {
       room._unseat(client)
       return err(this._error("JOIN_FAILED", "the room could not be created"))

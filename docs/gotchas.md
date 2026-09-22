@@ -109,7 +109,7 @@ if order matters across an `await`, chain each client's work:
  */
 export class OrderedRoom extends Room<ChatState, typeof chatContract> {
   public static override contract = chatContract
-  public override state = new ChatState()
+  protected override state = new ChatState()
   private readonly queues = new Map<string, Promise<void>>()
 
   protected override async onCreate(): Promise<void> {
@@ -206,14 +206,6 @@ whose turn it is.
 In development, `<StrictMode>` makes `useRoom` join twice, and with
 `"create"` that creates two rooms. **Fix:** create from an event handler.
 See [React and StrictMode](guides/client.md#react-and-strictmode).
-
-## Concurrent server-side reservations create extra rooms
-
-Two `matchMaker.reserve` (or `matchMaker.joinOrCreate`) calls running at
-once can't see each other's new room, so each creates one. **Fix:** run
-them one at a time, e.g. through a promise chain
-([example](guides/matchmaking.md#reservations)). Client joins aren't
-affected.
 
 ## Other limitations
 

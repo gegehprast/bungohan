@@ -74,6 +74,11 @@ export class MatchMaker {
   private readonly _deps: MatchMakerDeps
   private readonly _types = new Map<string, RoomTypeDef>()
   private readonly _reservations = new Map<string, ReservationEntry>()
+  /**
+   * Find-or-create calls that are creating a room, by room type: settles
+   * when the room is ready or wasn't created (spec §6.7.2).
+   */
+  private readonly _creating = new Map<string, Promise<void>>()
 
   public constructor(deps: MatchMakerDeps) {
     this._deps = deps
@@ -203,10 +208,9 @@ export class MatchMaker {
   ): Promise<Result<Room, BungohanError>> {
     const name = this._nameOf(roomType)
     if (name.isErr()) return name
-    const found = await this.joinRoom(name.value, options)
-    if (found.isOk()) return found
-    if (found.error.code !== "ROOM_NOT_FOUND") return found
-    return this.createRoom(name.value, options, processSelector)
+    return this._findOrCreate(name.value, options, processSelector, (room) =>
+      Promise.resolve(ok(room)),
+    )
   }
 
   public async joinById(
@@ -301,23 +305,23 @@ export class MatchMaker {
       createOptions !== undefined || type?.createOptions !== undefined
         ? createOptions
         : options
-    const found = await this.joinOrCreate(
+    return this._findOrCreate(
       name.value,
       roomOptions,
       processSelector,
+      async (room) => {
+        if (!(room instanceof RoomProxy)) return this._reserveIn(room, options)
+        const cluster = this._deps.cluster()
+        if (cluster === undefined) {
+          return err(
+            this._error("INVALID_STATE", "cluster mode is not running"),
+          )
+        }
+        const packed = this._pack(name.value, "join", options)
+        if (packed.isErr()) return packed
+        return cluster.reserve(room.processId, room.id, packed.value)
+      },
     )
-    if (found.isErr()) return found
-    const room = found.value
-    if (room instanceof RoomProxy) {
-      const cluster = this._deps.cluster()
-      if (cluster === undefined) {
-        return err(this._error("INVALID_STATE", "cluster mode is not running"))
-      }
-      const packed = this._pack(name.value, "join", options)
-      if (packed.isErr()) return packed
-      return cluster.reserve(room.processId, room.id, packed.value)
-    }
-    return this._reserveIn(room, options)
   }
 
   /**
@@ -457,6 +461,99 @@ export class MatchMaker {
     const cluster = this._deps.cluster()
     if (cluster === undefined) return ok([this._localProcess()])
     return ok(await cluster.processes())
+  }
+
+  /**
+   * @internal The pending creation of a room of this type by a
+   * find-or-create call, if there is one. A caller that sees one must wait
+   * for it and look again rather than create a second room (spec §6.7.2).
+   */
+  public _creation(roomType: string): Promise<void> | undefined {
+    return this._creating.get(roomType)
+  }
+
+  /**
+   * @internal Registers a find-or-create of this type as creating. Call it
+   * synchronously after `_creation` returned nothing and the local look
+   * found no room, with no await in between, and release once the room is
+   * ready or won't be created. Releasing twice is harmless.
+   */
+  public _claimCreation(roomType: string): () => void {
+    const { promise, resolve } = Promise.withResolvers<void>()
+    this._creating.set(roomType, promise)
+    return () => {
+      if (this._creating.get(roomType) === promise) {
+        this._creating.delete(roomType)
+      }
+      resolve()
+    }
+  }
+
+  /**
+   * `joinOrCreate` and `reserve`: an available room of the type, here or
+   * in the cluster, or a new one, and then `take` on it. A room being
+   * created by another find-or-create is waited for rather than doubled
+   * (spec §6.7.2), whether that call came from here or from a client's
+   * `JOIN_OR_CREATE`. When the room waited for fails to create, or fills up
+   * before `take` gets a seat in it, the search starts again.
+   */
+  private async _findOrCreate<T>(
+    name: string,
+    options: unknown,
+    selector: ProcessSelector | undefined,
+    take: (room: Room) => Promise<Result<T, BungohanError>>,
+  ): Promise<Result<T, BungohanError>> {
+    const known = this._types.has(name)
+    for (;;) {
+      const creating = this._creating.get(name)
+      if (creating !== undefined) {
+        await creating
+        continue
+      }
+      const room = known ? this._findAvailable(name) : undefined
+      if (room !== undefined) {
+        // It failed to create, or filled up meanwhile: look again.
+        if ((await this._whenReady(room)).isErr()) continue
+        const taken = await take(room)
+        if (taken.isErr() && taken.error.code === "ROOM_FULL") continue
+        return taken
+      }
+      // Nothing here: from now on this call is the one creating.
+      const release = this._claimCreation(name)
+      try {
+        const cluster = this._deps.cluster()
+        const found = await cluster?.findAvailable(name)
+        if (cluster !== undefined && found !== undefined) {
+          release() // it creates nothing: let the others look too
+          const proxy = await this._proxyFor(
+            cluster,
+            found.processId,
+            found.roomId,
+          )
+          if (proxy.isErr()) {
+            if (proxy.error.code === "ROOM_NOT_FOUND") continue
+            return proxy
+          }
+          const taken = await take(proxy.value)
+          if (taken.isErr() && taken.error.code === "ROOM_FULL") continue
+          return taken
+        }
+        if (!known) {
+          return err(
+            this._error(
+              "ROOM_TYPE_NOT_DEFINED",
+              `room type "${name}" is not defined`,
+            ),
+          )
+        }
+        const created = await this.createRoom(name, options, selector)
+        if (created.isErr()) return created
+        // Taken before anyone waiting can look, so they can't fill it first.
+        return await take(created.value)
+      } finally {
+        release()
+      }
+    }
   }
 
   /** @internal An available room of the type, ready or still being created. */

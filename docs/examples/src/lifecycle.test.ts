@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test"
-import { MemoryStore } from "@bungohan/store"
+import { MemoryStore } from "@bungohan/core"
 import { createTestHarness, type TestHarness } from "@bungohan/testing"
 import { GuildRoom, GuildState } from "./lifecycle"
 
@@ -58,9 +58,7 @@ test("state saved on dispose is loaded by the next room", async () => {
   h = await harness(store)
   const ada = await h.connect({ token: "user:ada" })
   const first = (await ada.joinOrCreate("guild", {}, guild)).unwrap()
-  const server = h.server.getMatchMaker().getRoom(first.id)
-  if (!(server instanceof GuildRoom)) throw new Error("no room")
-  server.state.treasury.set(250)
+  h.stateOf(GuildRoom, first).treasury.set(250)
   await first.leave()
   await h.tick(50) // last seat gone: the room auto-disposes and saves
 

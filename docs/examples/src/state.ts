@@ -1,5 +1,5 @@
-import { type Client, Room } from "@bungohan/core"
 import {
+  type Client,
   createArray,
   createBoolean,
   createFiltered,
@@ -13,9 +13,10 @@ import {
   createSchemaSet,
   createSet,
   createString,
+  f,
+  Room,
   Schema,
-} from "@bungohan/state"
-import { f } from "@bungohan/types"
+} from "@bungohan/core"
 
 // #region primitives
 export class Stats extends Schema {
@@ -121,7 +122,7 @@ export class TableState extends Schema {
 
 /** Deals each joiner a card with a secret only they can see. */
 export class TableRoom extends Room<TableState> {
-  public override state = new TableState()
+  protected override state = new TableState()
 
   protected override async onJoin(client: Client): Promise<void> {
     const card = new Card()

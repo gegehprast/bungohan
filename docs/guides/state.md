@@ -140,7 +140,8 @@ Maps have `get`, `set`, `delete`, `has`, `clear`, `size`, `keys()`,
 `values()`, iteration and `forEach`. Arrays have `push`, `pop`, `shift`,
 `unshift`, `splice`, `set(index, v)`, `sort`, `reverse` and the read
 methods. Sets have `add`, `delete`, `has` and `clear`. For the complete
-list, see the classes' types in `@bungohan/state`.
+list, see the classes' types (`MapState`, `ArrayState`, `SetState` and
+their `Schema*` variants) in `@bungohan/state`.
 
 The same Schema instance may be held by several collections, or by one
 map under several keys. It can't appear twice in one array.

@@ -53,6 +53,11 @@ export interface RoomMetrics {
   avgStateSnapshotBytes: number
   /** Simulated time discarded by the catch-up cap (spec §6.8). */
   droppedSimulationMs: number
+  /**
+   * Times a seat's state sync was paused because it stopped reading
+   * (backpressure, spec §6.9). Each pause ends in a full re-sync.
+   */
+  syncPauses: number
   timestamp: number
 }
 

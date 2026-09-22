@@ -1,10 +1,15 @@
+import {
+  defineContract,
+  defineMessage,
+  f,
+  type Infer,
+} from "@bungohan/client-js"
 /**
  * Message contracts (spec §4.1). The server binds them to its rooms and the
  * client passes the same objects at join, so names and payloads are checked
  * at compile time on both sides, and a stale client fails its join with
  * `CONTRACT_MISMATCH` instead of mis-decoding.
  */
-import { defineContract, defineMessage, f, type Infer } from "@bungohan/types"
 
 // ============================================================================
 // Shooter room

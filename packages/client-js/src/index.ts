@@ -8,8 +8,44 @@ export {
   tryCatch,
   tryCatchAsync,
 } from "@bungohan/result"
-export { SchemaRegistry } from "@bungohan/state"
-export { LeaveCode } from "@bungohan/types"
+// The schema, contract and option building blocks: a module both the
+// server and the browser import (state classes, contract) needs no other
+// @bungohan package. Same objects as core re-exports.
+export {
+  createArray,
+  createBoolean,
+  createFiltered,
+  createFixedPoint,
+  createFloat32,
+  createInt,
+  createMap,
+  createNumber,
+  createSchemaArray,
+  createSchemaMap,
+  createSchemaSet,
+  createSet,
+  createString,
+  type FilterClient,
+  Schema,
+  type SchemaConstructor,
+  SchemaRegistry,
+} from "@bungohan/state"
+export {
+  type Clock,
+  type Contract,
+  type CreateArg,
+  defineContract,
+  defineMessage,
+  type EmptyContract,
+  f,
+  type Infer,
+  type InferCreateOptions,
+  type InferJoinOptions,
+  LeaveCode,
+  type MessageDef,
+  type Reservation,
+  type TimerId,
+} from "@bungohan/types"
 export {
   BungohanClient,
   type ClientLogger,

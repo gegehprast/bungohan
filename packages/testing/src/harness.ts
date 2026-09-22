@@ -18,7 +18,9 @@ import {
   type DefineRoomOptions,
   type Room,
   type RoomClass,
+  type RoomConstructor,
   type ServerOptions,
+  type StateOf,
 } from "@bungohan/core"
 import { decodeFrame } from "@bungohan/serializer"
 import {
@@ -97,6 +99,28 @@ abstract class HarnessBase {
   public async start(): Promise<this> {
     ;(await this.server.start()).unwrap()
     return this
+  }
+
+  /**
+   * The server-side state of a room on this harness's server, typed by the
+   * room class, so a test can read or change it while the room keeps
+   * `state` protected. `room` is its id, or anything with an `id` (a
+   * client-js room). Throws (fails the test) if there is no such room here
+   * or it isn't a `RoomClass`.
+   */
+  public stateOf<R extends Room>(
+    RoomClass: RoomConstructor<R>,
+    room: string | { readonly id: string },
+  ): StateOf<R> {
+    const id = typeof room === "string" ? room : room.id
+    const found = this.server.getMatchMaker().getRoom(id)
+    if (found === undefined) throw new Error(`no room "${id}" on this server`)
+    if (!(found instanceof RoomClass)) {
+      throw new Error(`room "${id}" is not a ${RoomClass.name}`)
+    }
+    // An R holds a StateOf<R>: that is what the type parameter says.
+    const state: unknown = found._peekState()
+    return state as StateOf<R>
   }
 
   /** @internal Replaces how frames are delivered (a cluster harness). */

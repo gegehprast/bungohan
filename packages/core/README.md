@@ -21,7 +21,7 @@ import { CounterState, counterContract } from "./shared"
 
 class CounterRoom extends Room<CounterState, typeof counterContract> {
   public static override contract = counterContract
-  public override state = new CounterState()
+  protected override state = new CounterState()
 
   protected override async onCreate(): Promise<void> {
     this.onMessage("increment", (_client, { by }) => {

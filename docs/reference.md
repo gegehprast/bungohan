@@ -18,7 +18,7 @@ export interface ServerOptions {
   transport?: {
     provider?: ITransport
     config?: {
-      /** Default 6060. */
+      /** Default 6060. `0` picks a free port; `server.getPort()` says which. */
       port?: number
       maxPayloadLength?: number
       idleTimeout?: number
@@ -126,7 +126,7 @@ The ones you'll usually touch:
   [production](guides/production.md).
 - `store`: where `saveState`/`loadState` go
   ([rooms](guides/rooms.md#persistence)). `config` builds a Redis store,
-  and `provider` takes any `IStore` (`MemoryStore` from `@bungohan/store`
+  and `provider` takes any `IStore` (`MemoryStore` from `@bungohan/core`
   works for development).
 - `cluster`: see [scaling](guides/scaling.md).
 

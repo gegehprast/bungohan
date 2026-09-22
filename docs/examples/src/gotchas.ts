@@ -1,6 +1,4 @@
-import { Room } from "@bungohan/core"
-import { createInt, createNumber, Schema } from "@bungohan/state"
-import { f } from "@bungohan/types"
+import { createInt, createNumber, f, Room, Schema } from "@bungohan/core"
 
 // #region schemaname-bad
 // ✗ No schemaName: clients can't match the class by name.
@@ -18,7 +16,7 @@ export class Monster extends Schema {
 // #endregion schemaname-good
 
 export class EnemyRoom extends Room<Enemy> {
-  public override state = new Enemy()
+  protected override state = new Enemy()
 }
 
 // #region plain-field
@@ -31,5 +29,5 @@ export class Tower extends Schema {
 // #endregion plain-field
 
 export class TowerRoom extends Room<Tower> {
-  public override state = new Tower()
+  protected override state = new Tower()
 }

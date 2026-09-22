@@ -24,10 +24,9 @@ test("plain fields never reach clients", async () => {
   const view = (
     await (await h.connect()).joinOrCreate("tower", {}, { state: Tower })
   ).unwrap()
-  const room = h.server.getMatchMaker().getRoom(view.id)
-  if (!(room instanceof TowerRoom)) throw new Error("no room")
-  room.state.hp = 42
-  room.state.armor.set(9)
+  const tower = h.stateOf(TowerRoom, view) // the server's state
+  tower.hp = 42
+  tower.armor.set(9)
   await h.flushSync()
 
   expect(view.state.armor.get()).toBe(9)

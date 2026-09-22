@@ -171,6 +171,36 @@ describe("HTTP server", () => {
     await h.stop()
     expect(h.server.getHttpServer()).toBeUndefined()
   })
+  test("private rooms and their ids stay off the HTTP endpoints", async () => {
+    // A private room is reachable by id, so its id is its only protection:
+    // anyone who can reach the HTTP port must not learn it.
+    const h = await createServerHarness({
+      server: {
+        metrics: { enabled: true },
+        http: { enabled: true, port: 0, hostname: "127.0.0.1" },
+      },
+      define: (s) => {
+        s.defineRoomType("game", GameRoom)
+        s.defineRoomType("secret", GameRoom, { visibility: "private" })
+      },
+    })
+    const mm = h.server.getMatchMaker()
+    const open = (await h.connect().joinOrCreate("game")).unwrap()
+    const hidden = (await h.connect().create("secret")).unwrap()
+    const later = (await mm.createRoom("game")).unwrap()
+    later.makePrivate()
+
+    const base = `http://127.0.0.1:${h.server.getHttpServer()?.getPort()}`
+    const rooms = await (await fetch(`${base}/rooms`)).json()
+    expect(rooms).toEqual([expect.objectContaining({ id: open.roomId })])
+    const metrics = await (await fetch(`${base}/metrics`)).text()
+    expect(metrics).toContain(open.roomId)
+    expect(metrics).not.toContain(hidden.roomId)
+    expect(metrics).not.toContain(later.id)
+    // Still counted, just not identified.
+    expect(JSON.parse(metrics).rooms).toHaveLength(3)
+    await h.stop()
+  })
 })
 
 describe("without cluster mode", () => {
@@ -253,5 +283,31 @@ describe("over a real WebSocket", () => {
     expect(types).toEqual([4, 0, 2]) // JOIN_SUCCESS, welcome, snapshot
     ws.close()
     ;(await server.stop()).unwrap()
+  })
+
+  test("getPort() reports the port a server started on port 0 got", async () => {
+    const { BungohanServer } = await import("@bungohan/core")
+    const server = new BungohanServer({
+      transport: { config: { port: 0 } },
+      logger: { level: "silent" },
+      gracefulShutdown: { handleSignals: false },
+    })
+    expect(server.getPort()).toBeUndefined() // not listening yet
+    ;(await server.start()).unwrap()
+    const port = server.getPort()
+    expect(port).toBeGreaterThan(0)
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`, [PROTOCOL_VERSION])
+    await new Promise((resolve) => {
+      ws.onopen = resolve
+    })
+    ws.close()
+    ;(await server.stop()).unwrap()
+    expect(server.getPort()).toBeUndefined()
+  })
+
+  test("getPort() is undefined for a transport without ports", async () => {
+    const { h } = await setup()
+    expect(h.server.getPort()).toBeUndefined() // the loopback
+    await h.stop()
   })
 })

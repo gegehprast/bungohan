@@ -49,8 +49,7 @@
       "name": "@bungohan/example-shooter-shared",
       "version": "0.0.0",
       "dependencies": {
-        "@bungohan/state": "workspace:*",
-        "@bungohan/types": "workspace:*",
+        "@bungohan/client-js": "workspace:*",
       },
     },
     "apps/tutorial/client": {
@@ -86,8 +85,7 @@
       "name": "@bungohan/tutorial-shared",
       "version": "0.0.0",
       "dependencies": {
-        "@bungohan/state": "workspace:*",
-        "@bungohan/types": "workspace:*",
+        "@bungohan/client-js": "workspace:*",
       },
     },
     "docs/examples": {

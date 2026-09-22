@@ -16,7 +16,7 @@ import { parseListing } from "../utils/options"
  */
 export class LobbyRoom extends Room<LobbyState, typeof lobbyContract> {
   public static override contract = lobbyContract
-  public override state = new LobbyState()
+  protected override state = new LobbyState()
 
   protected override async onCreate(): Promise<void> {
     // No game loop: a tick is just the periodic refresh.

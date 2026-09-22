@@ -1,8 +1,16 @@
-import { type Client, type Clock, Room } from "@bungohan/core"
-import { createString, Schema } from "@bungohan/state"
-// #region builders
-import { defineContract, defineMessage, f, type Infer } from "@bungohan/types"
+import {
+  type Client,
+  type Clock,
+  createString,
+  defineContract,
+  defineMessage,
+  f,
+  type Infer,
+  Room,
+  Schema,
+} from "@bungohan/core"
 
+// #region builders
 export const Say = defineMessage("say", {
   text: f.string,
   channel: f.enum("all", "team"), // "all" | "team", sent as an index
@@ -40,7 +48,7 @@ export class ChatState extends Schema {
 // #region room
 export class ChatRoom extends Room<ChatState, typeof chatContract> {
   public static override contract = chatContract
-  public override state = new ChatState()
+  protected override state = new ChatState()
 
   protected override async onCreate(): Promise<void> {
     // `text` is a string, `channel` is "all" | "team": decoded, not trusted.
@@ -68,7 +76,7 @@ export class ChatRoom extends Room<ChatState, typeof chatContract> {
  */
 export class OrderedRoom extends Room<ChatState, typeof chatContract> {
   public static override contract = chatContract
-  public override state = new ChatState()
+  protected override state = new ChatState()
   private readonly queues = new Map<string, Promise<void>>()
 
   protected override async onCreate(): Promise<void> {

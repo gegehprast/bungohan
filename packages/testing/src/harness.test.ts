@@ -3,7 +3,7 @@
  * own loops and clock, as a real deployment would, with no shortcuts.
  */
 import { afterEach, beforeEach, expect, test } from "bun:test"
-import type { ServerOptions } from "@bungohan/core"
+import { Room, type ServerOptions } from "@bungohan/core"
 import {
   calls,
   GameRoom,
@@ -104,4 +104,26 @@ test("tick() delivers what clients sent before advancing time", async () => {
   room.send("move", { dx: 1.5 })
   await t.tick(50) // one sync at 20 Hz
   expect(room.state.players.get(room.sessionId)?.x.get()).toBe(1.5)
+})
+
+/** A room whose state is `protected`, as `Room` declares it. */
+class SealedRoom extends Room<GameState> {
+  protected override state = new GameState()
+}
+
+test("stateOf reads a room's state without making it public", async () => {
+  h = await createTestHarness({ rooms: { sealed: SealedRoom } })
+  const client = await h.connect()
+  const view = (
+    await client.joinOrCreate("sealed", {}, { state: GameState })
+  ).unwrap()
+
+  const state: GameState = h.stateOf(SealedRoom, view) // or view.id
+  expect(state).toBe(h.stateOf(SealedRoom, view.id))
+  state.turn.set(3)
+  await h.flushSync()
+  expect(view.state.turn.get()).toBe(3)
+
+  expect(() => h?.stateOf(GameRoom, view)).toThrow(/not a GameRoom/)
+  expect(() => h?.stateOf(SealedRoom, "nope")).toThrow(/no room "nope"/)
 })

@@ -1,16 +1,14 @@
 import {
-  type Client,
-  getMatchMaker,
-  Room,
-  type RoomOnCreateOptions,
-} from "@bungohan/core"
-import { createString, Schema } from "@bungohan/state"
-import {
+  createString,
   defineContract,
   defineMessage,
   f,
+  getMatchMaker,
   type InferCreateOptions,
-} from "@bungohan/types"
+  Room,
+  type RoomOnCreateOptions,
+  Schema,
+} from "@bungohan/core"
 
 export class MatchState extends Schema {
   public static override readonly schemaName = "MatchState"
@@ -29,7 +27,7 @@ export const matchContract = defineContract({
 // #region metadata
 export class MatchRoom extends Room<MatchState, typeof matchContract> {
   public static override contract = matchContract
-  public override state = new MatchState()
+  protected override state = new MatchState()
 
   protected override async onCreate(
     options: RoomOnCreateOptions & InferCreateOptions<typeof matchContract>,
@@ -80,25 +78,20 @@ export const lobbyContract = defineContract({
  */
 export class LobbyRoom extends Room<Schema, typeof lobbyContract> {
   public static override contract = lobbyContract
-  private queue = Promise.resolve()
 
   protected override async onCreate(): Promise<void> {
-    this.onMessage("find", (client) => {
-      // One reservation at a time: two concurrent reserve() calls can't
-      // see each other's new room, so each would create one.
-      this.queue = this.queue.then(() => this.reserveFor(client))
+    this.onMessage("find", async (client) => {
+      // Concurrent calls are safe: a reserve() that arrives while another
+      // is creating a match waits for that match instead of making one.
+      const reserved = await getMatchMaker().reserve(
+        MatchRoom,
+        { rating: 1200 }, // the seat's join options
+        undefined, // a process selector, in cluster mode
+        { map: "dunes" }, // create options, if a room has to be created
+      )
+      if (reserved.isErr()) return // log it, tell the client…
+      this.send(client, "found", reserved.value)
     })
-  }
-
-  private async reserveFor(client: Client) {
-    const reserved = await getMatchMaker().reserve(
-      MatchRoom,
-      { rating: 1200 }, // the seat's join options
-      undefined, // a process selector, in cluster mode
-      { map: "dunes" }, // create options, if a room has to be created
-    )
-    if (reserved.isErr()) return // log it, tell the client…
-    this.send(client, "found", reserved.value)
   }
 }
 // #endregion reserve

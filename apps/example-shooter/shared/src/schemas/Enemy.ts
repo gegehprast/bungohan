@@ -1,5 +1,4 @@
-import { createFixedPoint, createInt, Schema } from "@bungohan/state"
-import { f } from "@bungohan/types"
+import { createFixedPoint, createInt, f, Schema } from "@bungohan/client-js"
 
 /** An enemy, keyed by a numeric id in `GameState.enemies`. */
 export class Enemy extends Schema {

@@ -56,12 +56,14 @@ the client can never disagree about their shapes.
 The server needs Bun 1.3.3 or newer.
 
 ```sh
-bun add @bungohan/core @bungohan/state @bungohan/types      # server
-bun add @bungohan/client-js @bungohan/state @bungohan/types # client
+bun add @bungohan/core @bungohan/client-js # server
+bun add @bungohan/client-js                # client
 ```
 
-`@bungohan/state` and `@bungohan/types` provide `Schema` and `f`, which the
-shared module uses, so both sides need them.
+The server imports from `@bungohan/core`, the client from
+`@bungohan/client-js`. The shared module is imported by both, so it takes
+`Schema`, `f` and `defineContract` from `@bungohan/client-js`, which runs
+on the server too. That's why the server needs it as well.
 
 ## A server and a client in three files
 
@@ -72,8 +74,13 @@ state and the contract.
 [`docs/examples/src/getting-started/shared.ts`](examples/src/getting-started/shared.ts)
 
 ```ts
-import { createInt, Schema } from "@bungohan/state"
-import { defineContract, defineMessage, f } from "@bungohan/types"
+import {
+  createInt,
+  defineContract,
+  defineMessage,
+  f,
+  Schema,
+} from "@bungohan/client-js"
 
 /** The state every client sees, kept in sync by the server. */
 export class CounterState extends Schema {
@@ -106,7 +113,7 @@ import { CounterState, counterContract } from "./shared"
 
 class CounterRoom extends Room<CounterState, typeof counterContract> {
   public static override contract = counterContract
-  public override state = new CounterState()
+  protected override state = new CounterState()
 
   protected override async onCreate(): Promise<void> {
     this.onMessage("increment", (_client, { by }) => {

@@ -2,7 +2,7 @@ import type {
   CreateArg,
   InferCreateOptions,
   InferJoinOptions,
-} from "@bungohan/types"
+} from "@bungohan/client-js"
 import type { shooterContract } from "./contract"
 
 export type GameStatus = "waiting" | "playing" | "finished"
