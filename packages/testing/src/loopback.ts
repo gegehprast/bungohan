@@ -13,8 +13,12 @@ const GOING_AWAY = 1001
 /** Close code for an inbound frame over `maxPayloadLength` (RFC 6455). */
 const MESSAGE_TOO_BIG = 1009
 
+/** `LoopbackTransport`'s options; the harnesses create one for you. */
 export interface LoopbackTransportOptions {
-  /** Largest accepted client → server frame. Default 16 MiB, like WebSocketTransport. */
+  /**
+   * Largest accepted client → server frame; a bigger one closes the
+   * connection with 1009. Default 16 MiB, like WebSocketTransport.
+   */
   maxPayloadLength?: number
   /**
    * `flush()` gives up after delivering this many events in one call
@@ -23,21 +27,35 @@ export interface LoopbackTransportOptions {
   maxFlushEvents?: number
 }
 
+/**
+ * What a `LoopbackTransport.connect()` presents to the server: the
+ * `ConnectionContext` its `onAuth` will see.
+ */
 export interface LoopbackConnectOptions {
   /** Offered WebSocket subprotocols (protocol versions), in preference order. */
   protocols?: string[]
   /** Exposed as `context.token`, as if sent via `?token=`. */
   token?: string
+  /** The connection URL's query, as `context.searchParams`. */
   searchParams?: Record<string, string>
+  /** Handshake headers, as `context.headers`. */
   headers?: Record<string, string>
+  /** The remote address, as `context.ip`. Default `"127.0.0.1"`. */
   ip?: string
 }
 
-/** Bytes and frames that crossed the loopback, per direction. */
+/**
+ * Bytes and frames that crossed the loopback, per direction, counted when
+ * sent (before `flush()`). What bandwidth assertions read.
+ */
 export interface LoopbackStats {
+  /** Bytes the server sent, summed over every recipient. */
   bytesToClients: number
+  /** Frames the server sent, one per recipient. */
   framesToClients: number
+  /** Bytes clients sent. */
   bytesFromClients: number
+  /** Frames clients sent. */
   framesFromClients: number
 }
 
@@ -60,10 +78,10 @@ type Event =
     }
 
 /**
- * An in-process `ITransport` (spec §11.2): no sockets, but a real transport
- * all the same. Only bytes cross it, so core and the client must encode and
- * decode every frame exactly as they would over WebSocket. Each frame is
- * copied at send time, like a socket write, so a sender that reuses its
+ * An in-process `ITransport`: no sockets, but a real transport all the
+ * same (see docs/guides/testing.md#the-network). Only bytes cross it, so
+ * core and the client must encode and decode every frame exactly as they
+ * would over WebSocket. Each frame is copied at send time, like a socket write, so a sender that reuses its
  * buffer afterwards can't corrupt what the other side receives.
  *
  * Nothing is delivered until `flush()`, so tests decide exactly when frames
@@ -296,8 +314,8 @@ export class LoopbackTransport implements ITransport {
   /**
    * Stops delivering to this client, so what the server sends piles up and
    * `bufferedAmount` grows: a client that stopped reading (a backgrounded
-   * tab, a stalled link), which is what backpressure is about (spec §6.9).
-   * The server still thinks it is connected.
+   * tab, a stalled link), which is what backpressure is about. The server
+   * still thinks it is connected.
    */
   public stall(clientId: string): void {
     this._stalled.add(clientId)
@@ -312,10 +330,12 @@ export class LoopbackTransport implements ITransport {
     this._queue.unshift(...held)
   }
 
+  /** The traffic so far, or since `resetStats()` (a copy). */
   public stats(): LoopbackStats {
     return { ...this._stats }
   }
 
+  /** Zeroes the traffic counters, e.g. after joins a test doesn't measure. */
   public resetStats(): void {
     this._stats.bytesToClients = 0
     this._stats.framesToClients = 0
@@ -323,10 +343,12 @@ export class LoopbackTransport implements ITransport {
     this._stats.framesFromClients = 0
   }
 
+  /** Connections the server side still counts as open. */
   public getClientCount(): number {
     return this._sockets.size
   }
 
+  /** Whether the server side still counts this connection as open. */
   public isClientConnected(clientId: string): boolean {
     return this._sockets.has(clientId)
   }
@@ -374,8 +396,8 @@ export class LoopbackTransport implements ITransport {
   }
 
   /**
-   * Bytes queued for this client that `flush()` hasn't delivered yet. A test
-   * that holds off flushing is how a slow reader is simulated (spec §6.9).
+   * Bytes queued for this client that `flush()` hasn't delivered yet, so
+   * holding off a flush (or `stall`) simulates a slow reader.
    */
   public bufferedAmount(clientId: string): number {
     return this._buffered.get(clientId) ?? 0
@@ -423,6 +445,7 @@ export class LoopbackTransport implements ITransport {
   }
 }
 
+/** A `LoopbackSocket`'s state, like `WebSocket.readyState` in words. */
 export type LoopbackReadyState = "open" | "closing" | "closed"
 
 /**
@@ -430,6 +453,7 @@ export type LoopbackReadyState = "open" | "closing" | "closed"
  * surface for client implementations to run on.
  */
 export class LoopbackSocket {
+  /** The id the server knows this connection by. */
   public readonly clientId: string
   /**
    * The subprotocol the server answered with, like `WebSocket.protocol`:
@@ -451,6 +475,7 @@ export class LoopbackSocket {
     this._transport = transport
   }
 
+  /** `"closing"` from `close()` (either side) until the close is delivered. */
   public get readyState(): LoopbackReadyState {
     return this._state
   }
@@ -462,17 +487,26 @@ export class LoopbackSocket {
     return true
   }
 
+  /**
+   * Closes from the client side; the server's `onDisconnect` and this
+   * socket's `onClose` fire on the next flush.
+   */
   public close(code = 1000, reason = ""): void {
     if (this._state !== "open") return
     this._state = "closing"
     this._transport._clientClose(this, code, reason)
   }
 
+  /**
+   * A frame from the server was delivered (by a flush). Returns a function
+   * that removes the listener. A throw propagates out of `flush()`.
+   */
   public onMessage(listener: (data: Uint8Array) => void): () => void {
     this._messageListeners.add(listener)
     return () => this._messageListeners.delete(listener)
   }
 
+  /** The close was delivered. Returns a function that removes the listener. */
   public onClose(listener: (code: number, reason: string) => void): () => void {
     this._closeListeners.add(listener)
     return () => this._closeListeners.delete(listener)

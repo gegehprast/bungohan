@@ -1,5 +1,5 @@
 /**
- * The §11.2 harness: a real `BungohanServer` on a `LoopbackTransport`,
+ * The test harness: a real `BungohanServer` on a `LoopbackTransport`,
  * driven by a `ManualClock`. Deterministic: time moves only through
  * `tick()`, `flushSync()` and automatic join delivery, frames only through
  * `flush()` (which those call). The server runs exactly as deployed: its
@@ -43,11 +43,16 @@ import {
   type LoopbackTransportOptions,
 } from "./loopback"
 
+/** Options of both harnesses (`createServerHarness`, `createTestHarness`). */
 export interface ServerHarnessOptions {
   /** Room types to define: `(server) => server.defineRoomType(…)`. */
   define?: (server: BungohanServer) => void
-  /** Anything but transport and clock, which the harness provides. */
+  /**
+   * Anything but transport and clock, which the harness provides. Logging
+   * defaults to silent and signal handlers are never installed.
+   */
   server?: Omit<ServerOptions, "transport" | "clock">
+  /** Options of the harness's loopback transport. */
   transport?: LoopbackTransportOptions
   /**
    * A clock to share with other harnesses. A {@link ClusterHarness} passes
@@ -58,8 +63,14 @@ export interface ServerHarnessOptions {
 
 /** What both harnesses share: server, loopback, clock and their controls. */
 abstract class HarnessBase {
+  /** The real server under test, as deployed except for transport and clock. */
   public readonly server: BungohanServer
+  /**
+   * The loopback the server listens on: `stats()` for bandwidth,
+   * `stall()`/`disconnect()` to play the network.
+   */
   public readonly transport: LoopbackTransport
+  /** The one clock server and clients run on; `tick()` advances it. */
   public readonly clock: ManualClock
   /**
    * How `flush()` delivers frames. By default this harness's own
@@ -96,6 +107,10 @@ abstract class HarnessBase {
     return this
   }
 
+  /**
+   * Starts the server. Throws (fails the test) if it can't start. The
+   * `create*Harness` functions call it for you.
+   */
   public async start(): Promise<this> {
     ;(await this.server.start()).unwrap()
     return this
@@ -187,10 +202,15 @@ abstract class HarnessBase {
     return this.transport.stats().bytesFromClients
   }
 
+  /** Zeroes the byte counters, e.g. after the joins a test doesn't measure. */
   public resetStats(): void {
     this.transport.resetStats()
   }
 
+  /**
+   * Stops the server gracefully (rooms disposed, clients told) and
+   * delivers the goodbyes. Call it after each test.
+   */
   public async stop(): Promise<void> {
     if (this.server.isRunning()) (await this.server.stop()).unwrap()
     await this.flush()
@@ -227,6 +247,7 @@ export type RoomTypes<T extends Record<string, Room>> = {
     | readonly [RoomClass<T[K]>, DefineRoomOptions]
 }
 
+/** `createTestHarness`'s options. */
 export interface TestHarnessOptions<
   T extends Record<string, Room> = Record<string, Room>,
 > extends ServerHarnessOptions {
@@ -256,10 +277,10 @@ export type TestClientOptions = Partial<
   >
 
 /**
- * The full §11.2 harness: a real server and real client-js clients over
- * the loopback, on one `ManualClock` (so reconnection backoff and PING
- * are driven by `tick()` too). `TestClient` stays available through
- * {@link driver} as the byte-level reference.
+ * The full harness (see docs/guides/testing.md): a real server and real
+ * client-js clients over the loopback, on one `ManualClock` (so
+ * reconnection backoff and PING are driven by `tick()` too). `TestClient`
+ * stays available through {@link driver} as the byte-level reference.
  */
 export class TestHarness extends HarnessBase {
   /** While true, harness clients can't connect (reconnection tests). */

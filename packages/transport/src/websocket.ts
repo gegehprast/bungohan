@@ -12,15 +12,14 @@ export interface WebSocketTransportOptions {
   idleTimeout?: number
   /**
    * Negotiate permessage-deflate and compress outbound frames of at least
-   * `compressionThreshold` bytes. Default `true` (spec §5.7.7).
+   * `compressionThreshold` bytes. Default `true`.
    */
   compression?: boolean
   /**
    * Smallest outbound frame worth compressing, in bytes. Default 128.
    * Deflate adds ~6 bytes of framing, so it enlarges small frames: an 8-byte
    * position delta becomes 14 bytes. It breaks even around 60–85 bytes of
-   * MessagePack and saves ~40% by 128 bytes (measured on Bun 1.3; see spec
-   * §5.7.7).
+   * MessagePack and saves ~40% by 128 bytes (measured on Bun 1.3).
    */
   compressionThreshold?: number
 }
@@ -120,8 +119,8 @@ export class WebSocketTransport implements ITransport {
   }
 
   /**
-   * Sends every client a close (code 1001) and stops the server. The port
-   * is released when this resolves; `onDisconnect` fires for each client.
+   * Closes every client with 1001 ("Server shutting down"); the port is
+   * released as soon as this resolves.
    */
   public async close(): Promise<Result<void, Error>> {
     const server = this._server
@@ -180,10 +179,6 @@ export class WebSocketTransport implements ITransport {
     )
   }
 
-  /**
-   * Starts a close handshake. The client stops counting as connected at
-   * once; `onDisconnect` still fires when the close completes.
-   */
   public disconnect(
     clientId: string,
     code = 1000,
@@ -233,20 +228,21 @@ export class WebSocketTransport implements ITransport {
     return "websocket"
   }
 
+  /** Open connections (not counting ones being rejected). */
   public getClientCount(): number {
     return this._clients.size
   }
 
+  /** Whether `send` to this client would find it. */
   public isClientConnected(clientId: string): boolean {
     return this._clients.has(clientId)
   }
 
-  /** Bytes Bun has queued for this socket but not yet written (spec §6.9). */
+  /** Bun's own count: `ServerWebSocket.getBufferedAmount()`. */
   public bufferedAmount(clientId: string): number {
     return this._clients.get(clientId)?.getBufferedAmount() ?? 0
   }
 
-  /** The bound port (useful after `listen(0)`), or undefined if stopped. */
   public getPort(): number | undefined {
     return this._server?.port
   }

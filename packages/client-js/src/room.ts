@@ -28,16 +28,25 @@ import {
 } from "@bungohan/types"
 import { ClientError } from "./errors"
 
-/** Where a room is in its life. */
+/**
+ * Where a room is in its life (`room.status`). A room you get from a join
+ * is already `"joined"`.
+ */
 export type RoomStatus =
   /** `JOIN_SUCCESS` received, waiting for the first `STATE_SNAPSHOT`. */
   | "joining"
+  /** In the room, with its state. */
   | "joined"
   /** The connection dropped; the seat is being resumed with the token. */
   | "reconnecting"
+  /** Left for good; see the `onLeave` code for why. */
   | "left"
 
-/** Runtime inputs to a join. They also drive type inference. */
+/**
+ * The last argument of every join, `{ state, contract }`: runtime inputs
+ * that also drive type inference, so the joined room is fully typed
+ * (`IRoom<State, typeof contract>`) with no type arguments to write.
+ */
 export interface JoinOptions<S extends Schema, C extends Contract> {
   /**
    * The room state's root class. The replica (`room.state`) is built from
@@ -46,8 +55,8 @@ export interface JoinOptions<S extends Schema, C extends Contract> {
    */
   state?: SchemaConstructor<S>
   /**
-   * The room's message contract (spec §4.1), the same object the server
-   * uses. It types `send`/`onMessage` (direction inverted), packs and
+   * The room's message contract (`defineContract`), the same object the
+   * server uses. It types `send`/`onMessage` (direction inverted), packs and
    * unpacks payloads, and its hash is sent with the join, so a stale
    * client fails with `CONTRACT_MISMATCH` instead of mis-decoding. Without
    * it the hash is `null` (no check) and only `*Raw` messages work.
@@ -71,13 +80,29 @@ export type RoomEvent =
  */
 export type StateAttacher<S> = (state: S) => (() => void) | undefined
 
-/** The public surface of a client-side room (spec §7.2). */
+/**
+ * A room this client has joined, from any of the client's join methods.
+ * `S` is the state class and `C` the contract, both inferred from the
+ * join's `{ state, contract }`.
+ *
+ * Every `on*` method returns a function that removes that listener, and
+ * every listener is removed right after the room is left, so a left room
+ * needs no clean-up. Nothing here throws; `send` and `leave` return a
+ * `Result`.
+ */
 export interface IRoom<
   S extends Schema = Schema,
   C extends Contract = EmptyContract,
 > {
+  /** The room's id, the same on every client (e.g. for `joinById`). */
   readonly id: string
+  /**
+   * This client's seat in the room: the `client.sessionId` the server
+   * sees, and the key other clients see it under (in `onClientJoin`, and
+   * in whatever player map your state keeps). Kept across reconnections.
+   */
   readonly sessionId: string
+  /** The name the room type was defined under on the server. */
   readonly roomType: string
   /**
    * The replica. A fresh object after every `STATE_SNAPSHOT` (a join, a
@@ -87,9 +112,19 @@ export interface IRoom<
   readonly state: Readonly<S>
   /** Current token; replaced on every (re)join. Undefined if not allowed. */
   readonly reconnectionToken: string | undefined
+  /**
+   * Where the room is in its life. `"reconnecting"` while the connection
+   * is being retried (messages can't be sent), `"left"` for good.
+   */
   readonly status: RoomStatus
 
-  /** Sends a contract message (client → server). */
+  /**
+   * Sends a contract message (one of the contract's `client` messages),
+   * typed and encoded against its declaration. Fails with `NOT_CONNECTED`
+   * while reconnecting (nothing is queued), `NOT_JOINED` once left,
+   * `UNKNOWN_MESSAGE` for a name the server's contract doesn't have, or
+   * `ENCODE_FAILED` for a payload that got past the types.
+   */
   send<K extends keyof RecvMap<C> & string>(
     type: K,
     message: Infer<RecvMap<C>[K]>,
@@ -99,7 +134,12 @@ export interface IRoom<
   /** Leaves the room (a consented `LEAVE`) and removes every listener. */
   leave(): Promise<Result<void, ClientError>>
 
-  /** A contract message from the server, decoded and typed. */
+  /**
+   * A contract message from the server (one of the contract's `server`
+   * messages), decoded and typed. Messages that arrived with the join,
+   * before you could register, are kept (up to 64) and delivered to the
+   * first handler registered for them, on a later turn.
+   */
   onMessage<K extends keyof SendMap<C> & string>(
     type: K,
     cb: (message: Infer<SendMap<C>[K]>) => void,
@@ -121,10 +161,25 @@ export interface IRoom<
   onLeave(cb: (code: number) => void): () => void
   /** An `ERROR` frame for this room, or a local failure (desync, …). */
   onError(cb: (code: string, message: string) => void): () => void
+  /**
+   * Another client took a seat in the room (not this client itself). For
+   * who is playing, prefer the room's state, which also covers clients
+   * already there when you joined.
+   */
   onClientJoin(cb: (client: { sessionId: string }) => void): () => void
+  /** Another client's seat was released: it left, or its hold expired. */
   onClientLeave(cb: (client: { sessionId: string }) => void): () => void
 
+  /**
+   * Removes every listener, including {@link listen} attachments (their
+   * clean-up runs). Leaving the room does this for you.
+   */
   removeAllListeners(): void
+  /**
+   * Removes one listener by the function it was registered with (for
+   * `"message"`, from every message type). Calling the function the `on*`
+   * method returned does the same and is usually simpler.
+   */
   removeListener(event: RoomEvent, callback: (...args: never[]) => void): void
 }
 
@@ -205,6 +260,10 @@ function registerReachable(stateClass: SchemaConstructor): void {
 /** At most this many unclaimed pre-join events are kept (oldest dropped). */
 const MAX_UNCLAIMED = 64
 
+/**
+ * The `IRoom` implementation the client creates for each join. Type your
+ * code against `IRoom`.
+ */
 export class Room<S extends Schema = Schema, C extends Contract = EmptyContract>
   implements IRoom<S, C>, RoomLink
 {
@@ -214,6 +273,7 @@ export class Room<S extends Schema = Schema, C extends Contract = EmptyContract>
   public reconnectionToken: string | undefined = undefined
   /** The server's contract hash, from the handshake. */
   public contractHash = ""
+  /** The room's state codec, by name, from the handshake. */
   public stateCodec = ""
   /** @internal Current per-connection handle; changes on reconnect. */
   public _ref = 0

@@ -1,7 +1,14 @@
 import type { JoinErrorCode } from "@bungohan/types"
 
+/**
+ * What went wrong, as `ClientError.code`. Switch on it to tell the
+ * player something useful (see docs/guides/client.md#joining).
+ */
 export type ClientErrorCode =
-  /** A `JOIN_ERROR` code from the server (spec §6.7.6). */
+  /**
+   * A join the server refused: `ROOM_FULL`, `ROOM_NOT_FOUND`,
+   * `AUTH_FAILED`, `CONTRACT_MISMATCH`, `INVALID_TOKEN`, …
+   */
   | JoinErrorCode
   /** The connection couldn't be opened, or closed before it was usable. */
   | "CONNECTION_FAILED"
@@ -11,7 +18,7 @@ export type ClientErrorCode =
   | "RECONNECTION_FAILED"
   /** No open connection (not connected yet, or reconnecting). */
   | "NOT_CONNECTED"
-  /** The server refused the protocol version (close 1002, spec §6.7.7). */
+  /** The server refused this client's protocol version (close 1002). */
   | "PROTOCOL_ERROR"
   /** The room's state codec is one this client has no decoder for. */
   | "CODEC_MISMATCH"
@@ -27,7 +34,10 @@ export type ClientErrorCode =
   | "LEFT"
   /** The server didn't answer a join within `joinTimeout`. */
   | "TIMEOUT"
-  /** The state replica no longer matches the server's (spec §5.7.9). */
+  /**
+   * The state replica no longer matches the server's (a patch couldn't be
+   * applied). The client re-syncs by reconnecting.
+   */
   | "DESYNC"
   /** An `ERROR` frame from the server; its code is in the message. */
   | "SERVER_ERROR"
@@ -38,10 +48,22 @@ export type ClientErrorCode =
    */
   | "UNKNOWN_CLASS"
 
-/** Every error client-js reports, in the §6.5 shape. */
+/**
+ * Every error client-js reports: the `error` of a failed `Result`, and
+ * what `client.onError` receives. Branch on `code`; `message` is for
+ * logs.
+ */
 export class ClientError<T = unknown> extends Error {
+  /** What went wrong; stable, unlike `message`. */
   public readonly code: ClientErrorCode
+  /** When it happened, in epoch milliseconds (`Date.now()`). */
   public readonly timestamp: number
+  /**
+   * Extra detail, when there is any: the underlying error, or, for a join
+   * the server refused, `{ code }` with the server's own code (which is
+   * how you see a code this client doesn't know yet, reported as
+   * `JOIN_FAILED`).
+   */
   public readonly context?: T
 
   public constructor(code: ClientErrorCode, message: string, context?: T) {

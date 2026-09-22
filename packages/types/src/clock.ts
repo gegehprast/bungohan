@@ -1,3 +1,4 @@
+/** A timer handle from `Clock.setTimeout`/`setInterval`. */
 export type TimerId = number
 
 /**
@@ -6,13 +7,26 @@ export type TimerId = number
  * reconnection backoff) goes through an injected `Clock`, so tests drive
  * time with `ManualClock` from `@bungohan/testing`. It lives here, in the
  * package both sides share, because client-js must never import core.
+ *
+ * What an implementation must do:
+ *
+ * - Never go backwards in `now()`: the loops measure elapsed time with it,
+ *   and a step back stalls the simulation.
+ * - Never run a callback inside the `setTimeout`/`setInterval` call that
+ *   scheduled it, even with `ms` of 0.
+ * - Hand out ids that stay unique while their timer is live, and treat
+ *   clearing an unknown, fired or already-cleared id as a no-op.
  */
 export interface Clock {
   /** Milliseconds; only differences are meaningful. */
   now(): number
+  /** Runs `callback` once, `ms` milliseconds from now (at the earliest). */
   setTimeout(callback: () => void, ms: number): TimerId
+  /** Cancels a pending `setTimeout`. */
   clearTimeout(id: TimerId): void
+  /** Runs `callback` every `ms` milliseconds until cleared. */
   setInterval(callback: () => void, ms: number): TimerId
+  /** Cancels a `setInterval`. */
   clearInterval(id: TimerId): void
 }
 

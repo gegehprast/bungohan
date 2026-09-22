@@ -20,6 +20,12 @@ import type { Schema } from "./schema"
 import type { SchemaConstructor } from "./schema-registry"
 import type { FilterFn, State } from "./state-base"
 
+/**
+ * A `number` field, sent exactly as a float64 (8 bytes). Use it when the
+ * value must be exact or its range is unknown; for positions and other
+ * values with a known resolution, `createFixedPoint` is far smaller (see
+ * docs/guides/state.md#picking-a-number-type).
+ */
 export function createNumber(initial = 0): NumberState {
   return new NumberState(initial)
 }
@@ -30,8 +36,12 @@ export function createFloat32(initial = 0): Float32State {
 }
 
 /**
- * **Lossy** fixed-point number: sent as an int32 of `value * 10^decimals`.
- * See {@link FixedPointState} and spec §5.7.6.1.
+ * **Lossy** fixed-point number with `decimalPlaces` (0–9): sent as the
+ * int32 `round(value * 10^decimalPlaces)`, rounding half away from zero
+ * and saturating (±21,474,836.47 at 2 places), usually in 1–3 bytes. The
+ * server keeps the exact value you set, so small steps still accumulate,
+ * and a write that doesn't change the rounded value sends nothing. The
+ * usual choice for positions. See {@link FixedPointState}.
  */
 export function createFixedPoint(
   decimalPlaces: FixedDecimals,
@@ -43,7 +53,7 @@ export function createFixedPoint(
 /**
  * Integer of one kind: `createInt(f.int32)`, `createInt(f.uint8, 1)`. The
  * wire carries the value truncated toward zero and saturated at the
- * kind's range (spec §8.1.1). See {@link IntState}.
+ * kind's range (a `uint8` set to 300 sends 255). See {@link IntState}.
  */
 export function createInt<K extends IntKind>(
   of: ScalarField<K>,
@@ -62,6 +72,7 @@ export function createString<T extends string = string>(
   return new StringState<T>(initial ?? ("" as T))
 }
 
+/** A `boolean` field. */
 export function createBoolean(initial = false): BooleanState {
   return new BooleanState(initial)
 }
@@ -70,8 +81,8 @@ export function createBoolean(initial = false): BooleanState {
  * Map of primitives. `key` is `f.string`, `f.float64` or an integer kind
  * (`f.uint16`, …); `value` is `f.float64`, `f.float32`, `f.fixed(n)`,
  * `f.string` or `f.bool`. Lossy value types (`f.float32`, `f.fixed(n)`) are
- * quantized on the wire exactly like the matching primitive fields
- * (spec §5.7.6.1); keys never are.
+ * quantized on the wire exactly like the matching primitive fields; keys
+ * never are.
  *
  * ```ts
  * public scores = createMap(f.string, f.fixed(1)) // MapState<string, number>
@@ -135,12 +146,14 @@ export function createSchemaArray<T extends Schema>(
 
 /** Default client shape seen by filter functions (core's Client satisfies it). */
 export interface FilterClient {
+  /** The client's `sessionId`. */
   readonly id: string
 }
 
 /**
  * Sends `wrapped` only to clients for which `filterFn` returns true
- * (spec §5.6). Returns the same wrapper, so its API is unchanged.
+ * (see docs/guides/state.md#per-client-visibility). Returns the same
+ * wrapper, so its API is unchanged.
  *
  * `filterFn` runs with `this` bound to the owning schema, once per client per
  * sync tick. It must be a pure function of the schema and the client; if it

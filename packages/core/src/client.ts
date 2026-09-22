@@ -3,25 +3,34 @@ import type { ClientStats } from "./metrics"
 import type { Room } from "./room"
 
 /**
- * A seat this connection holds in a room owned by **another** process
- * (spec §6.4). There is no local `Client` for it: the owning process holds
- * that, and this process only relays bytes.
+ * A seat this connection holds in a room owned by **another** process, in
+ * cluster mode. There is no local `Client` for it: the owning process
+ * holds that, and this process only relays bytes.
  */
 export interface RemoteSeat {
   /** The process the room runs on. */
   readonly processId: string
+  /** The room's id. */
   readonly roomId: string
+  /** The seat's `sessionId` in that room. */
   readonly sessionId: string
 }
 
 /**
- * One transport connection. A connection can hold seats in several rooms
- * at once, each addressed on the wire by its `roomRef` (spec §6.7.1).
+ * One client connection (a browser tab, say), as `server.onConnect`
+ * reports it. A connection can hold seats in several rooms at once, each
+ * a {@link Client}. A seat outlives its connection while it is held for
+ * reconnection, and then moves to the new one.
  */
 export class Connection {
   /** Transport client id. */
   public readonly id: string
+  /**
+   * What the transport knew when the connection opened: address,
+   * headers, query and `token`. `onAuth` receives it too.
+   */
   public readonly context: ConnectionContext
+  /** When it opened, on the server's clock. */
   public readonly connectedAt: number
   /** @internal Seats of this connection by roomRef. */
   public readonly _seats = new Map<number, Client>()
@@ -55,20 +64,22 @@ export class Connection {
   }
 }
 
+/** Where a seat is in its life (`client.status`). */
 export type ClientStatus =
   /** Seated; `onAuth`/`onJoin` still running. Frames to it are queued. */
   | "joining"
   /** Joined and connected. */
   | "joined"
-  /** Connection lost; the seat is held for reconnection (spec §6.7.5). */
+  /** Connection lost; the seat is held for reconnection. */
   | "reconnecting"
   /** The seat is released. */
   | "left"
 
 /**
- * A client's seat in one room (spec §6.7). The same object survives a
- * reconnection: `sessionId` is stable, only `connection` changes. Use
- * `sessionId` (or `id`, the same value) to key per-player state.
+ * A client's seat in one room: what the room's hooks and message handlers
+ * receive. The same object survives a reconnection: `sessionId` is
+ * stable, only `connection` changes. Use `sessionId` (or `id`, the same
+ * value) to key per-player state.
  */
 export class Client {
   /** Stable for the life of the seat, across reconnections. */
@@ -111,6 +122,10 @@ export class Client {
     return this.sessionId
   }
 
+  /**
+   * `"joining"` while `onAuth`/`onJoin` run, `"joined"`, `"reconnecting"`
+   * while the seat is held, and `"left"` once released.
+   */
   public get status(): ClientStatus {
     return this._status
   }

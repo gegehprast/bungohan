@@ -1,5 +1,5 @@
 /**
- * React bindings for client-js (spec §7.4), at `@bungohan/client-js/react`.
+ * React bindings for client-js, at `@bungohan/client-js/react`.
  * A JS-only convenience layer, not part of the protocol. `react` is a peer
  * dependency, and the main entry never imports this module.
  */
@@ -31,8 +31,15 @@ import type { IRoom, JoinOptions } from "../room"
 
 const BungohanContext = createContext<IBungohanClient | undefined>(undefined)
 
+/** Props of {@link BungohanProvider}. */
 export interface BungohanProviderProps {
+  /**
+   * The page's client. Create it once, outside any component (or in a
+   * `useState` initializer): a new client per render would open a new
+   * connection each time.
+   */
   client: IBungohanClient
+  /** The tree that can call {@link useBungohan} and the room hooks. */
   children?: ReactNode
 }
 
@@ -62,7 +69,8 @@ export type RoomJoinMode = "join" | "create" | "joinOrCreate" | "joinById"
 
 /**
  * `useRoom`'s options for a contract with typed options: what the client
- * method of that mode takes (spec §4.1.2).
+ * method of that mode takes (join options, or `{ create, join }` in the
+ * creating modes when the contract declares create options).
  */
 export type RoomOptionsArg<C, M extends RoomJoinMode> = M extends
   | "create"
@@ -70,6 +78,7 @@ export type RoomOptionsArg<C, M extends RoomJoinMode> = M extends
   ? CreateArg<C>
   : InferJoinOptions<C>
 
+/** What {@link useRoom} returns; re-rendered as the join progresses. */
 export interface UseRoomResult<S extends Schema, C extends Contract> {
   /** Set once the join completed; undefined again after the room is left. */
   room: IRoom<S, C> | undefined
@@ -79,6 +88,7 @@ export interface UseRoomResult<S extends Schema, C extends Contract> {
    * server's side (kicked, disposed, connection lost for good).
    */
   status: "connecting" | "connected" | "error" | "left"
+  /** Why the join failed, when `status` is `error`. */
   error?: ClientError
   /** The `LeaveCode` when `status` is `left`. */
   leaveCode?: number
@@ -91,9 +101,14 @@ export interface UseRoomResult<S extends Schema, C extends Contract> {
  * picked from a room list).
  * `options` and `join` are read when the join starts; changing them later
  * doesn't rejoin. Pass `join` (`{ state, contract }`) to type the room and
- * get a replica. For a contract with typed options (spec §4.1.2), `mode`
- * and `join` are required and `options` are typed by the mode, as the
- * client's join methods type them.
+ * get a replica. For a contract with typed options, `mode` and `join` are
+ * required and `options` are typed by the mode, as the client's join
+ * methods type them.
+ *
+ * Under StrictMode's double mount (development only) it joins twice and
+ * gives the first seat back, so with `"create"` it creates two rooms:
+ * create from an event handler instead (see
+ * docs/guides/client.md#react-and-strictmode).
  */
 export function useRoom<
   S extends Schema,

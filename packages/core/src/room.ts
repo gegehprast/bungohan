@@ -122,10 +122,11 @@ export function asOptions(options: unknown): Record<string, unknown> {
 }
 
 /**
- * A room: authoritative state, clients and game logic (spec §6.2). Extend
- * it, give it a `state`, and override the lifecycle hooks you need. Bind a
- * message contract as the second type parameter, and hand the same
- * contract to the runtime as `static contract`:
+ * A room: authoritative state, clients and game logic (see
+ * docs/guides/rooms.md). Extend it, give it a `state`, and override the
+ * lifecycle hooks you need. Bind a message contract as the second type
+ * parameter, and hand the same contract to the runtime as
+ * `static contract`:
  *
  * ```ts
  * class ShooterRoom extends Room<ShooterState, typeof shooterContract> {
@@ -146,8 +147,9 @@ export abstract class Room<
   TContract extends Contract = EmptyContract,
 > {
   /**
-   * The runtime copy of the room's contract (spec §4.1). Required when the
-   * class is typed with a contract (a compile error at `defineRoomType`
+   * The runtime copy of the room's contract (`defineContract`): what
+   * decodes and encodes its messages and options. Required when the class
+   * is typed with a contract (a compile error at `defineRoomType`
    * otherwise).
    */
   public static contract: Contract | undefined = undefined
@@ -162,11 +164,30 @@ export abstract class Room<
   /** Seats by `sessionId`: joining, joined and awaiting reconnection. */
   protected readonly clients = new Map<string, Client>()
 
+  /**
+   * Seats (clients plus open reservations) before joins fail with
+   * `ROOM_FULL`. Starts from the room type's option; change it at any
+   * time.
+   */
   public maxClients = Number.POSITIVE_INFINITY
+  /**
+   * Dispose the room when its last seat is released. Starts from the room
+   * type's option; set it to `false` to keep an empty room alive.
+   */
   public autoDispose = true
+  /**
+   * Hold a seat whose connection dropped for `reconnectionTimeout`
+   * seconds, instead of releasing it at once. Starts from the room type's
+   * option.
+   */
   public allowReconnection = true
-  /** Seconds. */
+  /** Seconds a dropped seat is held. Starts from the room type's option. */
   public reconnectionTimeout = 30
+  /**
+   * Free-form description for matchmaking: `matchMaker.query()` matches
+   * it and room listings show it (e.g. a map name, a skill bracket). Keep
+   * it plain JSON; in cluster mode it crosses processes.
+   */
   public metadata: Record<string, unknown> = {}
 
   private _host: RoomHost | undefined
@@ -201,33 +222,49 @@ export abstract class Room<
   // Identity and state
   // ==========================================================================
 
+  /** The room's unique id, what clients pass to `joinById`. */
   public get id(): string {
     return this._id
   }
 
+  /** The name the room's type was registered under (`defineRoomType`). */
   public get roomType(): string {
     return this._type?.name ?? ""
   }
 
+  /**
+   * `"private"` rooms are skipped by `join`/`joinOrCreate` matchmaking and
+   * by listings, but still joinable by id. Change it with
+   * `makePrivate()`/`makePublic()`.
+   */
   public get visibility(): "public" | "private" {
     return this._visibility
   }
 
+  /**
+   * A locked room refuses every new join (`ROOM_LOCKED`), by id too; held
+   * seats can still reconnect. Change it with `lock()`/`unlock()`.
+   */
   public get locked(): boolean {
     return this._locked
   }
 
+  /** True from the moment disposal starts. */
   public get isDisposed(): boolean {
     return this._disposing !== undefined
   }
 
+  /**
+   * True while every client has dropped and at least one seat is held:
+   * both loops are stopped until a seat reconnects or someone joins.
+   */
   public get isPaused(): boolean {
     return this._paused
   }
 
   /**
    * True when this object is a `RoomProxy` for a room on another process
-   * (spec §6.4). A room this process owns is always local.
+   * (cluster mode). A room this process owns is always local.
    */
   public get isRemote(): boolean {
     return false
@@ -258,8 +295,8 @@ export abstract class Room<
 
   /**
    * Runs when joining an existing room (including through a reservation).
-   * `options` are typed by the contract's join options (spec §4.1.2) and
-   * were decoded against them: their shape is guaranteed, their values are
+   * `options` are typed by the contract's join options and were decoded
+   * against them: their shape is guaranteed, their values are
    * still the client's, so check game rules (a name's length) here or in
    * `onJoin`.
    */
@@ -273,8 +310,10 @@ export abstract class Room<
 
   /**
    * The room was created. `options` are the framework's room settings plus
-   * the contract's create options (spec §4.1.2): typed and decoded when the
-   * contract declares them, otherwise whatever the creator sent.
+   * the contract's create options: typed and decoded when the contract
+   * declares them, otherwise whatever the creator sent. Set up the state
+   * and register message handlers here. A throw fails the creating join
+   * (`JOIN_FAILED`) and disposes the room.
    */
   protected async onCreate(
     _options: RoomOnCreateOptions & InferCreateOptions<TContract>,
@@ -299,6 +338,11 @@ export abstract class Room<
   /** Right before every sync tick. */
   protected onBeforeSync(): void {}
 
+  /**
+   * The room is going away, after every seat was released (each client
+   * got its `onLeave`). Save what should outlive it here; the server
+   * waits for it during a graceful shutdown.
+   */
   protected async onDispose(): Promise<void> {}
 
   /**
@@ -316,9 +360,16 @@ export abstract class Room<
    */
   protected onReconnect(_client: Client): void {}
 
-  /** No client connected, and at least one seat awaits reconnection. */
+  /**
+   * No client connected, and at least one seat awaits reconnection: both
+   * loops stop (`onTick` doesn't run) until `onResume`.
+   */
   protected onPause(): void {}
 
+  /**
+   * A paused room is running again: a held seat reconnected (this runs
+   * before its `onReconnect`) or someone joined.
+   */
   protected onResume(): void {}
 
   // ==========================================================================
@@ -438,6 +489,7 @@ export abstract class Room<
     }
   }
 
+  /** `sendRaw` to every client (but `except`). Encoded once. */
   protected broadcastRaw(
     type: string,
     message: unknown,
@@ -514,18 +566,22 @@ export abstract class Room<
     return ok(undefined)
   }
 
+  /** Refuses new joins (see {@link locked}), e.g. once a match starts. */
   public lock(): void {
     this._locked = true
   }
 
+  /** Accepts joins again. */
   public unlock(): void {
     this._locked = false
   }
 
+  /** Hides the room from matchmaking and listings (see {@link visibility}). */
   public makePrivate(): void {
     this._visibility = "private"
   }
 
+  /** Lists the room again and lets matchmaking place clients in it. */
   public makePublic(): void {
     this._visibility = "public"
   }
@@ -564,18 +620,27 @@ export abstract class Room<
   // Presence (local to this process)
   // ==========================================================================
 
+  /**
+   * Keeps a small record for a seat (by `sessionId`), for code outside
+   * the room to read. Never sent to clients (what they should see belongs
+   * in the state), and cleared when the seat is released or the room is
+   * disposed.
+   */
   public setPresence(clientId: string, data: unknown): void {
     this._presence.set(clientId, data)
   }
 
+  /** The seat's presence record, or undefined. */
   public getPresence(clientId: string): unknown {
     return this._presence.get(clientId)
   }
 
+  /** Every presence record, by `sessionId` (a copy). */
   public getAllPresence(): Map<string, unknown> {
     return new Map(this._presence)
   }
 
+  /** Drops the seat's presence record. */
   public removePresence(clientId: string): void {
     this._presence.delete(clientId)
   }
@@ -641,14 +706,17 @@ export abstract class Room<
     return this.clients.size
   }
 
+  /** Whether a seat with this `sessionId` is taken (held seats count). */
   public hasClient(clientId: string): boolean {
     return this.clients.has(clientId)
   }
 
+  /** The seat with this `sessionId`, including held ones. */
   public getClient(clientId: string): Client | undefined {
     return this.clients.get(clientId)
   }
 
+  /** Every seat: joining, joined and awaiting reconnection (a copy). */
   public getClients(): Client[] {
     return [...this.clients.values()]
   }

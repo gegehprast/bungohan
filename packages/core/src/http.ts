@@ -1,12 +1,22 @@
 import { err, ok, type Result } from "@bungohan/result"
 import type { Server } from "bun"
 
+/**
+ * {@link HttpServer}'s settings, all required (the server fills them from
+ * `ServerOptions.http` and its defaults).
+ */
 export interface HttpServerOptions {
+  /** The port to listen on; `0` picks a free one. */
   port: number
+  /** The interface to bind, e.g. `"0.0.0.0"`. */
   hostname: string
+  /** Answer with `Access-Control-Allow-Origin: *` (and to preflights). */
   cors: boolean
+  /** Serve `GET /metrics` (404 while metrics are off). */
   enableMetrics: boolean
+  /** Serve `GET /health`. */
   enableHealthCheck: boolean
+  /** Serve `GET /rooms`. */
   enableRoomsList: boolean
 }
 
@@ -19,9 +29,12 @@ export interface HttpSource {
 }
 
 /**
- * Optional built-in HTTP server (spec §6.1): `GET /health`, `GET /metrics`
- * and `GET /rooms`, each individually switchable. Runs on its own port,
- * separate from the WebSocket transport.
+ * The optional built-in HTTP server: `GET /health`, `GET /metrics` and
+ * `GET /rooms` as JSON, each individually switchable. Runs on its own
+ * port, separate from the WebSocket transport. The game server creates it
+ * when `ServerOptions.http.enabled` is set (see
+ * docs/guides/production.md#http-endpoints); `server.getHttpServer()`
+ * returns it.
  */
 export class HttpServer {
   private readonly _options: HttpServerOptions
@@ -33,6 +46,7 @@ export class HttpServer {
     this._source = source
   }
 
+  /** Starts listening. Starting twice is `ok`; a busy port is an `err`. */
   public start(): Result<void, Error> {
     if (this._server !== undefined) return ok(undefined)
     try {
@@ -47,6 +61,7 @@ export class HttpServer {
     }
   }
 
+  /** Stops listening and drops open requests. */
   public async stop(): Promise<void> {
     const server = this._server
     this._server = undefined

@@ -1,18 +1,6 @@
 /**
- * Several `BungohanServer` processes in one `bun test` process (spec §6.4).
- *
- * Each node is a full {@link TestHarness} — its own server, its own
- * `LoopbackTransport`, its own clients — and they share two things: one
- * `ManualClock`, so every heartbeat, timeout and sync loop in the cluster
- * runs on the same time a test advances, and one backplane bus, so they
- * actually talk. `flush()` covers every node's transport, because a frame
- * for a client on node 0 may be produced on node 1 and relayed back.
- *
- * ```ts
- * const cluster = await createClusterHarness({ size: 2, rooms: { game: GameRoom } })
- * const a = await cluster.connect(0)          // socket on process 0
- * const room = (await a.joinOrCreate("game", {}, { state, contract })).unwrap()
- * ```
+ * `ClusterHarness`: several `BungohanServer` processes in one `bun test`
+ * process (spec §6.4).
  */
 import {
   type IBackplane,
@@ -26,6 +14,7 @@ import { settle } from "./settle"
 
 type ClusterOptions = NonNullable<ServerOptions["cluster"]>
 
+/** `createClusterHarness`'s options: a test harness's, plus the cluster's. */
 export interface ClusterHarnessOptions<
   T extends Record<string, Room> = Record<string, Room>,
 > extends Omit<TestHarnessOptions<T>, "clock"> {
@@ -60,9 +49,29 @@ const MAX_FLUSH_PASSES = 1_000
 /** Simulated time `run()` gives work before declaring it stuck. */
 const RUN_LIMIT_MS = 60_000
 
+/**
+ * Several server processes in one `bun test` process, for cluster mode
+ * (see docs/guides/scaling.md#testing-a-cluster).
+ *
+ * Each node is a full {@link TestHarness}: its own server, its own
+ * `LoopbackTransport`, its own clients. They share two things: one
+ * `ManualClock`, so every heartbeat, timeout and sync loop in the cluster
+ * runs on the same time a test advances, and one backplane bus, so they
+ * actually talk. `flush()` covers every node's transport, because a frame
+ * for a client on node 0 may be produced on node 1 and relayed back.
+ *
+ * ```ts
+ * const cluster = await createClusterHarness({ size: 2, rooms: { game: GameRoom } })
+ * const a = await cluster.connect(0) // socket on process 0
+ * const room = (await a.joinOrCreate("game", {}, { state, contract })).unwrap()
+ * ```
+ */
 export class ClusterHarness {
+  /** The one clock every process runs on. */
   public readonly clock: ManualClock
+  /** The processes, in order; node `i` has process id `p<i>`. */
   public readonly nodes: TestHarness[]
+  /** The backplane channel prefix every node uses. */
   public readonly namespace: string
   private readonly _backplanes: IBackplane[]
   private readonly _ownsBackplanes: boolean
@@ -121,6 +130,7 @@ export class ClusterHarness {
     return this
   }
 
+  /** Node `index`. Throws (fails the test) if there is none. */
   public node(index: number): TestHarness {
     const node = this.nodes[index]
     if (node === undefined) throw new Error(`no node ${index} in the cluster`)
@@ -179,6 +189,10 @@ export class ClusterHarness {
     return outcome.value
   }
 
+  /**
+   * Delivers everything in flight, advances the shared clock by `ms`, then
+   * delivers again, across every node.
+   */
   public async tick(ms: number): Promise<void> {
     await this.flush()
     await this.clock.advance(ms)

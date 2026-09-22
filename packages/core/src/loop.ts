@@ -4,7 +4,9 @@ import type { Clock, TimerId } from "@bungohan/types"
 const EPSILON = 1e-6
 
 /**
- * Fixed-timestep simulation loop with an accumulator (spec §6.8).
+ * Fixed-timestep simulation loop with an accumulator: what drives each
+ * room's `onTick`. Exported for games that want the same stepping outside
+ * a room.
  *
  * A timer wakes the loop roughly every step. Each wake adds the real
  * elapsed time (from the injected clock) to an accumulator and runs as
@@ -40,6 +42,7 @@ export class SimulationLoop {
     this._maxCatchUpSteps = Math.max(1, maxCatchUpSteps)
   }
 
+  /** True between `start()` and `stop()`. */
   public get running(): boolean {
     return this._timer !== undefined
   }
@@ -59,6 +62,10 @@ export class SimulationLoop {
     return this._steps
   }
 
+  /**
+   * Starts stepping, measuring from now (time before this call is never
+   * simulated). Starting a running loop does nothing.
+   */
   public start(): void {
     if (this._timer !== undefined) return
     this._last = this._clock.now()
@@ -66,6 +73,7 @@ export class SimulationLoop {
     this._timer = this._clock.setInterval(() => this._wake(), this._stepMs)
   }
 
+  /** Stops stepping; a step in progress finishes. Safe to call twice. */
   public stop(): void {
     if (this._timer === undefined) return
     this._clock.clearInterval(this._timer)
@@ -104,7 +112,11 @@ export class SimulationLoop {
   }
 }
 
-/** Runs `run` at a fixed rate (the sync loop). No accumulator: a sync is not time-integrated. */
+/**
+ * Runs a callback at a fixed rate: what drives each room's state sync.
+ * No accumulator and no catch-up, since a sync is not time-integrated: a
+ * late one simply sends everything that changed.
+ */
 export class IntervalLoop {
   private readonly _clock: Clock
   private readonly _run: () => void
@@ -117,25 +129,30 @@ export class IntervalLoop {
     this._periodMs = 1000 / rate
   }
 
+  /** True between `start()` and `stop()`. */
   public get running(): boolean {
     return this._timer !== undefined
   }
 
+  /** Milliseconds between runs (`1000 / rate`). */
   public get periodMs(): number {
     return this._periodMs
   }
 
+  /** Starts running; the first run is one period from now. */
   public start(): void {
     if (this._timer !== undefined) return
     this._timer = this._clock.setInterval(this._run, this._periodMs)
   }
 
+  /** Stops running. Safe to call twice. */
   public stop(): void {
     if (this._timer === undefined) return
     this._clock.clearInterval(this._timer)
     this._timer = undefined
   }
 
+  /** Changes the rate (runs per second); a running loop restarts at it. */
   public setRate(rate: number): void {
     const running = this.running
     this.stop()

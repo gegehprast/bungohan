@@ -17,6 +17,10 @@ import type {
   LoopbackTransport,
 } from "./loopback"
 
+/**
+ * `LoopbackClientTransport`'s options: what its connections present to the
+ * server, and hooks to watch or cut the link.
+ */
 export interface LoopbackClientTransportOptions
   extends Omit<LoopbackConnectOptions, "protocols" | "token"> {
   /**
@@ -32,6 +36,12 @@ export interface LoopbackClientTransportOptions
   onClose?: () => void
 }
 
+/**
+ * An `IClientTransport` over a `LoopbackTransport`: a real
+ * `BungohanClient` talks to a real server in one process, with only bytes
+ * crossing, delivered when the test flushes. `TestHarness.connect()` sets
+ * one up; build one yourself to give a client options the harness doesn't.
+ */
 export class LoopbackClientTransport implements IClientTransport {
   private readonly _server: LoopbackTransport
   private readonly _options: LoopbackClientTransportOptions

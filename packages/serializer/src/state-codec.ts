@@ -19,23 +19,44 @@ import { packUnknownMessage, unpackMessage } from "./message-codec"
 import { MessagePackSerializer } from "./messagepack"
 
 /**
- * A room's codec (PROTOCOL.md §13): it encodes the state op stream and the
- * room's contract messages, so a room has exactly one codec, named in the
- * join handshake. Raw messages and control bodies are not its business
- * (they use the connection's `ISerializer`).
+ * A room's codec: it encodes the state op stream and the room's contract
+ * messages, so a room has exactly one codec, named in the join handshake.
+ * Raw messages and control bodies are not its business (they use the
+ * connection's `ISerializer`). Choose it with `ServerOptions.stateCodec`:
+ * `SchemaCodec` (the default, compact and tag-free) or
+ * `MessagePackStateCodec` (self-describing, easier to inspect).
  *
  * Stateless itself: each state stream (a room on the server, a joined room
  * on a client) gets its own {@link IStateCodecSession}, because the class
  * table grows during a stream and a tag-free codec needs it to decode.
  * Messages need no session: their declarations are the whole layout.
+ *
+ * What an implementation must do:
+ *
+ * - Be deterministic and match the client's codec of the same name byte
+ *   for byte. A client picks its decoder by `getName()`, and one without
+ *   that name fails the join with `CODEC_MISMATCH`, so a custom codec
+ *   needs a counterpart in every client.
+ * - Treat decode input as untrusted and return an `err` for anything that
+ *   isn't an exact encoding. No method may throw: they run on every frame.
+ * - Return arrays the caller owns (they are queued and broadcast).
  */
 export interface IStateCodec {
   /** Named in the join handshake so the client picks the matching codec. */
   getName(): string
+  /**
+   * A fresh session for one state stream, with an empty class table. Core
+   * starts a new one whenever it sends a room's full snapshot from
+   * scratch; a client, for each join.
+   */
   createSession(): IStateCodecSession
   /**
-   * Encodes a contract message. Numbers are converted per PROTOCOL.md §12;
-   * a payload that got past the types is `ENCODE_FAILED`.
+   * Encodes a contract message. Numbers are converted to the field's type
+   * as they are encoded (integers truncate toward zero and saturate at
+   * their type's range, `fixed:n` rounds half away from zero, `float32`
+   * rounds to single precision), exactly as the receiver will hold them.
+   * A payload that got past the types (a string in a number field) is
+   * `ENCODE_FAILED`.
    */
   encodeMessage(
     def: MessageDef,
@@ -54,10 +75,20 @@ export interface IStateCodec {
 /**
  * One op stream. The session keeps its class table up to date from the
  * `DEFINE` ops it encodes or decodes, in stream order, so no table is ever
- * passed in (spec §5.7.11). A snapshot restating classes the session
- * already knows is fine; a `DEFINE` that contradicts one is an error.
+ * passed in. A snapshot restating classes the session already knows is
+ * fine; a `DEFINE` that contradicts one is an error.
+ *
+ * The server encodes a room's frames through one session and every client
+ * decodes through its own, in the order they were encoded, from the
+ * snapshot it joined with onward (a snapshot `DEFINE`s every class it
+ * uses, so a late joiner's table catches up).
  */
 export interface IStateCodecSession {
+  /**
+   * Encodes the ops of one frame, learning any class they `DEFINE`. A
+   * malformed or contradicting `DEFINE`, or an op the codec can't encode
+   * against the table, is `ENCODE_FAILED`.
+   */
   encodeOps(ops: readonly WireOp[]): Result<Uint8Array, SerializerError>
   /**
    * Frame-level decode: the result is well-formed `WireOp`s (right arity

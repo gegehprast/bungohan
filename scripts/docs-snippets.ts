@@ -130,7 +130,7 @@ export function slug(heading: string): string {
     .replace(/\s/g, "-")
 }
 
-function anchorsOf(markdown: string): Set<string> {
+export function anchorsOf(markdown: string): Set<string> {
   const anchors = new Set<string>()
   const counts = new Map<string, number>()
   let fence: string | undefined

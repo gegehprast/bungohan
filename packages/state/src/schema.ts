@@ -227,8 +227,8 @@ function buildClassInfo(instance: Schema): ClassInfo {
  * holding factory-created wrappers (`createNumber()`, …) or nested Schema
  * instances; nothing needs to be called after `new`.
  *
- * Initialization is lazy (spec §5.1): a base constructor cannot see subclass
- * fields, so the field table is built by `_ensureInit()` on first attach to a
+ * Initialization is lazy: a base constructor cannot see subclass fields,
+ * so the field table is built by `_ensureInit()` on first attach to a
  * parent, first snapshot/delta, or first `applyDelta`. Mutations before that
  * point are not recorded, which is correct: nothing has observed the
  * instance yet, and it is serialized in full the first time it is sent.

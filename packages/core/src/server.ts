@@ -165,8 +165,10 @@ function parseJoin(value: unknown): JoinRequest | undefined {
 }
 
 /**
- * The game server (spec §6.1): owns the transport, the connections, the
- * rooms and the matchmaker, and speaks the §6.7 wire protocol.
+ * The game server: owns the transport, the connections, the rooms and the
+ * matchmaker, and speaks the wire protocol to clients. Create it with
+ * `createBungohanServer`, register room types with `defineRoomType`, then
+ * `start()` (see docs/getting-started.md).
  */
 export class BungohanServer {
   private readonly _options: ServerOptions
@@ -274,7 +276,11 @@ export class BungohanServer {
   /**
    * Registers a room type. **Throws** (a `TypeError` listing every problem)
    * if the room's contract or any Schema class reachable from its state is
-   * malformed, or if the name is taken: a definition-time error (spec §6.8).
+   * malformed, or if the name is taken: a definition-time error, so a bad
+   * room crashes the server at startup instead of desyncing clients later.
+   * Register every type before `start()`. `options` are the type's
+   * defaults (see `DefineRoomOptions`), which each room may change on
+   * itself.
    */
   public defineRoomType<R extends Room>(
     name: string,
@@ -284,6 +290,14 @@ export class BungohanServer {
     this._matchMaker.registerRoomType(name, RoomClass, options)
   }
 
+  /**
+   * Starts the cluster node (in cluster mode), the transport and the HTTP
+   * server, and installs the SIGTERM/SIGINT handlers. Fails with
+   * `INVALID_STATE` if already running, `CONNECTION_FAILED` if a port
+   * can't be bound or the backplane can't be reached, or `INVALID_OPTIONS`
+   * for a cluster configuration that can't work; nothing is left running
+   * then.
+   */
   public async start(): Promise<Result<void, BungohanError>> {
     if (this._running) {
       return err(this._error("INVALID_STATE", "already running"))
@@ -415,22 +429,33 @@ export class BungohanServer {
     return ok(undefined)
   }
 
+  /** True between a successful `start()` and the end of `stop()`. */
   public isRunning(): boolean {
     return this._running
   }
 
+  /**
+   * This process's id: `ServerOptions.cluster.processId`, or a random one.
+   * Rooms listed across a cluster carry it.
+   */
   public get processId(): string {
     return this._processId
   }
 
+  /** This process's rooms, with room created/disposed events. */
   public getRoomManager(): RoomManager {
     return this._manager
   }
 
+  /**
+   * Finds, creates and reserves rooms from server code (a lobby, an HTTP
+   * endpoint, a bot).
+   */
   public getMatchMaker(): MatchMaker {
     return this._matchMaker
   }
 
+  /** The transport: `ServerOptions.transport.provider`, or the default. */
   public getTransport(): ITransport {
     return this._transport
   }
@@ -444,14 +469,17 @@ export class BungohanServer {
     return this._running ? this._transport.getPort?.() : undefined
   }
 
+  /** The clock every loop and timeout runs on (`ServerOptions.clock`). */
   public getClock(): Clock {
     return this._clock
   }
 
+  /** The server-wide counters, or undefined when metrics are off. */
   public getMetricsCollector(): MetricsCollector | undefined {
     return this._metrics
   }
 
+  /** The built-in HTTP server while it runs (`ServerOptions.http`). */
   public getHttpServer(): HttpServer | undefined {
     return this._http
   }
@@ -495,6 +523,10 @@ export class BungohanServer {
   // Metrics
   // ==========================================================================
 
+  /**
+   * Process-wide counters and memory use, as `GET /metrics` serves them.
+   * `METRICS_DISABLED` unless `ServerOptions.metrics.enabled`.
+   */
   public getServerMetrics(): Result<ServerMetrics, BungohanError> {
     const m = this._metrics
     if (m === undefined) return err(this._metricsDisabled())
@@ -526,6 +558,7 @@ export class BungohanServer {
     })
   }
 
+  /** One entry per room on this process. `METRICS_DISABLED` when off. */
   public getAllRoomMetrics(): Result<RoomMetrics[], BungohanError> {
     if (this._metrics === undefined) return err(this._metricsDisabled())
     const now = this._clock.now()
@@ -537,6 +570,7 @@ export class BungohanServer {
     return ok(out)
   }
 
+  /** One entry per seat on this process. `METRICS_DISABLED` when off. */
   public getAllClientMetrics(): Result<ClientMetrics[], BungohanError> {
     if (this._metrics === undefined) return err(this._metricsDisabled())
     const now = this._clock.now()
@@ -1316,7 +1350,8 @@ export class BungohanServer {
 
   /**
    * Connections of *other* processes that currently hold seats in rooms
-   * here (spec §6.4). One per remote client connection, not per seat.
+   * here, in cluster mode. One per remote client connection, not per
+   * seat.
    */
   public getRemoteConnectionCount(): number {
     return this._remoteConnections.size
@@ -1912,6 +1947,10 @@ export class BungohanServer {
   }
 }
 
+/**
+ * Creates a server; nothing listens until `start()`. Every option has a
+ * default (see `ServerOptions`, and docs/reference.md#serveroptions).
+ */
 export function createBungohanServer(
   options: ServerOptions = {},
 ): BungohanServer {

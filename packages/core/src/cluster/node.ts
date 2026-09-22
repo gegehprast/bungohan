@@ -30,7 +30,10 @@ import {
 import { PeerRegistry } from "./registry"
 import { PendingRequests, type RequestFailure } from "./requests"
 
-/** Timings, all measured on the server's `Clock` (spec §6.4). */
+/**
+ * The cluster's timings, all in milliseconds on the server's `Clock`. Set
+ * them through `ServerOptions.cluster`.
+ */
 export interface ClusterTimings {
   /** How often this process announces itself. Default 2,000 ms. */
   heartbeatInterval: number
@@ -38,10 +41,14 @@ export interface ClusterTimings {
   peerTimeout: number
   /** How long a directed request waits for its reply. Default 5,000 ms. */
   requestTimeout: number
-  /** How long a broadcast collects answers. Default 200 ms (spec §6.4). */
+  /**
+   * How long a broadcast (process list, room lookup, query) collects
+   * answers. Default 200 ms.
+   */
   gatherTimeout: number
 }
 
+/** The defaults `ServerOptions.cluster` falls back to. */
 export const DEFAULT_CLUSTER_TIMINGS: ClusterTimings = {
   heartbeatInterval: 2_000,
   peerTimeout: 6_000,
@@ -100,7 +107,7 @@ export interface ClusterHandlers {
   edgeProcessLost(processId: string): void
   /** Edge side: relay finished frames to local connections. */
   relayFrames(connectionIds: string[], frame: Uint8Array): void
-  /** Edge side: the owner refused a frame (PROTOCOL.md §8.2). */
+  /** Edge side: the owner refused a frame as a protocol violation. */
   relayViolation(connectionId: string, why: string): void
   /** Edge side: the process owning some of our seats is gone. */
   ownerProcessLost(processId: string): void
@@ -125,8 +132,12 @@ export interface ClusterNodeOptions {
 }
 
 /**
- * Cluster mode for one `BungohanServer`. Created by `start()` when
- * `cluster.enabled` is set, torn down by `stop()`.
+ * Cluster mode for one `BungohanServer`: this process's backplane
+ * subscriptions, its view of the other processes, and the routing of
+ * everything that crosses between them. Created by `server.start()` when
+ * `cluster.enabled` is set, torn down by `stop()`; `server.getCluster()`
+ * returns it. You rarely call it directly: the matchmaker and
+ * `RoomProxy` use it.
  */
 export class ClusterNode {
   private readonly _options: ClusterNodeOptions
@@ -150,10 +161,12 @@ export class ClusterNode {
     })
   }
 
+  /** This process's id in the cluster. */
   public get processId(): string {
     return this._options.processId
   }
 
+  /** True between a successful `start()` and `stop()`. */
   public get isRunning(): boolean {
     return this._running
   }
@@ -167,6 +180,12 @@ export class ClusterNode {
   // Lifecycle
   // ==========================================================================
 
+  /**
+   * Subscribes to the backplane and announces this process. Fails with
+   * `INVALID_OPTIONS` for a serializer that doesn't round-trip binary
+   * (frames are relayed inside backplane messages), or
+   * `CONNECTION_FAILED` when the backplane can't subscribe.
+   */
   public async start(): Promise<Result<void, BungohanError>> {
     // Before anything else, and exactly once: a serializer that can't
     // carry binary would break frame relay at runtime, in cluster mode
@@ -204,6 +223,10 @@ export class ClusterNode {
     return ok(undefined)
   }
 
+  /**
+   * Says goodbye to the other processes, fails requests still waiting
+   * (with `INVALID_STATE`), and unsubscribes.
+   */
   public async stop(): Promise<void> {
     if (!this._running) return
     this._running = false
@@ -220,8 +243,8 @@ export class ClusterNode {
   // ==========================================================================
 
   /**
-   * Every process that answers within the window, plus this one, which is
-   * included without a round trip (spec §6.4, step 3).
+   * Every process that answers within `gatherTimeout`, plus this one,
+   * which is included without a round trip.
    */
   public async processes(): Promise<ProcessInfo[]> {
     const local = this._options.handlers.localProcessInfo()
@@ -290,6 +313,11 @@ export class ClusterNode {
     return (await answer).flat()
   }
 
+  /**
+   * Asks `processId` to create a room of `roomType` with already-encoded
+   * options. Fails with the owner's error, `TIMEOUT` after
+   * `requestTimeout`, or `CONNECTION_LOST` if that process dies first.
+   */
   public async createRoom(
     processId: string,
     roomType: string,
@@ -303,6 +331,7 @@ export class ClusterNode {
     }))
   }
 
+  /** Asks `processId` to reserve a seat in its room (see `createRoom`). */
   public async reserve(
     processId: string,
     roomId: string,
@@ -316,6 +345,7 @@ export class ClusterNode {
     }))
   }
 
+  /** Runs a `RoomProxy` operation on the room's process (see `createRoom`). */
   public async roomOp(
     processId: string,
     roomId: string,

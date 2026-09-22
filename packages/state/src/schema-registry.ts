@@ -1,16 +1,26 @@
 import type { Schema } from "./schema"
 
+/**
+ * A Schema class, as the factories and joins take it: constructible with
+ * no arguments (the receiver builds instances itself).
+ */
 export type SchemaConstructor<T extends Schema = Schema> = new () => T
 
 const registry = new Map<string, SchemaConstructor>()
 
 /**
  * `schemaName → constructor`, used by receivers to instantiate classes named
- * in the wire's class table. Classes auto-register on first `new`, but a
- * client that only ever *receives* a class (e.g. `Player` inside a map) never
- * constructs one itself — register those explicitly.
+ * in the wire's class table. Classes auto-register on first `new`, and a
+ * client join registers every class its state class refers to. What's left
+ * to register by hand is a subclass used as a collection element that no
+ * field declares: without it the client leaves such an element out and
+ * reports `UNKNOWN_CLASS`.
  */
 export const SchemaRegistry = {
+  /**
+   * Registers classes under their own `schemaName` (a class without one
+   * is skipped). A later registration of a name replaces the earlier one.
+   */
   register(...ctors: SchemaConstructor[]): void {
     for (const ctor of ctors) {
       const name = schemaNameOf(ctor)
@@ -18,19 +28,25 @@ export const SchemaRegistry = {
     }
   },
 
+  /** The class registered under `name`, if any. */
   get(name: string): SchemaConstructor | undefined {
     return registry.get(name)
   },
 
+  /** Whether a class is registered under `name`. */
   has(name: string): boolean {
     return registry.has(name)
   },
 
+  /** Every registered `schemaName` (a copy). */
   getNames(): string[] {
     return [...registry.keys()]
   },
 
-  /** For tests. */
+  /**
+   * Forgets every class, for tests that need a clean registry. Classes
+   * register again on their next `new` or join.
+   */
   clear(): void {
     registry.clear()
   },

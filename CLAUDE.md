@@ -114,6 +114,18 @@ import { test, expect } from "bun:test"
 - **GDScript has no exceptions.** A typed function cut short by a script error returns its type's default (`""` for `-> String`), so a failing check can read as a pass. The Godot runners extend `clients/godot/tests/harness.gd`, which fails the run on any logged engine/script error; keep new suites under it. Also: `String == int` is a runtime error in Godot 4 (check `typeof` first), a Godot `String` can't hold U+0000, and Godot's own JSON/float parsing isn't correctly rounded (the runners use `tests/json_exact.gd`). PROTOCOL.md §15 has the rest.
 - **Numeric ids are never baked into generated client code.** Message-type and schema-class ids come from the join handshake and resolve by name at runtime (spec §4.2), so a stale Unity/Godot build can't silently desync.
 
+## JSDoc on public API
+
+An editor falls back from a class member to the doc of the interface member it implements, never the other way round, so code holding an interface type (`IBungohanClient`, `IRoom`, `ITransport`) sees only what's on the interface.
+
+- **The contract lives on the interface:** what the member does, when to use it, what it returns (or which `Result` error), and any gotcha. That's what callers and implementers read.
+- **The class keeps only what's specific to that implementation** (e.g. `RedisStore` JSON-serializes values and uses `SETEX` for TTLs; `WebSocketTransport` closes clients with 1001 on shutdown). Don't copy the contract text onto the class; an undocumented class member inherits it.
+- **Extension-point interfaces** (`ITransport`, `IStore`, `IBackplane`, `ISerializer`, `IStateCodec`, `IClientTransport`, `Clock`) spell out the obligations an implementer must meet, e.g. `acceptProtocols` must set `ConnectionContext.protocol`, what `bufferedAmount` counts, never reusing a buffer handed to core.
+- **Public classes with no interface** (core's `BungohanServer`, `Room` and its hooks, `MatchMaker`; the `@bungohan/testing` harness; `@bungohan/schema`'s factories) get full coverage too.
+- **Public JSDoc stands on its own:** no "spec §x" or "PROTOCOL.md §y" citations (`@internal`, private and module-header comments may keep them). Link to a `docs/` page (`docs/guides/client.md#joining`) where a longer explanation helps. Say something the name doesn't; no "Gets the id".
+
+`scripts/jsdoc.test.ts` (in `bun test`) enforces the mechanical part over every export of core, client-js (and `/react`), schema and testing, and the extension-point interfaces. It fails on an undocumented member (unless it inherits a doc), a `§` in a public doc, a `docs/…md#anchor` that doesn't resolve, and a class member whose doc is an exact copy of the inherited one. `bun scripts/jsdoc.ts` lists the problems. It can't judge whether a doc says anything useful or is still true: that part is on you.
+
 ## Docs
 
 User docs live in `docs/` (JavaScript only). Every ts/tsx block in them is copied from a `// #region` in real code — the tutorial app in `apps/tutorial/` or `docs/examples/` — and a `bun test` suite fails if a block is stale, hand-written, or links somewhere that doesn't exist. Never edit a code block in the Markdown directly: change the source file, then run `bun run docs:sync`. When a framework change alters an API, update the affected example code so the docs stay correct.

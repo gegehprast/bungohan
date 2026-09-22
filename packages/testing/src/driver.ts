@@ -81,14 +81,20 @@ function parseError(value: unknown, what: string): [string, string] {
   return [str(code, `${what} code`), str(message, `${what} message`)]
 }
 
-/** A frame the driver dropped instead of failing on (spec §6.7.7). */
+/**
+ * A frame the driver dropped instead of failing on, as a forward-compatible
+ * client must (an unknown frame type or message id).
+ */
 export interface DroppedFrame {
+  /** The frame type byte. */
   readonly type: number
+  /** Why it was dropped. */
   readonly reason: string
 }
 
 /** A failed join: the `JOIN_ERROR` code and message. */
 export class JoinFailure extends Error {
+  /** The server's `JOIN_ERROR` code, e.g. `"ROOM_FULL"`. */
   public readonly code: string
 
   public constructor(code: string, message: string) {
@@ -98,6 +104,7 @@ export class JoinFailure extends Error {
   }
 }
 
+/** The driver's join inputs; like client-js's, plus wire-level overrides. */
 export interface JoinOptions<S extends Schema, C extends Contract> {
   /** Replica root class; without it, state frames are counted, not applied. */
   state?: SchemaConstructor<S>
@@ -109,11 +116,13 @@ export interface JoinOptions<S extends Schema, C extends Contract> {
   trailing?: unknown[]
 }
 
+/** Options of a {@link TestClient}. */
 export interface DriverOptions {
+  /** Body serializer; must match the server's. Default MessagePack. */
   serializer?: ISerializer
   /**
    * Codecs this client implements, matched by name against the handshake's
-   * `stateCodec` (PROTOCOL.md §6.4). Default: `schema` and `messagepack`.
+   * `stateCodec`. Default: `schema` and `messagepack`.
    */
   stateCodecs?: IStateCodec[]
   /** Where dropped-frame notices go. Default `console.warn`. */
@@ -122,8 +131,11 @@ export interface DriverOptions {
 
 /** A received room message: contract (decoded) or raw. */
 export interface ReceivedMessage {
+  /** The message name. */
   readonly type: string
+  /** The decoded payload. */
   readonly payload: unknown
+  /** True for a raw (`sendRaw`/`broadcastRaw`) message. */
   readonly raw: boolean
 }
 
@@ -132,8 +144,17 @@ interface Pending {
   resolve(result: Result<JoinHandshake, JoinFailure>): void
 }
 
-/** One wire-protocol client connection. */
+/**
+ * One wire-protocol client connection, byte-exact and independent of
+ * client-js: the reference for what the server sends. Records everything
+ * it receives for assertions. Get one from `ServerHarness.connect()` or
+ * `TestHarness.driver()`.
+ *
+ * Unlike client-js, it throws on what a correct server never sends (a
+ * malformed frame), so the test fails.
+ */
 export class TestClient {
+  /** The loopback socket under it. */
   public readonly socket: LoopbackSocket
   /** `ERROR` frames for the connection (roomRef 0): `[code, message]`. */
   public readonly errors: [string, string][] = []
@@ -155,6 +176,7 @@ export class TestClient {
   ][] = []
   /** Close code and reason, once the connection closed. */
   public closeReason: string | undefined
+  /** The close code, once the connection closed. */
   public closeCode: number | undefined
   private readonly _flush: () => Promise<void>
   private readonly _serializer: ISerializer
@@ -185,10 +207,12 @@ export class TestClient {
     })
   }
 
+  /** True until the socket starts closing. */
   public get connected(): boolean {
     return this.socket.readyState === "open"
   }
 
+  /** A `JOIN_OR_CREATE`, delivered and answered (see `request`). */
   public joinOrCreate<S extends Schema, C extends Contract = EmptyContract>(
     roomType: string,
     options?: unknown,
@@ -197,6 +221,7 @@ export class TestClient {
     return this.request(JoinMode.JOIN_OR_CREATE, roomType, options, join)
   }
 
+  /** A `CREATE` join (see `request`). */
   public create<S extends Schema, C extends Contract = EmptyContract>(
     roomType: string,
     options?: unknown,
@@ -205,6 +230,7 @@ export class TestClient {
     return this.request(JoinMode.CREATE, roomType, options, join)
   }
 
+  /** A `JOIN` into an existing room (see `request`). */
   public join<S extends Schema, C extends Contract = EmptyContract>(
     roomType: string,
     options?: unknown,
@@ -213,6 +239,7 @@ export class TestClient {
     return this.request(JoinMode.JOIN, roomType, options, join)
   }
 
+  /** A `JOIN_BY_ID` (see `request`). */
   public joinById<S extends Schema, C extends Contract = EmptyContract>(
     roomId: string,
     options?: unknown,
@@ -221,6 +248,7 @@ export class TestClient {
     return this.request(JoinMode.JOIN_BY_ID, roomId, options, join)
   }
 
+  /** Resumes a held seat with its reconnection token (see `request`). */
   public reconnect<S extends Schema, C extends Contract = EmptyContract>(
     token: string,
     join?: JoinOptions<S, C>,
@@ -228,6 +256,7 @@ export class TestClient {
     return this.request(JoinMode.RECONNECT, token, null, join)
   }
 
+  /** Takes a reserved seat by reservation id (see `request`). */
   public consumeReservation<
     S extends Schema,
     C extends Contract = EmptyContract,
@@ -412,29 +441,48 @@ export class TestClient {
   }
 }
 
-/** A joined room, as the driver sees it. */
+/**
+ * A joined room, as the driver sees it: the handshake's fields as they
+ * arrived, and a record of everything received for it.
+ */
 export class TestRoom<S extends Schema, C extends Contract = EmptyContract> {
+  /** This seat's handle on the connection, in every frame header. */
   public roomRef = 0
+  /** The room's id. */
   public roomId = ""
+  /** The room's type. */
   public roomType = ""
+  /** This seat's `sessionId`. */
   public sessionId = ""
+  /** The current token; null when the room allows no reconnection. */
   public reconnectionToken: string | null = null
+  /** The server's contract hash, from the handshake. */
   public contractHash = ""
+  /** The room's state codec, by name. */
   public stateCodec = ""
+  /** Client message names by wire id (index), from the handshake. */
   public clientMessages: string[] = []
+  /** Server message names by wire id (index), from the handshake. */
   public serverMessages: string[] = []
   /** The replica, created fresh by every `STATE_SNAPSHOT`. */
   public state: S | undefined
+  /** `STATE_SNAPSHOT` frames received. */
   public snapshots = 0
+  /** `STATE_PATCH` frames received. */
   public patches = 0
+  /** Every room message received, in order. */
   public readonly messages: ReceivedMessage[] = []
-  /** sessionIds from `CLIENT_JOINED` / `CLIENT_LEFT`. */
+  /** sessionIds from `CLIENT_JOINED`, in order. */
   public readonly joined: string[] = []
+  /** sessionIds from `CLIENT_LEFT`, in order. */
   public readonly left: string[] = []
+  /** `ERROR` frames for this room: `[code, message]`. */
   public readonly errors: [string, string][] = []
+  /** State frames that couldn't be applied to the replica. */
   public readonly stateErrors: StateError[] = []
   /** Set by the server's `LEAVE`. */
   public leaveCode: number | undefined
+  /** The reason of the server's `LEAVE`, if any. */
   public leaveReason: string | undefined
   private readonly _client: TestClient
   private readonly _options: JoinOptions<S, C>
@@ -481,6 +529,7 @@ export class TestRoom<S extends Schema, C extends Contract = EmptyContract> {
     )
   }
 
+  /** Sends a raw message (the server's `onMessageRaw`). */
   public sendRaw(type: string, payload: unknown): void {
     this._client.sendFrame(
       ClientFrameType.ROOM_MESSAGE_RAW,

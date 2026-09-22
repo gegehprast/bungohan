@@ -79,12 +79,20 @@ export type Field =
 /** A message's fields. Property order is the positional wire order. */
 export type FieldShape = { readonly [name: string]: Field }
 
+/**
+ * A declared message, from `defineMessage`: its name and ordered fields.
+ * Put it in a contract (`defineContract`) to send and receive it, and use
+ * `Infer<typeof Message>` for its payload type.
+ */
 export interface MessageDef<
   N extends string = string,
   S extends FieldShape = FieldShape,
 > {
+  /** Always `"message"`: tells a declaration apart from a field. */
   readonly kind: "message"
+  /** The name it is sent under; a contract's key for it must equal it. */
   readonly name: N
+  /** The field builders it was declared with (`f.int8`, …), in order. */
   readonly fields: S
   /** `Object.keys(fields)`, precomputed: the positional wire order. */
   readonly fieldNames: readonly string[]
@@ -161,23 +169,50 @@ function scalar<K extends ScalarKind>(kind: K): ScalarField<K> {
   return Object.freeze({ kind })
 }
 
-/** Field builders. Scalars are constants; the rest are functions. */
+/**
+ * Field builders for `defineMessage`: `{ x: f.float32, name: f.string }`.
+ * Scalars are constants; the rest are functions. Each field fixes both the
+ * TypeScript type and the bytes on the wire, so pick the smallest that
+ * fits (see docs/guides/messages.md#declaring-messages).
+ *
+ * Numbers are converted as they are sent, so the receiver gets the
+ * converted value: integer fields drop the fraction (toward zero) and
+ * saturate at their range, and there is no error for a value out of range.
+ */
 export const f = {
+  /** A `number`, sent as an integer in −128…127. */
   int8: scalar("int8"),
+  /** A `number`, sent as an integer in −32,768…32,767. */
   int16: scalar("int16"),
+  /** A `number`, sent as a signed 32-bit integer. */
   int32: scalar("int32"),
+  /** A `number`, sent as an integer in 0…255. */
   uint8: scalar("uint8"),
+  /** A `number`, sent as an integer in 0…65,535. */
   uint16: scalar("uint16"),
+  /** A `number`, sent as an integer in 0…4,294,967,295. */
   uint32: scalar("uint32"),
+  /**
+   * A `number`, rounded to single precision (about 7 significant digits).
+   * NaN and ±Infinity pass through.
+   */
   float32: scalar("float32"),
+  /** A `number`, sent exactly (NaN, ±Infinity and −0 included). */
   float64: scalar("float64"),
+  /**
+   * A `string`, sent as UTF-8. A lone surrogate or U+0000 arrives as
+   * U+FFFD, since some clients' strings can't hold them.
+   */
   string: scalar("string"),
+  /** A `boolean`. */
   bool: scalar("bool"),
 
   /**
-   * Lossy fixed-point number: sent as a signed 32-bit integer
-   * `round(value * 10^decimals)`, saturating at the int32 range.
-   * See spec §5.7.6.1 for the exact rules.
+   * Lossy fixed-point number with `decimals` places (0–9): sent as the
+   * signed 32-bit integer `round(value * 10^decimals)`, rounding half
+   * away from zero and saturating at the int32 range, so `f.fixed(2)`
+   * holds up to ±21,474,836.47. Smaller than a float for values that need
+   * only a few decimals (positions, angles).
    */
   fixed<const D extends FixedDecimals>(decimals: D): FixedField<D> {
     return Object.freeze({ kind: "fixed", decimals })
@@ -190,18 +225,30 @@ export const f = {
     return Object.freeze({ kind: "enum", values: Object.freeze([...values]) })
   },
 
+  /** A list of `of` values: `f.array(f.uint8)` is a `number[]`. */
   array<E extends Field>(of: E): ArrayField<E> {
     return Object.freeze({ kind: "array", of })
   },
 
+  /**
+   * An object with **string** keys and `of` values:
+   * `f.map(f.int32)` is `{ [key: string]: number }`. The key `__proto__`
+   * is refused on receipt.
+   */
   map<E extends Field>(of: E): MapField<E> {
     return Object.freeze({ kind: "map", of })
   },
 
+  /**
+   * A field that may be left out: its property becomes `?:`. Absent means
+   * not present in the received object, never `null`. Can't wrap another
+   * `optional`.
+   */
   optional<E extends Field>(of: E): OptionalField<E> {
     return Object.freeze({ kind: "optional", of })
   },
 
+  /** Another declared message, inline: its payload becomes this field. */
   nested<M extends MessageDef>(message: M): NestedField<M> {
     return Object.freeze({ kind: "nested", message })
   },
@@ -223,14 +270,22 @@ type NoNumericKeys<S> = {
 }
 
 /**
- * Declares a message. Field names should be identifiers (codegen emits them
- * as C#/GDScript members) and must not be integer-like, since JS would
- * reorder those keys and break the positional wire order.
+ * Declares a message: its name, and its fields built with {@link f}. The
+ * fields' order is the order on the wire, where nothing names a field, so
+ * reordering, renaming or retyping them changes the contract (a client
+ * built against the old one fails its join with `CONTRACT_MISMATCH`).
  *
- * Integer-like names are rejected at compile time and, once, at definition
- * time: this throws a `TypeError` while the module defining the message
- * loads. That is a deliberate exception to the framework's no-throw rule; it
- * is a static programming error, never a runtime condition (spec §4.1.1).
+ * ```ts
+ * const Move = defineMessage("move", { x: f.float32, y: f.float32 })
+ * ```
+ *
+ * Field names should be identifiers (code generation emits them as class
+ * members for other clients) and must not be integer-like, since JS would
+ * reorder those keys and break the wire order. Integer-like names are
+ * rejected at compile time and, once, at definition time: this throws a
+ * `TypeError` while the module defining the message loads. That is a
+ * deliberate exception to the framework's no-throw rule: it is a static
+ * programming error, never a runtime condition.
  */
 export function defineMessage<const N extends string, S extends FieldShape>(
   name: N,
@@ -260,8 +315,8 @@ export function defineMessage<const N extends string, S extends FieldShape>(
 export type MessageMap = { readonly [name: string]: MessageDef }
 
 /**
- * Typed join and create options (spec §4.1.2, PROTOCOL.md §6.2.1). Each is
- * a message declaration; one left out is the message with no fields.
+ * Typed join and create options (see docs/guides/options.md). Each is a
+ * message declaration; one left out is the message with no fields.
  * Declaring neither keeps options untyped.
  */
 export interface ContractOptions {
@@ -272,18 +327,25 @@ export interface ContractOptions {
 }
 
 /**
- * `client`: client → server messages. `server`: server → client messages.
- * `options`: typed join/create options, if any.
+ * A room's typed messages, in both directions, from `defineContract`.
+ * Server and client import the same object: it types `send`/`onMessage`
+ * on both ends, and its hash, sent with every join, turns a stale client
+ * into a `CONTRACT_MISMATCH` instead of a misread message.
  */
 export interface Contract {
+  /** Messages clients send and the room receives, by name. */
   readonly client: MessageMap
+  /** Messages the room sends and clients receive, by name. */
   readonly server: MessageMap
+  /** Typed join/create options, if any; without them options are untyped. */
   readonly options?: ContractOptions
 }
 
 /** Default when a Room/IRoom binds no contract: no typed messages at all. */
 export interface EmptyContract {
+  /** No client messages: only `sendRaw` works. */
   readonly client: Record<never, never>
+  /** No server messages: only `onMessageRaw` receives anything. */
   readonly server: Record<never, never>
 }
 

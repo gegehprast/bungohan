@@ -46,8 +46,10 @@ export interface MatchMakerDeps {
 let current: MatchMaker | undefined
 
 /**
- * The matchmaker of the most recently created server (spec §6.3). Throws if
- * no server exists yet: calling it before creating one is a setup error.
+ * The matchmaker of the most recently created server, for code that has
+ * no server reference (prefer `server.getMatchMaker()` when you have
+ * one). Throws if no server exists yet: calling it before creating one is
+ * a setup error.
  */
 export function getMatchMaker(): MatchMaker {
   if (current === undefined) {
@@ -62,9 +64,12 @@ export function setMatchMaker(matchMaker: MatchMaker): void {
 }
 
 /**
- * Finds, creates and reserves rooms (spec §6.3).
+ * Finds, creates and reserves rooms from server code: a lobby room placing
+ * players, an HTTP endpoint, a bot (see docs/guides/matchmaking.md).
+ * Clients' joins go through the same logic. Get it with
+ * `server.getMatchMaker()`.
  *
- * With cluster mode on (§6.4) every lookup is local first and cluster-wide
+ * With cluster mode on, every lookup is local first and cluster-wide
  * second: a room found on another process comes back as a {@link RoomProxy}
  * with the same `Room` type. Without it, a `ProcessSelector` that picks a
  * process other than this one is `CLUSTER_NOT_IMPLEMENTED`, since there is
@@ -87,7 +92,8 @@ export class MatchMaker {
   /**
    * Registers a room type. Validates its contract and every Schema class
    * reachable from its state, and **throws** a `TypeError` listing every
-   * problem, or if the name is taken. Definition time only (spec §6.8).
+   * problem, or if the name is taken. Definition time only.
+   * `server.defineRoomType` calls this.
    */
   public registerRoomType<R extends Room>(
     name: string,
@@ -108,8 +114,8 @@ export class MatchMaker {
 
   /**
    * Creates a room, here or (with a selector, in cluster mode) on another
-   * process. Pass the room **class** to have its create options typed
-   * (spec §4.1.2); a name takes anything, checked when it is converted.
+   * process. Pass the room **class** to have its create options typed; a
+   * name takes anything, checked when it is converted.
    * Either way, typed options go through the wire encoding, so the room
    * gets what a client's would decode to, wherever it runs, and options
    * that don't fit the declaration are `INVALID_OPTIONS`.
@@ -213,6 +219,11 @@ export class MatchMaker {
     )
   }
 
+  /**
+   * The room with this id, here or (in cluster mode) on any process, as a
+   * `RoomProxy` if it runs elsewhere. Doesn't seat anyone.
+   * `ROOM_NOT_FOUND` if there is no such room.
+   */
   public async joinById(
     roomId: string,
     _options?: unknown,
@@ -263,10 +274,15 @@ export class MatchMaker {
 
   /**
    * Holds a seat in an available (or new) room of the type under a new
-   * `sessionId`, until `expiresAt`. A client takes it with a `JOIN` in mode
-   * `CONSUME_RESERVATION` (spec §6.7.5), **on any process**: the reservation
-   * is held where the room is, and whichever process the client connects to
-   * locates it (spec §6.4).
+   * `sessionId`, until `expiresAt` (the type's `reservationTimeout`). Hand
+   * the `Reservation` to the player's client, which takes the seat with
+   * `client.consumeReservation()` **on any process**: the reservation is
+   * held where the room is, and whichever process the client connects to
+   * locates it. The held seat counts against `maxClients`.
+   *
+   * `options` are the seat's join options (typed by the class's contract,
+   * like `createRoom`'s); `createOptions` are used if a room has to be
+   * created for it. Without typed options, `options` serve as both.
    */
   public reserve<R extends Room>(
     roomType: RoomClass<R>,
@@ -278,12 +294,6 @@ export class MatchMaker {
     processSelector?: ProcessSelector,
     createOptions?: unknown,
   ): Promise<Result<Reservation, BungohanError>>
-  /**
-   * `options` are the seat's join options (typed by the class's contract,
-   * like `createRoom`'s); `createOptions` are used if a room has to be
-   * created for it. Without typed options, `options` serve as both, as
-   * they always did.
-   */
   public async reserve(
     roomType: string | RoomConstructor,
     options?: unknown,
@@ -433,14 +443,17 @@ export class MatchMaker {
     })
   }
 
+  /** This process's id (`server.processId`). */
   public getProcessId(): string {
     return this._deps.processId
   }
 
+  /** Rooms on **this process**. */
   public getRoomCount(): number {
     return this._deps.manager.getRoomCount()
   }
 
+  /** Seats taken across the rooms of **this process**. */
   public getClientCount(): number {
     let count = 0
     for (const room of this._deps.manager.getRooms()) {
@@ -450,10 +463,10 @@ export class MatchMaker {
   }
 
   /**
-   * Every process in the cluster (spec §6.4): a `PROCESS_INFO` request goes
-   * out on the backplane, answers are collected for a short window, and
-   * this process is included without a round trip. Outside cluster mode it
-   * is this process alone.
+   * Every process in the cluster: a request goes out on the backplane,
+   * answers are collected for `cluster.gatherTimeout` ms, and this
+   * process is included without a round trip. Outside cluster mode it is
+   * this process alone.
    */
   public async getAllProcesses(): Promise<
     Result<ProcessInfo[], BungohanError>

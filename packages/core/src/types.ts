@@ -16,6 +16,7 @@ import type { LoggerOptions } from "./logger"
 import type { Room } from "./room"
 
 // #region server-options
+/** `createBungohanServer`'s options. Every field is optional. */
 export interface ServerOptions {
   /** Port only ever lives at `transport.config.port`. */
   transport?: {
@@ -30,6 +31,11 @@ export interface ServerOptions {
       compressionThreshold?: number
     }
   }
+  /**
+   * Where rooms' `saveState`/`loadState` go. `provider` takes any
+   * `IStore`; `config` builds a Redis store (closed on `stop()`). Without
+   * either, both calls are no-ops.
+   */
   store?: {
     provider?: IStore
     config?: { url?: string; host?: string; port?: number; password?: string }
@@ -80,6 +86,11 @@ export interface ServerOptions {
   stateCodec?: IStateCodec
   /** Off by default; when off, metrics cost nothing. */
   metrics?: { enabled?: boolean }
+  /**
+   * A small HTTP server on its own port: `GET /health`, `GET /metrics`
+   * and `GET /rooms` (public rooms), each switchable. Off unless
+   * `enabled`.
+   */
   http?: {
     enabled?: boolean
     /** Default 8080. */
@@ -99,13 +110,19 @@ export interface ServerOptions {
   simulation?: { tickRate?: number; maxCatchUpSteps?: number }
   /** Default 20 Hz. */
   sync?: { tickRate?: number }
+  /**
+   * What SIGTERM/SIGINT do: `stop()`, then `onShutdown`, then exit the
+   * process.
+   */
   gracefulShutdown?: {
     /** Milliseconds before a stuck shutdown exits with code 1. Default 30,000. */
     timeout?: number
+    /** Runs after `stop()`, before the process exits. */
     onShutdown?: () => Promise<void>
     /** Install SIGTERM/SIGINT handlers in `start()`. Default true. */
     handleSignals?: boolean
   }
+  /** Log level and destination. Default: `"info"` to the console. */
   logger?: LoggerOptions
   /** Time source for every loop and timeout. Default `SystemClock`. */
   clock?: Clock
@@ -217,6 +234,10 @@ export interface DefineRoomOptions {
   visibility?: "public" | "private"
   /** Default false. */
   locked?: boolean
+  /**
+   * Each new room's starting `metadata`, merged with the `metadata` of
+   * its create options.
+   */
   metadata?: Record<string, unknown>
   /** Seconds a reservation holds its seat. Default 60. */
   reservationTimeout?: number
@@ -240,14 +261,26 @@ export interface ResolvedRoomOptions {
  * signature, so a room typed with create options still extends `Room`.
  */
 export type RoomOnCreateOptions = {
+  /** The new room's id (also `this.id`). */
   roomId: string
+  /** The name the room type was registered under. */
   roomType: string
+  /** The room type's `maxClients` (also `this.maxClients`). */
   maxClients: number
+  /** The room type's `autoDispose` (also `this.autoDispose`). */
   autoDispose: boolean
+  /** The room type's `allowReconnection` (also `this.allowReconnection`). */
   allowReconnection: boolean
+  /** The room type's `reconnectionTimeout`, in seconds. */
   reconnectionTimeout: number
+  /** The room's starting visibility (also `this.visibility`). */
   visibility: "public" | "private"
+  /** Whether the room starts locked (also `this.locked`). */
   locked: boolean
+  /**
+   * The room type's metadata merged with the creator's `metadata` option;
+   * already assigned to `this.metadata`.
+   */
   metadata: Record<string, unknown>
 }
 
@@ -281,13 +314,19 @@ export type StateOf<R> = R extends { readonly __state?: infer S }
  */
 export type RoomClass<R extends Room = Room> = RoomConstructor<R> &
   ([EmptyContract] extends [ContractOf<R>]
-    ? { readonly contract?: Contract | undefined }
-    : { readonly contract: ContractOf<R> })
+    ? {
+        /** The class's `static contract`, if it has one. */
+        readonly contract?: Contract | undefined
+      }
+    : {
+        /** The class's `static contract`: the one it is typed with. */
+        readonly contract: ContractOf<R>
+      })
 
 /**
  * The arguments after the room class of `matchMaker.createRoom` and
- * `joinOrCreate` (spec §4.1.2): the class's create options, required when
- * its contract declares typed options, then a process selector.
+ * `joinOrCreate`: the class's create options, required when its contract
+ * declares typed options, then a process selector.
  */
 export type CreateRoomArgs<R> =
   HasTypedOptions<ContractOf<R>> extends true
@@ -311,32 +350,68 @@ export type ReserveArgs<R> =
       ]
     : [options?: unknown, processSelector?: ProcessSelector]
 
+/**
+ * One room as `matchMaker.query()` lists it: a plain snapshot, the same
+ * whichever process runs the room, taken when the query ran.
+ */
 export interface RoomListingInfo {
+  /** The room's id, for `joinById`. */
   id: string
+  /** Its room type. */
   type: string
+  /** Seats taken (joining, joined and held). */
   clients: number
+  /** Its `maxClients`. */
   maxClients: number
+  /** Private rooms are only listed with `includePrivate`. */
   visibility: "public" | "private"
+  /** A locked room refuses new joins. */
   locked: boolean
+  /** The room's `metadata`. */
   metadata: Record<string, unknown>
+  /** The process the room runs on (this one, outside cluster mode). */
   processId: string
 }
 
+/**
+ * One server process, as `matchMaker.getAllProcesses()` reports it and a
+ * {@link ProcessSelector} chooses among them.
+ */
 export interface ProcessInfo {
+  /** The process id (`ServerOptions.cluster.processId`). */
   id: string
+  /** Rooms it runs. */
   roomCount: number
+  /** Seats taken across its rooms. */
   clientCount: number
+  /** Not set by Bungohan; reserved for a description of the process. */
   metadata?: Record<string, unknown>
 }
 
+/**
+ * Picks the process a room is created on, in cluster mode:
+ * `(processes) => processes.reduce((a, b) => a.roomCount <= b.roomCount ?
+ * a : b)` balances by room count. It must return one of `processes`.
+ * Without cluster mode the only choice is this process, and choosing
+ * another fails with `CLUSTER_NOT_IMPLEMENTED`.
+ */
 export type ProcessSelector = (processes: ProcessInfo[]) => ProcessInfo
 
+/** A custom `matchMaker.query()` condition: keeps rooms it returns true for. */
 export type RoomFilter = (room: RoomListingInfo) => boolean
 
+/** What `matchMaker.query()` looks for. */
 export interface MatchMakerQueryOptions {
+  /** The room type to list. */
   type: string
+  /**
+   * Keep only rooms whose `metadata` has each of these keys with an equal
+   * (`===`) value.
+   */
   metadata?: Record<string, unknown>
+  /** Keep only rooms every filter accepts (run on this process). */
   filters?: RoomFilter[]
+  /** At most this many rooms. */
   limit?: number
   /** Include private rooms. Default false. */
   includePrivate?: boolean
@@ -366,9 +441,13 @@ export type ErrorSource =
 
 /** Second argument of `server.onError` callbacks. */
 export interface ErrorContext {
+  /** What was running: a hook, a handler, or a part of the server. */
   source: ErrorSource
+  /** The room involved, if any. */
   room?: Room
+  /** The client (seat) involved, if any. */
   client?: Client
+  /** The connection involved, if any (e.g. a protocol violation). */
   connection?: Connection
   /** The message type, for `onMessage` and `send` errors. */
   messageType?: string

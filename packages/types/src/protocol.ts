@@ -24,12 +24,24 @@ export enum ClientMessageType {
   PING = "ping",
 }
 
+/**
+ * Why a client's seat in a room ended: what the client's `room.onLeave`
+ * receives, and `useRoom`'s `leaveCode`.
+ */
 export enum LeaveCode {
+  /** The client left on purpose (`room.leave()`, `client.disconnect()`). */
   CONSENTED = 1000,
+  /**
+   * The connection was lost and the seat couldn't be resumed: reconnection
+   * gave up, or the room didn't allow it. The server may still hold the
+   * seat for a while (see `client.reconnect`).
+   */
   DISCONNECTED = 1001,
+  /** The room removed the client (`client.leave()` on the server). */
   KICKED = 4000,
+  /** The server is shutting down. */
   SERVER_SHUTDOWN = 4001,
-  /** The room was disposed while the client was in it (spec §6.7.5). */
+  /** The room was disposed while the client was in it. */
   ROOM_DISPOSED = 4002,
 }
 
@@ -72,11 +84,26 @@ export interface ReconnectionOptions {
   factor: number
 }
 
+/**
+ * A seat the server holds for one player, from the server's
+ * `matchMaker.reserve()`. Send it to that player's client (over your own
+ * API) and pass it to `client.consumeReservation()`: that lets a lobby or
+ * a matchmaking service place players in rooms (see
+ * docs/guides/matchmaking.md#reservations).
+ */
 export interface Reservation {
+  /** What the client redeems. Single use. */
   id: string
+  /** The room holding the seat. */
   roomId: string
+  /** That room's type. */
   roomType: string
+  /** The seat's `sessionId`, decided now: the client gets this one. */
   sessionId: string
+  /**
+   * When the seat is released if unused, in the server clock's
+   * milliseconds (epoch ms with the default clock).
+   */
   expiresAt: number
 }
 

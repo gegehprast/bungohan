@@ -90,6 +90,7 @@ export class RedisStore implements IStore {
     }
   }
 
+  /** Whether the Redis connection is open right now (false once closed). */
   public isConnected(): boolean {
     return !this._closed && this._client.isOk() && this._client.value.connected
   }

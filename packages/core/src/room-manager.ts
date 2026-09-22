@@ -6,9 +6,11 @@ import type { RoomTypeDef } from "./room-type"
 type RoomCallback = (room: Room) => void
 
 /**
- * The rooms of this process. Creates them (registering each at once, so a
- * concurrent `joinOrCreate` finds the room being created instead of making
- * a second one) and announces creation and disposal.
+ * The rooms of this process (`server.getRoomManager()`). Creates them
+ * (registering each at once, so a concurrent `joinOrCreate` finds the room
+ * being created instead of making a second one) and announces creation
+ * and disposal. In cluster mode, other processes' rooms aren't here; use
+ * the matchmaker to look across the cluster.
  */
 export class RoomManager {
   private readonly _host: RoomHost
@@ -22,24 +24,39 @@ export class RoomManager {
     this._report = report
   }
 
+  /**
+   * A room finished `onCreate` successfully (one whose `onCreate` failed
+   * never fires either event). Returns a function that removes the
+   * listener; a throw is reported to `server.onError`.
+   */
   public onRoomCreated(cb: RoomCallback): () => void {
     this._created.add(cb)
     return () => this._created.delete(cb)
   }
 
+  /**
+   * A room finished disposing (after its `onDispose`) and is gone from
+   * this manager. Returns a function that removes the listener.
+   */
   public onRoomDisposed(cb: RoomCallback): () => void {
     this._disposed.add(cb)
     return () => this._disposed.delete(cb)
   }
 
+  /** A room of this process by id, including one still being created. */
   public getRoom(id: string): Room | undefined {
     return this._rooms.get(id)
   }
 
+  /**
+   * Every room of this process (a copy), including ones still being
+   * created or disposed; check `room.isDisposed` if that matters.
+   */
   public getRooms(): Room[] {
     return [...this._rooms.values()]
   }
 
+  /** How many rooms `getRooms()` would return. */
   public getRoomCount(): number {
     return this._rooms.size
   }

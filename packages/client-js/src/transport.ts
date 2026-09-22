@@ -1,7 +1,7 @@
 /**
  * The client side of the transport seam. The client needs only this much
  * from a connection: open it offering protocol versions, send and receive
- * whole binary messages (one message = one frame, spec §6.7.1), and learn
+ * whole binary messages (one message = one frame), and learn
  * when it closes. The default is the browser's `WebSocket`;
  * `@bungohan/testing` ships a loopback implementation.
  */
@@ -12,7 +12,10 @@ import { ClientError } from "./errors"
 export interface ClientSocketHandlers {
   /** The connection is open; `protocol` is the version the server chose. */
   onOpen(protocol: string): void
-  /** One whole binary message (frame). */
+  /**
+   * One whole binary message (frame), in order. The client may keep views
+   * into `data`, so pass a buffer the transport won't reuse.
+   */
   onMessage(data: Uint8Array): void
   /**
    * The connection closed (or never opened). Fires exactly once, and never
@@ -29,6 +32,25 @@ export interface ClientSocket {
   close(code?: number, reason?: string): void
 }
 
+/**
+ * Opens connections for `BungohanClient` (`ClientOptions.transport`).
+ * The default is the platform `WebSocket`; implement this to connect over
+ * something else, or to control the network in tests
+ * (`LoopbackClientTransport` in `@bungohan/testing`).
+ *
+ * What an implementation must do:
+ *
+ * - Offer `protocols` to the server and report the one it chose through
+ *   `onOpen`. The server closes a connection that offers none of its
+ *   versions with 1002.
+ * - Carry binary messages whole and in order, one message per frame; a
+ *   text message may be passed on as its UTF-8 bytes.
+ * - Call the handlers asynchronously, never from inside `open()`, and
+ *   `onClose` exactly once, after which nothing else fires. A connection
+ *   that fails to open still gets its `onClose` (1006 when there is no
+ *   close code, see `ABNORMAL_CLOSURE`).
+ * - Not throw from any method.
+ */
 export interface IClientTransport {
   /**
    * Starts opening a connection to `url`, offering `protocols` (WebSocket
@@ -41,6 +63,7 @@ export interface IClientTransport {
     protocols: readonly string[],
     handlers: ClientSocketHandlers,
   ): Result<ClientSocket, ClientError>
+  /** A short name for logs and diagnostics, such as `"websocket"`. */
   getName(): string
 }
 

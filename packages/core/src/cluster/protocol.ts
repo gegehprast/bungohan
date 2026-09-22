@@ -85,20 +85,36 @@ export function unpackContext(wire: WireContext): ConnectionContext {
 // Rooms as another process sees them
 // ---------------------------------------------------------------------------
 
-/** A remote room's public surface, behind a {@link RoomProxy}. */
+/**
+ * A remote room's description, as its owning process reported it: what a
+ * `RoomProxy` caches and answers from until its next `refresh()`.
+ */
 export interface RoomInfo {
+  /** The room's id. */
   id: string
+  /** Its room type. */
   roomType: string
+  /** The process it runs on. */
   processId: string
+  /** Its `maxClients`. */
   maxClients: number
+  /** Its `autoDispose`. */
   autoDispose: boolean
+  /** Its `allowReconnection`. */
   allowReconnection: boolean
+  /** Its `reconnectionTimeout`, in seconds. */
   reconnectionTimeout: number
+  /** Its `visibility`. */
   visibility: "public" | "private"
+  /** Its `locked`. */
   locked: boolean
+  /** Its `metadata`. */
   metadata: Record<string, unknown>
+  /** Its `getClientCount()`: seats taken. */
   clientCount: number
+  /** Its `getSeatCount()`: seats taken plus open reservations. */
   seatCount: number
+  /** Its `isDisposed`. */
   disposed: boolean
 }
 

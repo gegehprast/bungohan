@@ -1,26 +1,8 @@
 /**
- * A handle on a room that lives on another process (spec §6.4).
- *
- * `matchMaker.createRoom` / `joinRoom` / `joinById` return a `Room`, so a
- * room found elsewhere in the cluster comes back as a `RoomProxy`: the same
- * type, forwarding what it can over the backplane. What it deliberately
- * does *not* do is pretend to hold the room's state or its clients — those
- * exist once, on the owning process, and a replica here would be a second
- * source of truth that could disagree with it.
- *
- * So a proxy is **control and description, not simulation**:
- *
- * - forwarded: `lock`/`unlock`, `makePrivate`/`makePublic`, `dispose`,
- *   `broadcastMessage`, `disconnectClient` (a kick), the presence calls;
- * - **cached** from the owning process, as of the last `refresh()`: `id`,
- *   `roomType`, `metadata`, the option fields, `getClientCount()`,
- *   `getSeatCount()`, `locked`, `visibility`, `isDisposed`;
- * - refused with a clear error: `join`/`leave` (a `Client` belongs to the
- *   process that holds its connection) and `onMessage` (messages are
- *   dispatched where the room runs).
- *
- * Clients never touch a proxy: a client's join is routed to the owning
- * process, which seats it in the real room (see `cluster/remote.ts`).
+ * `RoomProxy`: a handle on a room that lives on another process (spec
+ * §6.4). Clients never touch a proxy: a client's join is routed to the
+ * owning process, which seats it in the real room (see
+ * `cluster/remote.ts`).
  */
 import { err, ok, type Result } from "@bungohan/result"
 import type { Clock } from "@bungohan/types"
@@ -40,6 +22,29 @@ export interface ProxyHost {
   ): Promise<Result<unknown, BungohanError>>
 }
 
+/**
+ * A handle on a room that lives on another process, in cluster mode.
+ * `matchMaker.createRoom`/`joinOrCreate`/`joinById` return a `Room`, so a
+ * room found elsewhere in the cluster comes back as a `RoomProxy`: the
+ * same type (`isRemote` tells them apart), forwarding what it can over the
+ * backplane. It deliberately does *not* pretend to hold the room's state
+ * or its clients: those exist once, on the owning process, and a replica
+ * here would be a second source of truth that could disagree with it.
+ *
+ * So a proxy is **control and description, not simulation**:
+ *
+ * - forwarded, fire-and-forget (a failure is logged): `lock`/`unlock`,
+ *   `makePrivate`/`makePublic`, `dispose`, `broadcastMessage`,
+ *   `disconnectClient` (a kick), `setPresence`/`removePresence`;
+ * - **cached** from the owning process, as of creation or the last
+ *   `refresh()`: `id`, `roomType`, `metadata`, the option fields,
+ *   `getClientCount()`, `getSeatCount()`, `locked`, `visibility`,
+ *   `isDisposed`;
+ * - refused with a clear error: `join`/`leave` (a `Client` belongs to the
+ *   process that holds its connection), `onMessage`/`onMessageRaw`
+ *   (messages are dispatched where the room runs), and reading presence
+ *   synchronously (use `fetchPresence`). `getClients()` is always empty.
+ */
 export class RoomProxy extends Room {
   /** The process the room actually runs on. */
   public readonly processId: string

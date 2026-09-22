@@ -52,12 +52,23 @@ import {
   WebSocketClientTransport,
 } from "./transport"
 
+/**
+ * Where the client reports problems that have no caller to return an
+ * error to (`ClientOptions.logger`). Pass one to route them to your own
+ * logging, or a no-op one to silence them.
+ */
 export interface ClientLogger {
+  /**
+   * Something was dropped but the client carries on: a frame it couldn't
+   * use, or a message nobody listens to.
+   */
   warn(message: string, detail?: unknown): void
+  /** One of your listeners threw; the client caught it and carried on. */
   error(message: string, detail?: unknown): void
 }
 
 // #region client-options
+/** `createBungohanClient`'s options. Only `url` is required. */
 export interface ClientOptions {
   /** Server URL, e.g. `wss://game.example.com`. */
   url: string
@@ -111,16 +122,51 @@ const JOIN_WITH: Readonly<Record<JoinWithMode, number>> = {
   joinOrCreate: JoinMode.JOIN_OR_CREATE,
 }
 
-/** The client's public surface (spec §7.1). */
+/**
+ * A connection to a Bungohan server, holding seats in any number of rooms
+ * (see docs/guides/client.md). Create one per page with
+ * `createBungohanClient` and share it; type your code against this
+ * interface so a test can pass a client from `@bungohan/testing`.
+ *
+ * Nothing here throws: every operation that can fail resolves to a
+ * `Result` whose error is a `ClientError` with a `code`.
+ */
 export interface IBungohanClient {
+  /**
+   * Opens the connection; resolves once it is open. Rarely needed: the
+   * client connects on creation (`autoConnect`), and a join on a
+   * disconnected client connects first. Already connected is `ok`, and a
+   * connection in progress (or a reconnection's next attempt) is waited
+   * for.
+   *
+   * A first connection that fails is reported, not retried:
+   * `CONNECTION_FAILED`, or `PROTOCOL_ERROR` when the server doesn't speak
+   * this client's protocol version. Retries only happen for a connection
+   * that was open and dropped (see `ClientOptions.reconnection`).
+   */
   connect(): Promise<Result<void, ClientError>>
+  /**
+   * Leaves every room (a consented leave, so each room's `onLeave` gets
+   * `LeaveCode.CONSENTED`) and closes the connection. No reconnection
+   * follows, and joins still in flight fail. Everything is sent before
+   * this returns; the promise is already settled. The client can
+   * `connect()` again later.
+   */
   disconnect(): Promise<void>
   /**
-   * Creates a room. For a contract with typed options (spec §4.1.2),
+   * Creates a room of `roomType` and joins it, resolving once its first
+   * state snapshot has arrived (so `room.state` is filled in).
+   *
+   * For a contract with typed options (see docs/guides/options.md),
    * `options` are its join options, or `{ create, join }` when it declares
    * create options, and `join.contract` is required; they are checked at
    * compile time and encoded against the declarations. Otherwise
-   * `options` are anything MessagePack carries.
+   * `options` are anything MessagePack carries. Pass `join`
+   * (`{ state, contract }`) to type the room and get a replica.
+   *
+   * Fails with the server's refusal (`ROOM_TYPE_NOT_DEFINED`,
+   * `AUTH_FAILED`, `CONTRACT_MISMATCH`, …) or a local error
+   * (`CONNECTION_FAILED`, `TIMEOUT`, `CODEC_MISMATCH`, `ENCODE_FAILED`).
    */
   create<S extends Schema, C extends TypedOptionsContract>(
     roomType: string,
@@ -135,7 +181,11 @@ export interface IBungohanClient {
     options?: unknown,
     join?: JoinOptions<S, C>,
   ): Promise<Result<IRoom<S, C>, ClientError>>
-  /** Joins an available room; `options` are join options (see `create`). */
+  /**
+   * Joins an existing room of `roomType` that is public, unlocked and not
+   * full; fails with `ROOM_NOT_FOUND` if there is none. `options` are
+   * join options; the rest is as for `create`.
+   */
   join<S extends Schema, C extends TypedOptionsContract>(
     roomType: string,
     options: NoInfer<InferJoinOptions<C>>,
@@ -149,7 +199,12 @@ export interface IBungohanClient {
     options?: unknown,
     join?: JoinOptions<S, C>,
   ): Promise<Result<IRoom<S, C>, ClientError>>
-  /** Joins a room by id; `options` are join options (see `create`). */
+  /**
+   * Joins the room with this id, private rooms included (e.g. an id
+   * picked from a room list or shared by a friend). Fails with
+   * `ROOM_NOT_FOUND`, `ROOM_LOCKED` or `ROOM_FULL`. `options` are join
+   * options; the rest is as for `create`.
+   */
   joinById<S extends Schema, C extends TypedOptionsContract>(
     roomId: string,
     options: NoInfer<InferJoinOptions<C>>,
@@ -163,7 +218,11 @@ export interface IBungohanClient {
     options?: unknown,
     join?: JoinOptions<S, C>,
   ): Promise<Result<IRoom<S, C>, ClientError>>
-  /** Joins an available room or creates one; `options` as for `create`. */
+  /**
+   * Joins an available room of `roomType` (as `join` would), or creates
+   * one if there is none. `options` as for `create`: with create options
+   * declared, `create` is only used if a room is created.
+   */
   joinOrCreate<S extends Schema, C extends TypedOptionsContract>(
     roomType: string,
     options: NoInfer<CreateArg<C>>,
@@ -189,11 +248,28 @@ export interface IBungohanClient {
     options: unknown,
     join?: JoinOptions<S, C>,
   ): Promise<Result<IRoom<S, C>, ClientError>>
+  /**
+   * Resumes a seat the server is still holding, with a
+   * `room.reconnectionToken` kept from an earlier connection (e.g. across
+   * a page reload; see docs/guides/client.md#resuming-after-a-reload).
+   * The dropped connections this client itself sees are resumed
+   * automatically, with no call.
+   *
+   * Fails with `INVALID_TOKEN` once the seat is gone (the timeout passed,
+   * the room was disposed, or the token was replaced by a later join).
+   */
   reconnect<S extends Schema = Schema, C extends Contract = EmptyContract>(
     roomId: string,
     reconnectToken: string,
     join?: JoinOptions<S, C>,
   ): Promise<Result<IRoom<S, C>, ClientError>>
+  /**
+   * Takes a seat the server reserved for this player (the server's
+   * `matchMaker.reserve()`, handed to the client by your own means, such
+   * as an HTTP response; see docs/guides/matchmaking.md#reservations).
+   * Fails with `RESERVATION_NOT_FOUND` or `RESERVATION_EXPIRED`; a
+   * reservation can be consumed once.
+   */
   consumeReservation<
     S extends Schema = Schema,
     C extends Contract = EmptyContract,
@@ -201,15 +277,27 @@ export interface IBungohanClient {
     reservation: Reservation,
     join?: JoinOptions<S, C>,
   ): Promise<Result<IRoom<S, C>, ClientError>>
+  /**
+   * The rooms this client is in, by room id: every room whose join has
+   * completed and that hasn't been left, including rooms waiting for a
+   * reconnection. A new map each call; joins still in flight aren't in it.
+   */
   getRooms(): Map<string, IRoom<Schema, Contract>>
+  /** One room from {@link getRooms}, by id. */
   getRoom(id: string): IRoom<Schema, Contract> | undefined
+  /**
+   * Leaves every room (consented), including joins in flight and rooms
+   * waiting for a reconnection, but keeps the connection open. Every
+   * `LEAVE` is sent before this returns.
+   */
   leaveAll(): Promise<void>
   /**
    * Opt-in: gives up every seat when the page is closed, reloaded or
    * navigated away from (`disconnect()`, run inside the page-exit event).
    * Without it, the server sees a closed tab as a dropped connection and
    * holds the seat for the reconnection timeout. A game that resumes
-   * seats after a reload (spec §7.5) must not call it.
+   * seats after a reload (see docs/guides/client.md#leaving-with-the-page)
+   * must not call it.
    *
    * Listens for both `beforeunload` and `pagehide` and acts on whichever
    * fires first: a message sent in `pagehide` during a reload never leaves
@@ -218,11 +306,35 @@ export interface IBungohanClient {
    * a no-op. `target` defaults to the global `window`.
    */
   leaveOnPageExit(target?: PageExitTarget): () => void
+  /**
+   * `"connecting"` until the first connection opens, `"connected"`, then
+   * `"reconnecting"` while a dropped connection is being retried (rooms
+   * wait, and `send` fails with `NOT_CONNECTED`), and `"disconnected"`
+   * before connecting, after `disconnect()`, or once reconnection gives
+   * up. For a status indicator; there is no change event, so poll it or
+   * use `onDisconnect`/`onReconnect`.
+   */
   readonly connectionState: ConnectionState
   /** Last measured PING round trip in ms, or undefined before the first. */
   readonly latency: number | undefined
+  /**
+   * Connection-level errors, not tied to one room: an `ERROR` frame from
+   * the server, a refused protocol version (`PROTOCOL_ERROR`), or
+   * `RECONNECTION_FAILED` when every attempt failed. Room errors go to
+   * `room.onError`. Returns a function that removes the listener.
+   */
   onError(cb: (error: ClientError) => void): () => void
+  /**
+   * An open connection closed, whether or not a reconnection follows
+   * (check `connectionState`), including through `disconnect()`. Returns a
+   * function that removes the listener.
+   */
   onDisconnect(cb: () => void): () => void
+  /**
+   * A reconnection opened a new connection. Held seats are resumed right
+   * after, each room getting a fresh snapshot. Returns a function that
+   * removes the listener.
+   */
   onReconnect(cb: () => void): () => void
 }
 
@@ -327,6 +439,11 @@ function splitOnce(value: string, at: string): [string, string | undefined] {
     : [value.slice(0, index), value.slice(index + 1)]
 }
 
+/**
+ * The `IBungohanClient` implementation. Create it with
+ * `createBungohanClient`, and type code that receives it as
+ * `IBungohanClient`.
+ */
 export class BungohanClient implements IBungohanClient {
   private readonly _url: string
   private readonly _reconnection: ReconnectionOptions
@@ -404,11 +521,6 @@ export class BungohanClient implements IBungohanClient {
 
   // --- connection ----------------------------------------------------------
 
-  /**
-   * Opens the connection (resolves once it is open). Already connected is
-   * `ok`; a connection in progress is waited for. While reconnecting, it
-   * waits for the reconnection's next attempt to open.
-   */
   public connect(): Promise<Result<void, ClientError>> {
     if (this._state === "connected") return Promise.resolve(ok(undefined))
     const done = new Promise<Result<void, ClientError>>((resolve) => {
@@ -421,11 +533,6 @@ export class BungohanClient implements IBungohanClient {
     return done
   }
 
-  /**
-   * Leaves every room (consented) and closes the connection. No
-   * reconnection follows. Everything is sent before this returns; the
-   * promise is already settled.
-   */
   public disconnect(): Promise<void> {
     this._disconnectNow()
     return Promise.resolve()
@@ -575,10 +682,6 @@ export class BungohanClient implements IBungohanClient {
     return this._join(JOIN_WITH[mode], target, options, join)
   }
 
-  /**
-   * Resumes a held seat with a token kept from an earlier connection (e.g.
-   * across a page reload). Automatic reconnection needs no call.
-   */
   public reconnect<
     S extends Schema = Schema,
     C extends Contract = EmptyContract,
@@ -614,17 +717,14 @@ export class BungohanClient implements IBungohanClient {
 
   // --- events --------------------------------------------------------------
 
-  /** Connection-level errors: server `ERROR` frames, failed reconnection. */
   public onError(cb: (error: ClientError) => void): () => void {
     return add(this._onError, cb)
   }
 
-  /** An open connection closed (whether or not reconnection follows). */
   public onDisconnect(cb: () => void): () => void {
     return add(this._onDisconnect, cb)
   }
 
-  /** A reconnection opened a new connection (rooms then resume). */
   public onReconnect(cb: () => void): () => void {
     return add(this._onReconnect, cb)
   }
@@ -1114,7 +1214,11 @@ function add<T>(set: Set<T>, value: T): () => void {
   }
 }
 
-/** Creates a {@link BungohanClient}. */
+/**
+ * Creates the client, which connects right away unless
+ * `options.autoConnect` is `false`. Create one per page and share it: one
+ * connection can hold seats in several rooms.
+ */
 export function createBungohanClient(options: ClientOptions): BungohanClient {
   return new BungohanClient(options)
 }

@@ -13,6 +13,7 @@ package's `src/`) are the reference.
 [`packages/core/src/types.ts`](../packages/core/src/types.ts)
 
 ```ts
+/** `createBungohanServer`'s options. Every field is optional. */
 export interface ServerOptions {
   /** Port only ever lives at `transport.config.port`. */
   transport?: {
@@ -27,6 +28,11 @@ export interface ServerOptions {
       compressionThreshold?: number
     }
   }
+  /**
+   * Where rooms' `saveState`/`loadState` go. `provider` takes any
+   * `IStore`; `config` builds a Redis store (closed on `stop()`). Without
+   * either, both calls are no-ops.
+   */
   store?: {
     provider?: IStore
     config?: { url?: string; host?: string; port?: number; password?: string }
@@ -77,6 +83,11 @@ export interface ServerOptions {
   stateCodec?: IStateCodec
   /** Off by default; when off, metrics cost nothing. */
   metrics?: { enabled?: boolean }
+  /**
+   * A small HTTP server on its own port: `GET /health`, `GET /metrics`
+   * and `GET /rooms` (public rooms), each switchable. Off unless
+   * `enabled`.
+   */
   http?: {
     enabled?: boolean
     /** Default 8080. */
@@ -96,13 +107,19 @@ export interface ServerOptions {
   simulation?: { tickRate?: number; maxCatchUpSteps?: number }
   /** Default 20 Hz. */
   sync?: { tickRate?: number }
+  /**
+   * What SIGTERM/SIGINT do: `stop()`, then `onShutdown`, then exit the
+   * process.
+   */
   gracefulShutdown?: {
     /** Milliseconds before a stuck shutdown exits with code 1. Default 30,000. */
     timeout?: number
+    /** Runs after `stop()`, before the process exits. */
     onShutdown?: () => Promise<void>
     /** Install SIGTERM/SIGINT handlers in `start()`. Default true. */
     handleSignals?: boolean
   }
+  /** Log level and destination. Default: `"info"` to the console. */
   logger?: LoggerOptions
   /** Time source for every loop and timeout. Default `SystemClock`. */
   clock?: Clock
@@ -213,6 +230,10 @@ export interface DefineRoomOptions {
   visibility?: "public" | "private"
   /** Default false. */
   locked?: boolean
+  /**
+   * Each new room's starting `metadata`, merged with the `metadata` of
+   * its create options.
+   */
   metadata?: Record<string, unknown>
   /** Seconds a reservation holds its seat. Default 60. */
   reservationTimeout?: number
@@ -228,6 +249,7 @@ export interface DefineRoomOptions {
 [`packages/client-js/src/client.ts`](../packages/client-js/src/client.ts)
 
 ```ts
+/** `createBungohanClient`'s options. Only `url` is required. */
 export interface ClientOptions {
   /** Server URL, e.g. `wss://game.example.com`. */
   url: string
