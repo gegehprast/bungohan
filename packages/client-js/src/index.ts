@@ -26,6 +26,7 @@ export {
   createBungohanClient,
   type IBungohanClient,
   type JoinWithMode,
+  type PageExitTarget,
   type TypedJoin,
 } from "./client"
 export { ClientError, type ClientErrorCode } from "./errors"

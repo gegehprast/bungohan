@@ -11,9 +11,9 @@ const ctx = canvas?.getContext("2d")
 if (!ctx || !status) throw new Error("index.html is missing its elements")
 
 const client = createBungohanClient({ url: SERVER_URL })
-// Closing the tab is leaving; otherwise the server would hold the seat
-// for a reconnection that never comes.
-window.addEventListener("pagehide", () => void client.disconnect())
+// Closing or reloading the tab is leaving; otherwise the server would
+// hold the seat for a reconnection that never comes.
+client.leaveOnPageExit()
 
 async function main(ctx: CanvasRenderingContext2D, status: Element) {
   // Resolves once the first state snapshot is in: room.state is filled.

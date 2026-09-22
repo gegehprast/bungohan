@@ -536,3 +536,111 @@ describe("rooms", () => {
     ])
   })
 })
+
+describe("leaveOnPageExit", () => {
+  /** Joins a second room (roomRef 2) on the same connection. */
+  async function joinSecond(client: BungohanClient, peer: Peer) {
+    const joining = client.join("counter", undefined, { state: Counter })
+    await Promise.resolve()
+    peer.frame(
+      ServerFrameType.JOIN_SUCCESS,
+      [peer.last().header[0] ?? 0, 2],
+      ["room-2", "counter", "session-2", "token-2", "", "messagepack", [], []],
+    )
+    snapshot(peer, 2, snapshotOps)
+    return (await joining).unwrap()
+  }
+
+  /** The LEAVEs sent so far, by roomRef. */
+  const leaves = (peer: Peer) =>
+    peer.sent
+      .filter((frame) => frame.type === ClientFrameType.LEAVE)
+      .map((frame) => frame.header[0])
+
+  test("beforeunload leaves every room and closes, synchronously", async () => {
+    const client = makeClient()
+    const { peer, room } = await joined(client)
+    const second = await joinSecond(client, peer)
+    const page = new EventTarget()
+    client.leaveOnPageExit(page)
+
+    const exit = new Event("beforeunload", { cancelable: true })
+    page.dispatchEvent(exit)
+    // No await between the event and these: a page being torn down may
+    // never run a promise continuation.
+    expect(leaves(peer)).toEqual([1, 2])
+    expect(peer.closed?.[0]).toBe(1000)
+    expect(room.status).toBe("left")
+    expect(second.status).toBe("left")
+    expect(client.connectionState).toBe("disconnected")
+    // A cancelled beforeunload is what makes the browser ask "leave page?".
+    expect(exit.defaultPrevented).toBe(false)
+  })
+
+  test("the pagehide that follows beforeunload sends nothing more", async () => {
+    const client = makeClient()
+    const { peer } = await joined(client)
+    const page = new EventTarget()
+    client.leaveOnPageExit(page)
+    page.dispatchEvent(new Event("beforeunload"))
+    const sent = peer.sent.length
+    const closed = peer.closed
+    page.dispatchEvent(new Event("pagehide"))
+    expect(peer.sent).toHaveLength(sent)
+    expect(peer.closed).toBe(closed)
+    expect(leaves(peer)).toEqual([1])
+  })
+
+  test("pagehide alone leaves too (no beforeunload, e.g. mobile)", async () => {
+    const client = makeClient()
+    const { peer, room } = await joined(client)
+    const page = new EventTarget()
+    client.leaveOnPageExit(page)
+    page.dispatchEvent(new Event("pagehide"))
+    expect(leaves(peer)).toEqual([1])
+    expect(peer.closed?.[0]).toBe(1000)
+    expect(room.status).toBe("left")
+  })
+
+  test("the returned function removes both listeners", async () => {
+    const client = makeClient()
+    const { peer, room } = await joined(client)
+    const added: string[] = []
+    const removed: string[] = []
+    const page = new EventTarget()
+    const spy = {
+      addEventListener: (
+        ...args: Parameters<EventTarget["addEventListener"]>
+      ) => {
+        added.push(args[0])
+        page.addEventListener(...args)
+      },
+      removeEventListener: (
+        ...args: Parameters<EventTarget["removeEventListener"]>
+      ) => {
+        removed.push(args[0])
+        page.removeEventListener(...args)
+      },
+    }
+    const stop = client.leaveOnPageExit(spy)
+    expect(added.sort()).toEqual(["beforeunload", "pagehide"])
+    stop()
+    expect(removed.sort()).toEqual(["beforeunload", "pagehide"])
+    page.dispatchEvent(new Event("beforeunload"))
+    page.dispatchEvent(new Event("pagehide"))
+    expect(leaves(peer)).toEqual([])
+    expect(peer.closed).toBeUndefined()
+    expect(room.status).toBe("joined")
+  })
+
+  test("without a window it is a no-op that returns a no-op", async () => {
+    expect(typeof window).toBe("undefined") // Bun, like Node and workers
+    const client = makeClient()
+    const { peer, room } = await joined(client)
+    const stop = client.leaveOnPageExit()
+    expect(stop).toBeFunction()
+    stop()
+    expect(peer.sent.at(-1)?.type).not.toBe(ClientFrameType.LEAVE)
+    expect(room.status).toBe("joined")
+  })
+})

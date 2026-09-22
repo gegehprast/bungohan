@@ -207,6 +207,66 @@ In development, `<StrictMode>` makes `useRoom` join twice, and with
 `"create"` that creates two rooms. **Fix:** create from an event handler.
 See [React and StrictMode](guides/client.md#react-and-strictmode).
 
+## `pagehide` alone doesn't leave on a Firefox reload
+
+The obvious way to leave when the tab goes away drops the player's seat
+in Chromium, but not in Firefox-engine browsers (Firefox, Zen, …):
+
+<!-- snippet: docs/examples/src/page-exit.ts#pagehide-only -->
+[`docs/examples/src/page-exit.ts`](examples/src/page-exit.ts)
+
+```ts
+// ✗ pagehide alone: on a reload, Firefox never sends what this sends.
+window.addEventListener("pagehide", () => void client.disconnect())
+```
+<!-- /snippet -->
+
+On a **reload**, Firefox never sends a WebSocket message queued in
+`pagehide`. The server sees the connection close (code 1001, as in
+Chromium) with no `LEAVE`, takes it for a dropped network, and holds the
+seat for the reconnection timeout: for 30 seconds the old player stands
+in the room next to the reloaded one. Measured in headless Chromium and
+Zen 1.21:
+
+| Message sent in… | Chromium | Firefox engine |
+|---|---|---|
+| `pagehide`, on reload | delivered | **dropped** |
+| `pagehide`, on tab close | delivered | delivered |
+| `beforeunload`, on reload | delivered | delivered |
+
+**Fix:** call `client.leaveOnPageExit()`
+([Leaving with the page](guides/client.md#leaving-with-the-page)). If you
+write your own handler (say, to leave only some rooms), follow the same
+rules:
+
+<!-- snippet: docs/examples/src/page-exit.ts#own-handler -->
+[`docs/examples/src/page-exit.ts`](examples/src/page-exit.ts)
+
+```ts
+// ✓ Both events, the first one wins, and LEAVE goes out before any await.
+let left = false
+const leave = () => {
+  if (left) return
+  left = true
+  void room.leave() // sent before leave() returns; don't await first
+}
+window.addEventListener("beforeunload", leave)
+window.addEventListener("pagehide", leave)
+```
+<!-- /snippet -->
+
+- Listen for **both** events. `beforeunload` covers the Firefox reload,
+  and `pagehide` covers the exits that don't fire `beforeunload` (which
+  mobile browsers don't fire reliably).
+- **Send synchronously.** `room.leave()` and `client.disconnect()` send
+  everything before they return. Code after an `await` may never run in a
+  page that is going away.
+- **Never cancel `beforeunload`** (`preventDefault()`, `returnValue`):
+  that's what makes the browser ask "leave this page?".
+
+Test page-exit code in a Firefox-engine browser, with a reload: Chromium
+delivers the `pagehide` message, so it can't show this bug.
+
 ## Other limitations
 
 - **Nothing is replayed.** Messages sent to a client while it was

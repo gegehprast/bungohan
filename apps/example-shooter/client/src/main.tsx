@@ -10,9 +10,9 @@ const url =
   import.meta.env.VITE_SERVER_URL ??
   `ws://${window.location.hostname}:${DEFAULT_SERVER_PORT}`
 const client = createBungohanClient({ url })
-// Closing the tab is leaving, not a dropped connection the server should
-// hold a seat (and a motionless player) for.
-window.addEventListener("pagehide", () => void client.disconnect())
+// Closing or reloading the tab is leaving, not a dropped connection the
+// server should hold a seat (and a motionless player) for.
+client.leaveOnPageExit()
 
 const root = document.getElementById("root")
 if (root === null) throw new Error("index.html has no #root element")

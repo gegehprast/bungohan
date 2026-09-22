@@ -1,13 +1,14 @@
 /**
  * Runs every check a change must pass, the same way every time:
  *
- *     bun run verify               # all six
+ *     bun run verify               # all seven
  *     bun run verify --no-redis    # without Valkey/Redis (shown as SKIPPED)
  *     bun run verify --no-browser  # without Chromium (shown as SKIPPED)
+ *     bun run verify --no-firefox  # without Firefox/Zen (shown as SKIPPED)
  *
  * The point is that nothing passes by quietly skipping. `bun test` without
  * REDIS_URL skips the Redis suites and still reports success, and a check
- * nobody remembers to run can't fail. Here Redis and the browser check are
+ * nobody remembers to run can't fail. Here Redis and the browser checks are
  * required unless explicitly opted out, an opt-out is printed as SKIPPED,
  * and a `bun test` run that skipped anything fails.
  */
@@ -17,6 +18,7 @@ const ROOT = new URL("..", import.meta.url).pathname
 const args = new Set(process.argv.slice(2))
 const withRedis = !args.has("--no-redis")
 const withBrowser = !args.has("--no-browser")
+const withFirefox = !args.has("--no-firefox")
 const redisUrl = process.env["REDIS_URL"] ?? "redis://127.0.0.1:6379"
 
 interface Step {
@@ -97,7 +99,19 @@ const steps: Step[] = [
     cmd: ["bun", "run", "check:browser"],
     cwd: `${ROOT}apps/example-shooter/server`,
   },
+  {
+    // Page-exit leaves on a reload: a Firefox-only bug Chromium can't show.
+    name: "check:firefox",
+    cmd: ["bun", "run", "check:firefox"],
+    cwd: `${ROOT}apps/tutorial/server`,
+  },
 ]
+
+/** Steps skipped on request, and the flag that skipped them. */
+const optedOut = new Map<string, string>([
+  ...(withBrowser ? [] : [["check:browser", "--no-browser"] as const]),
+  ...(withFirefox ? [] : [["check:firefox", "--no-firefox"] as const]),
+])
 
 const results: [string, Outcome][] = []
 if (withRedis) {
@@ -113,8 +127,9 @@ if (withRedis) {
 }
 
 for (const step of steps) {
-  if (step.name === "check:browser" && !withBrowser) {
-    results.push([step.name, { status: "SKIPPED", why: "--no-browser" }])
+  const flag = optedOut.get(step.name)
+  if (flag !== undefined) {
+    results.push([step.name, { status: "SKIPPED", why: flag }])
     continue
   }
   const tty = process.stdout.isTTY === true
@@ -142,6 +157,6 @@ console.log(
     ? `\n${failed} FAILED`
     : skipped > 0
       ? `\nall run checks passed; ${skipped} skipped on request`
-      : "\nall six passed",
+      : `\nall ${results.length} passed`,
 )
 process.exit(failed > 0 ? 1 : 0)

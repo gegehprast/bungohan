@@ -50,7 +50,7 @@ clients/csharp   clients/godot   clients/fixtures      # outside the Bun workspa
 ## Commands
 
 ```sh
-bun run verify                  # ALL SIX CHECKS — run this before calling anything done
+bun run verify                  # ALL SEVEN CHECKS — run this before calling anything done
 bun test                        # all tests
 bun --filter @bungohan/state test
 bun run check                   # biome check --write
@@ -63,7 +63,7 @@ bun run codegen:interop         # same, for the interop test server's bindings
 
 When a change touches `clients/`, `packages/codegen`, PROTOCOL.md or the vectors, also run the C# and Godot runners (`tests/run_vectors.gd` alone runs just the vectors). Both `test:*` scripts boot a real server through `scripts/interop.ts` (`packages/testing/src/interop/`) and pass its URL as `BUNGOHAN_INTEROP_URL`; the server-side `behavior` vectors and the end-to-end suites need it, and skip without it. `UPDATE_GOLDEN=1 bun test packages/codegen` rewrites the codegen goldens; review their diff.
 
-**Before considering any task done, run `bun run verify` and make it pass.** It runs all six checks the same way every time: `bun test` (with `REDIS_URL`, and it fails if anything was skipped), `tsc --noEmit`, `biome check`, `test:csharp`, `test:godot`, and `check:browser`. Don't substitute a subset: `bun test` alone silently skips the Redis suites and still reports success. If Valkey/Redis or Chromium genuinely isn't available, pass `--no-redis` / `--no-browser`; those show as SKIPPED, and your summary must say so. Writing tests without running them doesn't count as verification.
+**Before considering any task done, run `bun run verify` and make it pass.** It runs all seven checks the same way every time: `bun test` (with `REDIS_URL`, and it fails if anything was skipped), `tsc --noEmit`, `biome check`, `test:csharp`, `test:godot`, `check:browser` (Chromium) and `check:firefox` (Firefox engine). Don't substitute a subset: `bun test` alone silently skips the Redis suites and still reports success. If Valkey/Redis, Chromium or Firefox/Zen genuinely isn't available, pass `--no-redis` / `--no-browser` / `--no-firefox`; those show as SKIPPED, and your summary must say so. Writing tests without running them doesn't count as verification.
 
 ## Code style
 
@@ -125,3 +125,5 @@ User docs live in `docs/` (JavaScript only). Every ts/tsx block in them is copie
 When the framework API changes, update this app's call sites; it's the canary for DX regressions.
 
 To check the app in a real browser, run `bun run check:browser` in `apps/example-shooter/server`. It starts the server, the Vite client and two headless Chromium tabs, plays a short game, and decodes the WebSocket frames to confirm one tab's movement reaches the other's state. Use it rather than writing a new browser script. It needs Chromium (or `CHROMIUM=<binary>`) and free ports 6060, 5173 and 9223, so it isn't part of `bun test`.
+
+`bun run check:firefox` in `apps/tutorial/server` is the Firefox-engine counterpart for page-exit behavior (a WebSocket message sent in `pagehide` on a reload is dropped there, not in Chromium). It runs the tutorial server in-process, loads the vanilla tutorial client in headless Firefox or Zen over WebDriver BiDi, reloads it, and asserts no held "ghost" seat is left. It takes the binary from `FIREFOX` (default: `firefox` or `zen-browser` on PATH) and needs free ports 6060 and 9224.

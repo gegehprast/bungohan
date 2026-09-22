@@ -204,12 +204,43 @@ export interface IBungohanClient {
   getRooms(): Map<string, IRoom<Schema, Contract>>
   getRoom(id: string): IRoom<Schema, Contract> | undefined
   leaveAll(): Promise<void>
+  /**
+   * Opt-in: gives up every seat when the page is closed, reloaded or
+   * navigated away from (`disconnect()`, run inside the page-exit event).
+   * Without it, the server sees a closed tab as a dropped connection and
+   * holds the seat for the reconnection timeout. A game that resumes
+   * seats after a reload (spec §7.5) must not call it.
+   *
+   * Listens for both `beforeunload` and `pagehide` and acts on whichever
+   * fires first: a message sent in `pagehide` during a reload never leaves
+   * a Firefox-engine browser. Returns a function that removes both
+   * listeners. Outside a browser (no `window`) it does nothing and returns
+   * a no-op. `target` defaults to the global `window`.
+   */
+  leaveOnPageExit(target?: PageExitTarget): () => void
   readonly connectionState: ConnectionState
   /** Last measured PING round trip in ms, or undefined before the first. */
   readonly latency: number | undefined
   onError(cb: (error: ClientError) => void): () => void
   onDisconnect(cb: () => void): () => void
   onReconnect(cb: () => void): () => void
+}
+
+/** What `leaveOnPageExit` listens on: `window`, or a stand-in. */
+export type PageExitTarget = Pick<
+  EventTarget,
+  "addEventListener" | "removeEventListener"
+>
+
+/**
+ * Both, not just `pagehide`: Firefox drops a WebSocket message sent in
+ * `pagehide` during a reload, but sends one from `beforeunload` (spec §7.5).
+ */
+const PAGE_EXIT_EVENTS = ["beforeunload", "pagehide"] as const
+
+/** The page's `window`, or undefined in Bun, Node and workers. */
+function pageWindow(): PageExitTarget | undefined {
+  return typeof window === "undefined" ? undefined : window
 }
 
 const DEFAULT_RECONNECTION: ReconnectionOptions = {
@@ -392,10 +423,40 @@ export class BungohanClient implements IBungohanClient {
 
   /**
    * Leaves every room (consented) and closes the connection. No
-   * reconnection follows.
+   * reconnection follows. Everything is sent before this returns; the
+   * promise is already settled.
    */
-  public async disconnect(): Promise<void> {
-    await this.leaveAll()
+  public disconnect(): Promise<void> {
+    this._disconnectNow()
+    return Promise.resolve()
+  }
+
+  public leaveAll(): Promise<void> {
+    this._leaveAllNow()
+    return Promise.resolve()
+  }
+
+  public leaveOnPageExit(target = pageWindow()): () => void {
+    if (target === undefined) return () => {}
+    let exited = false
+    // Never preventDefault() or set returnValue here: in beforeunload that
+    // asks the browser to show a "leave this page?" prompt.
+    const onExit = (): void => {
+      if (exited) return
+      exited = true
+      this._disconnectNow()
+    }
+    for (const type of PAGE_EXIT_EVENTS) target.addEventListener(type, onExit)
+    return () => {
+      for (const type of PAGE_EXIT_EVENTS) {
+        target.removeEventListener(type, onExit)
+      }
+    }
+  }
+
+  /** `disconnect()`, synchronously: every frame is sent when it returns. */
+  private _disconnectNow(): void {
+    this._leaveAllNow()
     this._stopRetry()
     const connection = this._connection
     this._connection = undefined
@@ -407,13 +468,13 @@ export class BungohanClient implements IBungohanClient {
     if (wasOpen) this._emit(this._onDisconnect)
   }
 
-  public async leaveAll(): Promise<void> {
+  private _leaveAllNow(): void {
     const rooms = new Set<RoomLink>([
       ...this._byRef.values(),
       ...this._resuming,
     ])
     for (const pending of this._pending.values()) rooms.add(pending.room)
-    for (const room of rooms) await room.leave()
+    for (const room of rooms) room._leaveNow()
   }
 
   // --- joins ---------------------------------------------------------------

@@ -634,3 +634,26 @@ describe("schema classes (§7.5)", () => {
     expect(room.status).toBe("joined")
   })
 })
+
+describe("leaveOnPageExit", () => {
+  test("a page exit gives the seat up at once instead of holding it", async () => {
+    const leaver = await h.connect()
+    const room = await join(leaver)
+    const other = await join()
+    const left: string[] = []
+    other.onClientLeave(({ sessionId }) => left.push(sessionId))
+    const server = serverRoom(room)
+    const page = new EventTarget()
+    leaver.leaveOnPageExit(page)
+
+    page.dispatchEvent(new Event("beforeunload"))
+    page.dispatchEvent(new Event("pagehide"))
+    await h.flush()
+    // A consented leave, not a drop: no held seat, no ghost player.
+    expect(server.hasClient(room.sessionId)).toBe(false)
+    expect(calls).toContain(`onLeave ${room.sessionId} true`)
+    expect(calls).not.toContain(`onDisconnect ${room.sessionId}`)
+    expect(left).toEqual([room.sessionId])
+    expect(leaver.connectionState).toBe("disconnected")
+  })
+})

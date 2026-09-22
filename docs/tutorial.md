@@ -569,9 +569,9 @@ const ctx = canvas?.getContext("2d")
 if (!ctx || !status) throw new Error("index.html is missing its elements")
 
 const client = createBungohanClient({ url: SERVER_URL })
-// Closing the tab is leaving; otherwise the server would hold the seat
-// for a reconnection that never comes.
-window.addEventListener("pagehide", () => void client.disconnect())
+// Closing or reloading the tab is leaving; otherwise the server would
+// hold the seat for a reconnection that never comes.
+client.leaveOnPageExit()
 
 async function main(ctx: CanvasRenderingContext2D, status: Element) {
   // Resolves once the first state snapshot is in: room.state is filled.
@@ -608,6 +608,11 @@ void main(ctx, status)
 ```
 <!-- /snippet -->
 
+- `client.leaveOnPageExit()` makes closing or reloading the tab a real
+  leave. Without it, the server can't tell a closed tab from a dropped
+  connection, and holds the seat (and a frozen player) for 30 seconds.
+  It's opt-in because some games want a reload to resume the seat
+  ([Resuming after a reload](guides/client.md#resuming-after-a-reload)).
 - The join resolves once the room's first snapshot has arrived, so
   `room.state` is already filled in when you get the room.
 - The drawing code ([`draw.ts`](../apps/tutorial/client/src/draw.ts))
@@ -641,7 +646,7 @@ import { App } from "./App"
 // One client for the whole app, created outside React so a re-render
 // never opens a second connection.
 const client = createBungohanClient({ url: SERVER_URL })
-window.addEventListener("pagehide", () => void client.disconnect())
+client.leaveOnPageExit()
 
 const root = document.getElementById("root")
 if (root === null) throw new Error("react.html has no #root element")

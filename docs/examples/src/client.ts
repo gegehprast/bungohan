@@ -21,6 +21,16 @@ export function connect(url: string, token?: string): BungohanClient {
 }
 // #endregion create
 
+// #region page-exit
+export function connectThisPage(url: string): BungohanClient {
+  const client = createBungohanClient({ url })
+  // Closing, reloading or navigating away from the page gives every seat
+  // up at once, instead of the server holding it for a reconnection.
+  client.leaveOnPageExit()
+  return client
+}
+// #endregion page-exit
+
 // #region connection-events
 export function watchConnection(client: IBungohanClient): () => void {
   const offs = [
@@ -134,3 +144,16 @@ export async function resume(client: IBungohanClient, storage: Storage) {
   return resumed.isOk() ? resumed.value : undefined
 }
 // #endregion reload
+
+// #region resumable
+/** On page load, in a game where a reload keeps the seat. */
+export async function start(
+  client: IBungohanClient, // created without leaveOnPageExit()
+  name: string,
+  storage: Storage = sessionStorage, // per tab; survives a reload
+) {
+  const room = (await resume(client, storage)) ?? (await enter(client, name))
+  if (typeof room !== "string") remember(room, storage)
+  return room
+}
+// #endregion resumable

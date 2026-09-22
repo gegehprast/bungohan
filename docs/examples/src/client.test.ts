@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, spyOn, test } from "bun:test"
 import type { TestClientOptions } from "@bungohan/testing"
 import { createTestHarness, type TestHarness } from "@bungohan/testing"
 import { ArenaRoom } from "@bungohan/tutorial-server/ArenaRoom"
-import { enter, mirror, remember, resume, type Scene } from "./client"
+import { enter, mirror, remember, resume, type Scene, start } from "./client"
 
 let h: TestHarness
 let log: ReturnType<typeof spyOn>
@@ -89,4 +89,21 @@ test("a remembered seat is resumed by a new client after a reload", async () => 
   expect(resumed?.state.players.get(tab.room.sessionId)?.name.get()).toBe(
     "Alice",
   )
+})
+
+test("start() resumes the seat after a reload, else joins afresh", async () => {
+  const storage = memoryStorage()
+  const first = await h.connect({ reconnection: { enabled: false } })
+  const joined = await start(first, "Alice", storage)
+  if (typeof joined === "string") throw new Error(joined)
+  await h.dropConnection(first) // a reload: the socket closes, no LEAVE
+
+  const resumed = await start(await h.connect(), "Alice", storage)
+  if (typeof resumed === "string") throw new Error(resumed)
+  expect(resumed.sessionId).toBe(joined.sessionId)
+
+  storage.clear() // a new tab: nothing saved, so a fresh seat
+  const fresh = await start(await h.connect(), "Bob", storage)
+  if (typeof fresh === "string") throw new Error(fresh)
+  expect(fresh.sessionId).not.toBe(joined.sessionId)
 })

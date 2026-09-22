@@ -8,7 +8,7 @@ import { App } from "./App"
 // One client for the whole app, created outside React so a re-render
 // never opens a second connection.
 const client = createBungohanClient({ url: SERVER_URL })
-window.addEventListener("pagehide", () => void client.disconnect())
+client.leaveOnPageExit()
 
 const root = document.getElementById("root")
 if (root === null) throw new Error("react.html has no #root element")

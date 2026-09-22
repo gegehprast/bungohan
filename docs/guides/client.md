@@ -27,11 +27,42 @@ connects as soon as it's created (`autoConnect`), and a join on a
 disconnected client connects first either way. The options and their
 defaults are in the [reference](../reference.md#clientoptions).
 
-`client.disconnect()` leaves every room and closes the connection. Call
-it on `pagehide`, or a closed tab looks like a dropped connection, and the
-server holds that player's seat (and character) for the reconnection
-timeout. Leave it out if you want a reload to resume the seat instead
-([below](#resuming-after-a-reload)).
+`client.disconnect()` leaves every room and closes the connection.
+
+### Leaving with the page
+
+Without a leave, a closed or reloaded tab looks to the server like a
+dropped connection: it holds that player's seat (and character) for the
+reconnection timeout, 30 s by default. Opt in to leaving with the page
+where you create the client:
+
+<!-- snippet: docs/examples/src/client.ts#page-exit -->
+[`docs/examples/src/client.ts`](../examples/src/client.ts)
+
+```ts
+export function connectThisPage(url: string): BungohanClient {
+  const client = createBungohanClient({ url })
+  // Closing, reloading or navigating away from the page gives every seat
+  // up at once, instead of the server holding it for a reconnection.
+  client.leaveOnPageExit()
+  return client
+}
+```
+<!-- /snippet -->
+
+`leaveOnPageExit()` sends a `LEAVE` for every room and closes the
+connection when the page is closed, reloaded or navigated away from. It
+returns a function that removes its listeners. Outside a browser (Bun,
+Node, a worker) it does nothing, so shared code can call it anywhere.
+
+It listens for both `beforeunload` and `pagehide`, because neither alone
+works everywhere ([why](../gotchas.md#pagehide-alone-doesnt-leave-on-a-firefox-reload)).
+It never cancels `beforeunload`, so it never triggers the browser's
+"leave this page?" prompt. If some other `beforeunload` handler of yours
+does, and the player stays, the seats are already given up by then.
+
+It's opt-in because it's a game design choice. Don't call it if a reload
+should resume the seat instead ([below](#resuming-after-a-reload)).
 
 ## Joining
 
@@ -242,6 +273,33 @@ export async function resume(client: IBungohanClient, storage: Storage) {
 
 The token is replaced on every successful join and reconnection, and the
 old one stops working, so keep saving the current one.
+
+Put together on page load, with `sessionStorage` (one per tab, kept
+across a reload):
+
+<!-- snippet: docs/examples/src/client.ts#resumable -->
+[`docs/examples/src/client.ts`](../examples/src/client.ts)
+
+```ts
+/** On page load, in a game where a reload keeps the seat. */
+export async function start(
+  client: IBungohanClient, // created without leaveOnPageExit()
+  name: string,
+  storage: Storage = sessionStorage, // per tab; survives a reload
+) {
+  const room = (await resume(client, storage)) ?? (await enter(client, name))
+  if (typeof room !== "string") remember(room, storage)
+  return room
+}
+```
+<!-- /snippet -->
+
+**Don't call `leaveOnPageExit()` in a game like this.** It would give the
+seat up as the page unloads, and the reload would find nothing to resume.
+The price is that a tab closed for good also leaves its seat held until
+the reconnection timeout, as if the connection had dropped. Keep
+[`reconnectionTimeout`](rooms.md#reconnection) as short as the game can
+afford.
 
 ## The React hooks
 

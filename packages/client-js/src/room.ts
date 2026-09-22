@@ -158,6 +158,7 @@ export interface RoomLink extends IRoom<Schema, Contract> {
   _bind(ref: number, handshake: JoinHandshake, codec: IStateCodec): void
   _suspend(): void
   _receive(type: number, header: readonly number[], body: Uint8Array): void
+  _leaveNow(): Result<void, ClientError>
   _left(code: number): void
   _fail(code: string, message: string): void
 }
@@ -318,7 +319,16 @@ export class Room<S extends Schema = Schema, C extends Contract = EmptyContract>
     )
   }
 
-  public async leave(): Promise<Result<void, ClientError>> {
+  public leave(): Promise<Result<void, ClientError>> {
+    return Promise.resolve(this._leaveNow())
+  }
+
+  /**
+   * @internal `leave()`, synchronously: the LEAVE frame is on the socket
+   * when this returns. Page-exit handlers depend on that (spec §7.5): the
+   * browser may tear the page down before any promise continuation runs.
+   */
+  public _leaveNow(): Result<void, ClientError> {
     if (this._status === "left") {
       return err(new ClientError("NOT_JOINED", "already left"))
     }
