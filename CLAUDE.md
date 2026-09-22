@@ -35,7 +35,7 @@ Bun API docs are available locally at `node_modules/bun-types/docs/**.mdx`.
 Bun workspaces. Packages export raw TypeScript (`"main": "./src/index.ts"`) — no build step for library packages.
 
 ```
-packages/result  types  state  serializer  transport  store  backplane  core  client-js  codegen  testing
+packages/result  types  state  schema  serializer  transport  store  backplane  core  client-js  codegen  testing
 apps/example-shooter/{server,client,shared}
 clients/csharp   clients/godot   clients/fixtures      # outside the Bun workspace (spec §4.2.1)
 ```
@@ -43,6 +43,7 @@ clients/csharp   clients/godot   clients/fixtures      # outside the Bun workspa
 `clients/` holds the non-TypeScript clients: C# (`clients/csharp/Bungohan.Protocol`, netstandard2.1, C# 9, no NuGet packages, so it builds for Unity and Godot .NET) and a GDScript Godot addon (`clients/godot/addons/bungohan`). Each is a protocol core plus a networking layer (`Net/`, `net/`) with a pluggable client transport and a poll/pump model — every callback arrives on the thread that calls `Poll()`/`poll()`. Their generated example bindings (`Bungohan.Bindings/Shooter`, `godot/example/shooter`, `fixtures/bungohan.json`) come from `bun run codegen:example`, and the interop test server's (`Bungohan.Bindings/Interop`, `godot/tests/interop`) from `bun run codegen:interop`; never edit them by hand. `clients/fixtures/shooter-stream.*.json` are recordings (`bun apps/example-shooter/server/scripts/record-stream.ts`), not generated vectors: re-recording changes them.
 
 - **All package names are scoped `@bungohan/*`.** The previous implementation used unscoped `gungohan-*` (a typo) — never reproduce that.
+- **A game's shared module (state classes + contract) imports only `@bungohan/schema`**, never `@bungohan/core` or `@bungohan/client-js`. That keeps the browser free of server code and the server free of the client package. Core and client-js re-export `@bungohan/schema`, so single-side files can import from their own package.
 - Cross-package deps use `"workspace:*"`; shared dependency versions use the root `catalog:` protocol.
 - Run a script in one package: `bun --filter @bungohan/state test`
 

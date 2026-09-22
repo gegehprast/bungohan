@@ -6,7 +6,7 @@ messages, keeps a live copy of each room's state, and reconnects on its
 own. React hooks are at `@bungohan/client-js/react`.
 
 ```sh
-bun add @bungohan/client-js @bungohan/state @bungohan/types
+bun add @bungohan/client-js @bungohan/schema
 ```
 
 (Not published yet: these are the names the packages will be published

@@ -11,6 +11,7 @@
     "@bungohan/backplane": "workspace:*",
     "@bungohan/client-js": "workspace:*",
     "@bungohan/core": "workspace:*",
+    "@bungohan/schema": "workspace:*",
     "@bungohan/serializer": "workspace:*",
     "@bungohan/state": "workspace:*",
     "@bungohan/store": "workspace:*",

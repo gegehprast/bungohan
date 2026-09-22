@@ -6,7 +6,7 @@ import {
   createString,
   f,
   Schema,
-} from "@bungohan/client-js"
+} from "@bungohan/schema"
 // #endregion imports
 
 // #region player

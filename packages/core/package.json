@@ -11,6 +11,7 @@
   "dependencies": {
     "@bungohan/backplane": "workspace:*",
     "@bungohan/result": "workspace:*",
+    "@bungohan/schema": "workspace:*",
     "@bungohan/serializer": "workspace:*",
     "@bungohan/state": "workspace:*",
     "@bungohan/store": "workspace:*",

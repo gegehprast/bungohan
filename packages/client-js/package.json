@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@bungohan/result": "workspace:*",
+    "@bungohan/schema": "workspace:*",
     "@bungohan/serializer": "workspace:*",
     "@bungohan/state": "workspace:*",
     "@bungohan/types": "workspace:*"

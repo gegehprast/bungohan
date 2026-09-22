@@ -49,7 +49,7 @@
       "name": "@bungohan/example-shooter-shared",
       "version": "0.0.0",
       "dependencies": {
-        "@bungohan/client-js": "workspace:*",
+        "@bungohan/schema": "workspace:*",
       },
     },
     "apps/tutorial/client": {
@@ -85,7 +85,7 @@
       "name": "@bungohan/tutorial-shared",
       "version": "0.0.0",
       "dependencies": {
-        "@bungohan/client-js": "workspace:*",
+        "@bungohan/schema": "workspace:*",
       },
     },
     "docs/examples": {
@@ -95,6 +95,7 @@
         "@bungohan/backplane": "workspace:*",
         "@bungohan/client-js": "workspace:*",
         "@bungohan/core": "workspace:*",
+        "@bungohan/schema": "workspace:*",
         "@bungohan/serializer": "workspace:*",
         "@bungohan/state": "workspace:*",
         "@bungohan/store": "workspace:*",
@@ -125,6 +126,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@bungohan/result": "workspace:*",
+        "@bungohan/schema": "workspace:*",
         "@bungohan/serializer": "workspace:*",
         "@bungohan/state": "workspace:*",
         "@bungohan/types": "workspace:*",
@@ -162,6 +164,7 @@
       "dependencies": {
         "@bungohan/backplane": "workspace:*",
         "@bungohan/result": "workspace:*",
+        "@bungohan/schema": "workspace:*",
         "@bungohan/serializer": "workspace:*",
         "@bungohan/state": "workspace:*",
         "@bungohan/store": "workspace:*",
@@ -173,6 +176,14 @@
     "packages/result": {
       "name": "@bungohan/result",
       "version": "0.0.0",
+    },
+    "packages/schema": {
+      "name": "@bungohan/schema",
+      "version": "0.0.0",
+      "dependencies": {
+        "@bungohan/state": "workspace:*",
+        "@bungohan/types": "workspace:*",
+      },
     },
     "packages/serializer": {
       "name": "@bungohan/serializer",
@@ -288,6 +299,8 @@
     "@bungohan/example-shooter-shared": ["@bungohan/example-shooter-shared@workspace:apps/example-shooter/shared"],
 
     "@bungohan/result": ["@bungohan/result@workspace:packages/result"],
+
+    "@bungohan/schema": ["@bungohan/schema@workspace:packages/schema"],
 
     "@bungohan/serializer": ["@bungohan/serializer@workspace:packages/serializer"],
 

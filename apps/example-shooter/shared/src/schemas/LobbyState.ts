@@ -1,4 +1,4 @@
-import { createSchemaMap, f, Schema } from "@bungohan/client-js"
+import { createSchemaMap, f, Schema } from "@bungohan/schema"
 import { RoomInfo } from "./RoomInfo"
 
 /** Lobby state: the public shooter rooms, by room id. */

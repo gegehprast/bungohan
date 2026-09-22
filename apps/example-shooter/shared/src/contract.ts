@@ -1,9 +1,4 @@
-import {
-  defineContract,
-  defineMessage,
-  f,
-  type Infer,
-} from "@bungohan/client-js"
+import { defineContract, defineMessage, f, type Infer } from "@bungohan/schema"
 /**
  * Message contracts (spec §4.1). The server binds them to its rooms and the
  * client passes the same objects at join, so names and payloads are checked

@@ -56,14 +56,15 @@ the client can never disagree about their shapes.
 The server needs Bun 1.3.3 or newer.
 
 ```sh
-bun add @bungohan/core @bungohan/client-js # server
-bun add @bungohan/client-js                # client
+bun add @bungohan/core @bungohan/schema      # server
+bun add @bungohan/client-js @bungohan/schema # client
 ```
 
-The server imports from `@bungohan/core`, the client from
-`@bungohan/client-js`. The shared module is imported by both, so it takes
-`Schema`, `f` and `defineContract` from `@bungohan/client-js`, which runs
-on the server too. That's why the server needs it as well.
+The server imports from `@bungohan/core` and the client from
+`@bungohan/client-js`. The module both of them share, holding the state and
+the contract, imports from `@bungohan/schema`: the definitions alone, safe to
+ship to a browser. So the server never depends on the client package, and
+the browser never pulls in server code.
 
 ## A server and a client in three files
 
@@ -80,7 +81,7 @@ import {
   defineMessage,
   f,
   Schema,
-} from "@bungohan/client-js"
+} from "@bungohan/schema"
 
 /** The state every client sees, kept in sync by the server. */
 export class CounterState extends Schema {

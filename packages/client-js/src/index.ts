@@ -8,41 +8,14 @@ export {
   tryCatch,
   tryCatchAsync,
 } from "@bungohan/result"
-// The schema, contract and option building blocks: a module both the
-// server and the browser import (state classes, contract) needs no other
-// @bungohan package. Same objects as core re-exports.
-export {
-  createArray,
-  createBoolean,
-  createFiltered,
-  createFixedPoint,
-  createFloat32,
-  createInt,
-  createMap,
-  createNumber,
-  createSchemaArray,
-  createSchemaMap,
-  createSchemaSet,
-  createSet,
-  createString,
-  type FilterClient,
-  Schema,
-  type SchemaConstructor,
-  SchemaRegistry,
-} from "@bungohan/state"
+// The shared definitions (state schemas, contracts, options), so client
+// code needs no other @bungohan package. A module shared with the server
+// should import these from @bungohan/schema instead of from here.
+export * from "@bungohan/schema"
+export { SchemaRegistry } from "@bungohan/state"
 export {
   type Clock,
-  type Contract,
-  type CreateArg,
-  defineContract,
-  defineMessage,
-  type EmptyContract,
-  f,
-  type Infer,
-  type InferCreateOptions,
-  type InferJoinOptions,
   LeaveCode,
-  type MessageDef,
   type Reservation,
   type TimerId,
 } from "@bungohan/types"

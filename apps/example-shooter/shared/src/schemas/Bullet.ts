@@ -1,4 +1,4 @@
-import { createFixedPoint, createString, Schema } from "@bungohan/client-js"
+import { createFixedPoint, createString, Schema } from "@bungohan/schema"
 
 /**
  * A bullet, keyed by a numeric id in `GameState.bullets`. Clients only

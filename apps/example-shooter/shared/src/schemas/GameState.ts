@@ -5,7 +5,7 @@ import {
   createString,
   f,
   Schema,
-} from "@bungohan/client-js"
+} from "@bungohan/schema"
 import type { GameStatus } from "../types"
 import { Bullet } from "./Bullet"
 import { Enemy } from "./Enemy"

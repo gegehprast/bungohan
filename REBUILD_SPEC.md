@@ -1404,6 +1404,27 @@ default** with headroom normal play never reaches (`ServerOptions.limits`,
   client that received nothing for a whole 60-second `tick` would otherwise
   look like one that stopped reading.
 
+### 6.10 `@bungohan/schema`: the shared-definitions package — **[DECIDED]**
+
+A game's shared module (its state classes and contract) is imported by both
+the server and the browser, so it can't import `@bungohan/core` (not
+browser-safe). Having it import `@bungohan/client-js` worked, but made every
+server depend on the client package, and once published it invites two
+copies of `@bungohan/state` (and so two `Schema` classes, splitting
+`instanceof` and the schema registry) whenever core and client-js resolve
+different versions.
+
+`@bungohan/schema` holds exactly the definitions — `Schema`, the field
+factories, `createFiltered`, `f`, `defineMessage`, `defineContract` and their
+types — re-exported from `@bungohan/state` and `@bungohan/types`. Shared
+modules import only it. Core and client-js `export *` from it, so single-side
+files keep one import, and the list exists once rather than hand-duplicated
+in both packages (which had already drifted). Runtime pieces (`SchemaRegistry`,
+clocks, `LeaveCode`) stay in core and client-js. The browser-safety audit
+covers it directly, since every game ships it to the browser. When
+publishing, `@bungohan/state` should be a peer dependency of core,
+client-js and schema, so an app always resolves exactly one copy.
+
 ## 7. `@bungohan/client-js` — Reference Client Implementation
 
 ### 7.1 Client — **[KEEP]**

@@ -6,7 +6,7 @@ a game's state and rules; clients join them, send typed messages, and
 receive the state as compact binary patches.
 
 ```sh
-bun add @bungohan/core @bungohan/state @bungohan/types
+bun add @bungohan/core @bungohan/schema
 ```
 
 Requires Bun 1.3.3 or newer. (Not published yet: these are the names the

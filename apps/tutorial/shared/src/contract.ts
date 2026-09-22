@@ -5,7 +5,7 @@ import {
   f,
   type InferCreateOptions,
   type InferJoinOptions,
-} from "@bungohan/client-js"
+} from "@bungohan/schema"
 
 /** Client → server: which way the player is holding the keys. */
 export const Move = defineMessage("move", { dx: f.int8, dy: f.int8 })

@@ -34,6 +34,8 @@ const entries: Entry[] = [
     path: "client-js/src/react/index.ts",
     external: ["react"],
   },
+  // Every game's shared module imports it, so it ships to every browser.
+  { name: "@bungohan/schema", path: "schema/src/index.ts" },
   { name: "@bungohan/state", path: "state/src/index.ts" },
   { name: "@bungohan/types", path: "types/src/index.ts" },
   { name: "@bungohan/serializer", path: "serializer/src/index.ts" },

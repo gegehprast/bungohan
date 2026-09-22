@@ -5,7 +5,7 @@ import {
   createString,
   f,
   Schema,
-} from "@bungohan/client-js"
+} from "@bungohan/schema"
 
 /**
  * A player, keyed by `sessionId` in `GameState.players`.

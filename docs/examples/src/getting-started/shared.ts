@@ -5,7 +5,7 @@ import {
   defineMessage,
   f,
   Schema,
-} from "@bungohan/client-js"
+} from "@bungohan/schema"
 
 /** The state every client sees, kept in sync by the server. */
 export class CounterState extends Schema {
