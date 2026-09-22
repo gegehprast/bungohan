@@ -220,12 +220,20 @@ describe("without cluster mode", () => {
     const mm = h.server.getMatchMaker()
     const processes = (await mm.getAllProcesses()).unwrap()
     expect(processes).toEqual([
-      { id: h.server.processId, roomCount: 0, clientCount: 0 },
+      {
+        id: h.server.processId,
+        roomCount: 0,
+        clientCount: 0,
+        metadata: {},
+        draining: false,
+      },
     ])
     const remote = await mm.createRoom("game", {}, () => ({
       id: "elsewhere",
       roomCount: 0,
       clientCount: 0,
+      metadata: {},
+      draining: false,
     }))
     expect(remote.isErr() && remote.error.code).toBe("CLUSTER_NOT_IMPLEMENTED")
     const local = await mm.createRoom(
@@ -236,6 +244,8 @@ describe("without cluster mode", () => {
           id: "",
           roomCount: 0,
           clientCount: 0,
+          metadata: {},
+          draining: false,
         },
     )
     expect(local.isOk()).toBe(true)

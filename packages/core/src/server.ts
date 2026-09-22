@@ -66,6 +66,7 @@ import {
 } from "./room-type"
 import {
   type DefineRoomOptions,
+  type DrainResult,
   type ErrorContext,
   type ResolvedLimits,
   type RoomClass,
@@ -74,6 +75,13 @@ import {
 } from "./types"
 
 const DEFAULT_PORT = 6060
+
+/**
+ * The most a process's metadata may take once encoded. It rides in every
+ * heartbeat (every 2 s by default, to every peer), so it describes the
+ * process, it doesn't carry data.
+ */
+export const MAX_PROCESS_METADATA_BYTES = 1024
 
 type Callback<A extends unknown[]> = (...args: A) => void
 
@@ -133,6 +141,67 @@ function raceLost(forwarded: Result<Routed, BungohanError>): boolean {
     default:
       return false
   }
+}
+
+/**
+ * True when a process refused to create a room for a draining one for a
+ * reason another process might not have: it is draining too, doesn't
+ * define the type, or didn't answer. The next candidate is tried.
+ */
+function placementRefused(code: ErrorCode): boolean {
+  switch (code) {
+    case "SERVER_SHUTTING_DOWN":
+    case "ROOM_TYPE_NOT_DEFINED":
+    case "TIMEOUT":
+    case "CONNECTION_LOST":
+      return true
+    default:
+      return false
+  }
+}
+
+/**
+ * Checks process metadata: it must be a plain object that the server's
+ * serializer encodes in at most {@link MAX_PROCESS_METADATA_BYTES}. Returns
+ * why not, or `copy`: what peers will decode, so this process reports
+ * exactly what they see.
+ */
+function checkMetadata(
+  serializer: ISerializer,
+  metadata: unknown,
+): { problem: string } | { copy: Record<string, unknown> } {
+  if (
+    typeof metadata !== "object" ||
+    metadata === null ||
+    Array.isArray(metadata)
+  ) {
+    return { problem: "process metadata must be a plain object" }
+  }
+  const encoded = serializer.encode(metadata)
+  if (encoded.isErr()) {
+    return {
+      problem: `process metadata can't be encoded: ${encoded.error.message}`,
+    }
+  }
+  const size = encoded.value.byteLength
+  if (size > MAX_PROCESS_METADATA_BYTES) {
+    return {
+      problem:
+        `process metadata is ${size} bytes encoded, over the ` +
+        `${MAX_PROCESS_METADATA_BYTES}-byte limit: it travels in every ` +
+        "heartbeat, so keep it to a few short fields",
+    }
+  }
+  const decoded = serializer.decode(encoded.value)
+  if (decoded.isErr()) {
+    return {
+      problem: `process metadata doesn't decode: ${decoded.error.message}`,
+    }
+  }
+  const copy = decoded.value
+  return typeof copy === "object" && copy !== null && !Array.isArray(copy)
+    ? { copy: copy as Record<string, unknown> }
+    : { problem: "process metadata doesn't come back as an object" }
 }
 
 /**
@@ -203,6 +272,14 @@ export class BungohanServer {
   private _shuttingDown = false
   private _signalled = false
   private _startedAt = 0
+  private _draining = false
+  private _metadata: Record<string, unknown>
+  /** Each pending `drain()`: settles it with an outcome. */
+  private readonly _drainWaiters = new Set<
+    (outcome: DrainResult["outcome"]) => void
+  >()
+  /** Ends the drain a signal is waiting for, on a second signal. */
+  private _signalDrain: (() => void) | undefined
 
   public constructor(options: ServerOptions = {}) {
     this._options = options
@@ -244,6 +321,12 @@ export class BungohanServer {
         : undefined
     this._processId = options.cluster?.processId ?? nanoid(10)
     const cluster = options.cluster ?? {}
+    // Definition time: a server that can't describe itself shouldn't start.
+    const metadata = checkMetadata(this._serializer, cluster.metadata ?? {})
+    if ("problem" in metadata) {
+      throw new TypeError(`ServerOptions.cluster.metadata: ${metadata.problem}`)
+    }
+    this._metadata = metadata.copy
     this._clusterTimings = {
       heartbeatInterval:
         cluster.heartbeatInterval ?? DEFAULT_CLUSTER_TIMINGS.heartbeatInterval,
@@ -264,6 +347,8 @@ export class BungohanServer {
       processId: this._processId,
       clusterEnabled: options.cluster?.enabled === true,
       cluster: () => this._cluster,
+      draining: () => this._draining,
+      metadata: () => this._metadata,
       createId: (size) => nanoid(size),
     })
     setMatchMaker(this._matchMaker)
@@ -335,6 +420,7 @@ export class BungohanServer {
           cors: http.cors ?? true,
           enableMetrics: http.enableMetrics ?? true,
           enableHealthCheck: http.enableHealthCheck ?? true,
+          enableReadiness: http.enableReadiness ?? true,
           enableRoomsList: http.enableRoomsList ?? true,
         },
         {
@@ -344,6 +430,19 @@ export class BungohanServer {
             uptime: (this._clock.now() - this._startedAt) / 1000,
             rooms: this._manager.getRoomCount(),
             connections: this._connections.size,
+            draining: this._draining,
+          }),
+          ready: () => ({
+            ready: this.isReady(),
+            body: {
+              status: this.isReady()
+                ? "ready"
+                : this._shuttingDown || !this._running
+                  ? "shutting_down"
+                  : "draining",
+              processId: this._processId,
+              rooms: this._manager.getRoomCount(),
+            },
           }),
           metrics: () => {
             const server = this.getServerMetrics()
@@ -406,12 +505,15 @@ export class BungohanServer {
   /**
    * Graceful stop: joins are refused, every room is disposed (its clients
    * get `LEAVE(4001 SERVER_SHUTDOWN)` and `onLeave`, then `onDispose`),
-   * then the transport closes every connection with 1001.
+   * then the transport closes every connection with 1001. To let games
+   * finish first, `await drain()` before calling it.
    */
   public async stop(): Promise<Result<void, BungohanError>> {
     if (!this._running) return err(this._error("INVALID_STATE", "not running"))
     this._shuttingDown = true
     await Promise.all(this._manager.getRooms().map((room) => room.dispose()))
+    // Any drain still waiting has its answer: the rooms are gone.
+    this._settleDrain("drained")
     const closed = await this._transport.close()
     if (closed.isErr()) this._report(closed.error, { source: "transport" })
     // After the rooms disposed, so their LEAVE(4001) frames were published
@@ -426,7 +528,138 @@ export class BungohanServer {
     this._remoteConnections.clear()
     this._running = false
     this._shuttingDown = false
+    this._draining = false
     return ok(undefined)
+  }
+
+  // ==========================================================================
+  // Draining and process metadata
+  // ==========================================================================
+
+  /**
+   * Starts draining this process, for a deploy: `await drain()`, then
+   * `stop()`. From now on it creates **no new rooms** and matchmaking
+   * stops sending players to its rooms, while every game already running
+   * carries on: `joinById`, reconnection and reservations already made
+   * still work. In cluster mode new rooms go to processes that aren't
+   * draining (a client's `joinOrCreate` arriving here included); when
+   * none can take one, the join or `createRoom` fails with
+   * `SERVER_SHUTTING_DOWN`. `GET /ready` answers 503 from now on, so a
+   * load balancer stops sending new connections.
+   *
+   * Resolves once this process holds no rooms (`"drained"`), when
+   * `timeout` milliseconds pass first (`"timeout"`; it keeps draining), or
+   * on `cancelDrain()` (`"cancelled"`). A room type with `autoDispose:
+   * false` never empties by itself, so pass a timeout. Calling it again
+   * while draining just waits too. `INVALID_STATE` when not running.
+   * See docs/guides/scaling.md#draining-a-process.
+   */
+  public drain(
+    options: { timeout?: number } = {},
+  ): Promise<Result<DrainResult, BungohanError>> {
+    if (!this._running || this._shuttingDown) {
+      return Promise.resolve(
+        err(this._error("INVALID_STATE", "the server is not running")),
+      )
+    }
+    this._startDraining()
+    return this._waitForDrain(options.timeout).promise.then((result) =>
+      ok(result),
+    )
+  }
+
+  /**
+   * Stops draining: this process takes new rooms again and `GET /ready`
+   * answers 200. Pending `drain()` calls resolve with `"cancelled"`. Does
+   * nothing when not draining.
+   */
+  public cancelDrain(): void {
+    if (!this._draining) return
+    this._draining = false
+    this._logger.info("draining cancelled: taking new rooms again")
+    this._cluster?.announce()
+    this._settleDrain("cancelled")
+  }
+
+  /** True between `drain()` and `cancelDrain()` (or the end of `stop()`). */
+  public isDraining(): boolean {
+    return this._draining
+  }
+
+  /**
+   * True when this process accepts new work: running, not draining, not
+   * stopping. What `GET /ready` reports.
+   */
+  public isReady(): boolean {
+    return this._running && !this._shuttingDown && !this._draining
+  }
+
+  /**
+   * Replaces this process's `ProcessInfo.metadata`, which every
+   * `ProcessSelector` sees. In cluster mode a heartbeat goes out at once,
+   * so peers learn it without waiting for the next interval. Fails with
+   * `INVALID_OPTIONS` (and changes nothing) for a value that isn't a plain
+   * object or is over 1,024 bytes encoded.
+   */
+  public setProcessMetadata(
+    metadata: Record<string, unknown>,
+  ): Result<void, BungohanError> {
+    const checked = checkMetadata(this._serializer, metadata)
+    if ("problem" in checked) {
+      return err(this._error("INVALID_OPTIONS", checked.problem))
+    }
+    this._metadata = checked.copy
+    this._cluster?.announce()
+    return ok(undefined)
+  }
+
+  /**
+   * This process's metadata, as its peers see it (a copy that went through
+   * the serializer).
+   */
+  public getProcessMetadata(): Record<string, unknown> {
+    return structuredClone(this._metadata)
+  }
+
+  private _startDraining(): void {
+    if (this._draining) return
+    this._draining = true
+    this._logger.info(
+      `draining: no new rooms on this process ` +
+        `(${this._manager.getRoomCount()} running)`,
+    )
+    this._cluster?.announce()
+  }
+
+  /** A waiter on the drain, settled by `_settleDrain` or its timeout. */
+  private _waitForDrain(timeout: number | undefined): {
+    promise: Promise<DrainResult>
+    cancel: () => void
+  } {
+    const { promise, resolve } = Promise.withResolvers<DrainResult>()
+    let timer: TimerId | undefined
+    const waiter = (outcome: DrainResult["outcome"]): void => {
+      if (!this._drainWaiters.delete(waiter)) return
+      if (timer !== undefined) this._clock.clearTimeout(timer)
+      resolve({ outcome, rooms: this._manager.getRoomCount() })
+    }
+    this._drainWaiters.add(waiter)
+    if (timeout !== undefined && timeout > 0) {
+      timer = this._clock.setTimeout(() => waiter("timeout"), timeout)
+    }
+    this._checkDrained()
+    return { promise, cancel: () => waiter("cancelled") }
+  }
+
+  /** Settles the waiters once the last room is gone. */
+  private _checkDrained(): void {
+    if (this._draining && this._manager.getRoomCount() === 0) {
+      this._settleDrain("drained")
+    }
+  }
+
+  private _settleDrain(outcome: DrainResult["outcome"]): void {
+    for (const waiter of [...this._drainWaiters]) waiter(outcome)
   }
 
   /** True between a successful `start()` and the end of `stop()`. */
@@ -1084,14 +1317,17 @@ export class BungohanServer {
           await creating
           continue
         }
-        const room = this._manager
-          .getRooms()
-          .find(
-            (r) =>
-              r.roomType === typeName &&
-              r.isAvailable() &&
-              !this._seatedIn(connection, r),
-          )
+        // A draining process offers its rooms to no one (see `drain`).
+        const room = this._draining
+          ? undefined
+          : this._manager
+              .getRooms()
+              .find(
+                (r) =>
+                  r.roomType === typeName &&
+                  r.isAvailable() &&
+                  !this._seatedIn(connection, r),
+              )
         if (room !== undefined) {
           // JOIN_OR_CREATE waits for a room still being created before
           // taking a seat, so a room that fails leaves it free to create
@@ -1155,12 +1391,26 @@ export class BungohanServer {
         )
       }
       try {
-        return await this._createAndJoin(
-          connection,
-          type,
-          joinOptions,
-          createOptions,
-          release,
+        // A draining process creates nothing: another one creates the room
+        // and seats the client there, exactly as it would here.
+        if (this._draining) {
+          return await this._createElsewhere(
+            connection,
+            requestId,
+            typeName,
+            options,
+            hash,
+            createOptions,
+          )
+        }
+        return await local(
+          this._createAndJoin(
+            connection,
+            type,
+            joinOptions,
+            createOptions,
+            release,
+          ),
         )
       } finally {
         release?.()
@@ -1171,7 +1421,8 @@ export class BungohanServer {
   /**
    * The creating half of a join: static onAuth, create the room, seat,
    * onJoin. `release` ends this join's claim on creating a room of the
-   * type (`JOIN_OR_CREATE`), once the room is ready or won't be.
+   * type (`JOIN_OR_CREATE`), once the room is ready or won't be. `ref` is
+   * set when a draining process asked for the room (spec §6.4).
    */
   private async _createAndJoin(
     connection: Connection,
@@ -1179,7 +1430,8 @@ export class BungohanServer {
     joinOptions: unknown,
     createOptions: unknown,
     release: (() => void) | undefined,
-  ): Promise<Result<Routed, BungohanError>> {
+    ref?: number,
+  ): Promise<Result<Joined, BungohanError>> {
     // Create options are read only by a join that creates (untyped ones
     // are the join's own options, as they always were).
     const roomOptions =
@@ -1200,8 +1452,18 @@ export class BungohanServer {
       (code, message) => this._error(code, message),
     )
     if (auth.isErr()) return auth
+    // `drain()` may have begun, and even resolved, during onAuth: a room
+    // created now would outlive the drain it was never counted in.
+    if (this._draining) {
+      return err(
+        this._error(
+          "SERVER_SHUTTING_DOWN",
+          `process ${this._processId} is draining and creates no rooms`,
+        ),
+      )
+    }
     const room = this._manager._create(type, roomOptions.value)
-    const seated = room._seat(client, connection, false)
+    const seated = room._seat(client, connection, false, ref)
     if (seated.isErr()) return seated
     const ready = await room._readyPromise
     // Ready (or failed), with this seat taken: the joins waiting on the
@@ -1212,9 +1474,7 @@ export class BungohanServer {
       return err(this._error("JOIN_FAILED", "the room could not be created"))
     }
     const joined = await room._runJoin(client, joinOptions, auth.value)
-    return joined.isErr()
-      ? joined
-      : ok({ kind: "local", joined: { room, client, reconnected: false } })
+    return joined.isErr() ? joined : ok({ room, client, reconnected: false })
   }
 
   /**
@@ -1467,6 +1727,16 @@ export class BungohanServer {
         this._error("SERVER_SHUTTING_DOWN", "the server is shutting down"),
       )
     }
+    // It may have started draining since the requester chose it; the
+    // requester tries another process.
+    if (this._draining) {
+      return err(
+        this._error(
+          "SERVER_SHUTTING_DOWN",
+          `process ${this._processId} is draining and creates no rooms`,
+        ),
+      )
+    }
     const type = this._matchMaker._getType(roomType)
     if (type === undefined) {
       return err(
@@ -1496,6 +1766,16 @@ export class BungohanServer {
     const room = this._manager.getRoom(roomId)
     if (room === undefined || room.isDisposed) {
       return err(this._error("ROOM_NOT_FOUND", `room "${roomId}" not found`))
+    }
+    // A new reservation is matchmaking: found here before the drain began,
+    // it is refused, and the requester looks again.
+    if (this._draining) {
+      return err(
+        this._error(
+          "SERVER_SHUTTING_DOWN",
+          `process ${this._processId} is draining`,
+        ),
+      )
     }
     const ready = await room._readyPromise
     if (ready?.isErr()) return err(ready.error)
@@ -1617,9 +1897,13 @@ export class BungohanServer {
             this._error("ROOM_NOT_FOUND", `room "${target.roomId}" not found`),
           )
         }
-        // Matchmaking modes take any *available* room; JOIN_BY_ID may take
-        // a private one, and `_seat` still refuses a locked or full room.
-        if (target.mode !== JoinMode.JOIN_BY_ID && !room.isAvailable()) {
+        // Matchmaking modes take any *available* room, and none on a
+        // draining process; JOIN_BY_ID may take a private one, and `_seat`
+        // still refuses a locked or full room.
+        if (
+          target.mode !== JoinMode.JOIN_BY_ID &&
+          (!room.isAvailable() || this._draining)
+        ) {
           return err(
             this._error("ROOM_NOT_FOUND", "the room is no longer available"),
           )
@@ -1635,6 +1919,40 @@ export class BungohanServer {
           client,
           joinOptions.value,
           false,
+          roomRef,
+        )
+      }
+      case "create": {
+        const type = this._matchMaker._getType(target.roomType)
+        if (type === undefined) {
+          return err(
+            this._error(
+              "ROOM_TYPE_NOT_DEFINED",
+              `room type "${target.roomType}" is not defined on process ` +
+                `${this._processId}`,
+            ),
+          )
+        }
+        if (this._draining) {
+          return err(
+            this._error(
+              "SERVER_SHUTTING_DOWN",
+              `process ${this._processId} is draining and creates no rooms`,
+            ),
+          )
+        }
+        const contract = this._checkContract(type, hash)
+        if (contract.isErr()) return contract
+        const read = readClientOptions(type, "join", options)
+        if (read.isErr()) {
+          return err(this._error("INVALID_OPTIONS", read.error.message))
+        }
+        return this._createAndJoin(
+          connection,
+          type,
+          read.value,
+          target.createOptions,
+          undefined,
           roomRef,
         )
       }
@@ -1751,6 +2069,37 @@ export class BungohanServer {
         if (frame.isOk()) this._host.sendFrame(connection, frame.value)
       }
     }
+  }
+
+  /**
+   * A client's new room, from a draining process: the least loaded process
+   * that isn't draining (by its last heartbeat) creates it and seats the
+   * client, with this connection's `roomRef`. One that refuses (it began
+   * draining too, doesn't define the type, didn't answer) passes the turn
+   * to the next; when none is left the join is `SERVER_SHUTTING_DOWN`.
+   */
+  private async _createElsewhere(
+    connection: Connection,
+    requestId: number,
+    roomType: string,
+    options: unknown,
+    hash: string | null,
+    createOptions: unknown,
+  ): Promise<Result<Routed, BungohanError>> {
+    for (const candidate of this._cluster?.placementCandidates() ?? []) {
+      const forwarded = await this._forwardJoin(
+        connection,
+        requestId,
+        candidate.id,
+        options,
+        hash,
+        { kind: "create", roomType, createOptions },
+      )
+      if (forwarded.isOk() || !placementRefused(forwarded.error.code)) {
+        return forwarded
+      }
+    }
+    return err(this._matchMaker._noProcessLeft())
   }
 
   /**
@@ -1877,7 +2226,10 @@ export class BungohanServer {
       createId: (size) => nanoid(size),
       seatReleased: (room, client, consented) =>
         this._emit(this._onLeave, client, room, consented),
-      roomDisposed: (room) => this._manager._removed(room),
+      roomDisposed: (room) => {
+        this._manager._removed(room)
+        this._checkDrained()
+      },
     }
   }
 
@@ -1926,12 +2278,38 @@ export class BungohanServer {
     void this._shutdown(signal)
   }
 
-  /** SIGTERM/SIGINT: stop gracefully, run `onShutdown`, exit. */
+  /**
+   * SIGTERM/SIGINT: drain first if `drainTimeout` asks for it, then stop
+   * gracefully, run `onShutdown`, exit. A second signal during the drain
+   * cuts it short.
+   */
   private async _shutdown(signal: string): Promise<void> {
-    if (this._signalled) return
+    if (this._signalled) {
+      if (this._signalDrain !== undefined) {
+        this._logger.info(`${signal} received again; stopping now`)
+        this._signalDrain()
+      }
+      return
+    }
     this._signalled = true
-    this._logger.info(`${signal} received; shutting down`)
     const graceful = this._options.gracefulShutdown
+    const drainTimeout = graceful?.drainTimeout ?? 0
+    if (drainTimeout > 0 && this._running && !this._shuttingDown) {
+      this._logger.info(
+        `${signal} received; draining for up to ${drainTimeout} ms`,
+      )
+      this._startDraining()
+      const wait = this._waitForDrain(drainTimeout)
+      this._signalDrain = wait.cancel
+      const drained = await wait.promise
+      this._signalDrain = undefined
+      this._logger.info(
+        `drain ended (${drained.outcome}, ${drained.rooms} rooms left); ` +
+          "shutting down",
+      )
+    } else {
+      this._logger.info(`${signal} received; shutting down`)
+    }
     const timer: TimerId = this._clock.setTimeout(() => {
       this._logger.error("graceful shutdown timed out")
       process.exit(1)

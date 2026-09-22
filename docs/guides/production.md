@@ -29,11 +29,12 @@ export function createGameServer(env: {
     },
     metrics: { enabled: true }, // off (and free) by default
     http: {
-      enabled: true, // /health, /metrics, /rooms on their own port
+      enabled: true, // /health, /ready, /metrics, /rooms on their own port
       port: env.httpPort,
     },
     gracefulShutdown: {
-      timeout: 10_000, // exit(1) if stopping takes longer
+      drainTimeout: 5 * 60_000, // on SIGTERM, let games finish (up to 5 min)
+      timeout: 10_000, // then exit(1) if stopping takes longer
       handleSignals: env.handleSignals ?? true, // SIGTERM / SIGINT
       onShutdown: async () => console.log("bye"),
     },
@@ -136,14 +137,44 @@ default) with:
 
 | Endpoint | Returns |
 |---|---|
-| `GET /health` | `{ status, processId, uptime, rooms, connections }`; `status` is `"shutting_down"` during a graceful stop |
+| `GET /health` | always 200 while the process runs: `{ status, processId, uptime, rooms, connections, draining }`; `status` is `"shutting_down"` during a graceful stop |
+| `GET /ready` | 200 `{ status: "ready", processId, rooms }` while the process takes new work; **503** with `status` `"draining"` or `"shutting_down"` otherwise |
 | `GET /metrics` | `{ server, rooms }` from the getters above (404 when metrics are off); private rooms are counted without their `roomId` |
 | `GET /rooms` | every ready **public** room: id, type, clients, maxClients, visibility, locked, metadata |
 
-Each can be switched off (`enableHealthCheck`, `enableMetrics`,
-`enableRoomsList`), and CORS headers are on unless `cors: false`.
-Private rooms never appear with their ids: a private room can be joined
-by id, so its id is what keeps it private.
+Each can be switched off (`enableHealthCheck`, `enableReadiness`,
+`enableMetrics`, `enableRoomsList`), and CORS headers are on unless
+`cors: false`. Private rooms never appear with their ids: a private room
+can be joined by id, so its id is what keeps it private.
+
+## Health and readiness
+
+The two endpoints answer different questions, so give each its own
+probe:
+
+- **`/health` is liveness**: "is the process alive?". It stays 200 while
+  the process runs, draining included. Restart the process only when it
+  fails.
+- **`/ready` is readiness**: "should it get new connections?". It turns
+  503 as soon as the process [drains](scaling.md#draining-a-process) or
+  starts stopping, and back to 200 on `cancelDrain()`. Take the process
+  out of your load balancer's rotation when it fails, and don't restart
+  it: its games are still running.
+
+`server.isReady()` gives the same answer in code. In Kubernetes:
+
+```yaml
+livenessProbe:
+  httpGet: { path: /health, port: 8080 }
+readinessProbe:
+  httpGet: { path: /ready, port: 8080 }
+  periodSeconds: 2
+```
+
+A draining process still accepts connections that reach it anyway,
+because a player reconnecting to a held seat may need to (outside cluster
+mode that seat can only be on this process). Readiness is what keeps new
+players away.
 
 ## Graceful shutdown
 
@@ -158,7 +189,21 @@ by id, so its id is what keeps it private.
 3. connections close with 1001, and the HTTP server stops.
 
 After a signal, `onShutdown` runs and the process exits with 0, or with 1
-if all this took longer than `gracefulShutdown.timeout` (default 30 s).
+if stopping took longer than `gracefulShutdown.timeout` (default 30 s).
+
+**Drain first.** By default a signal ends every game at once. With
+`gracefulShutdown.drainTimeout` (milliseconds, off by default), a signal
+first [drains](scaling.md#draining-a-process) the process: no new rooms,
+`/ready` turns 503, and games already running carry on. Once the last
+room ends, or `drainTimeout` passes, it stops as above. A second signal
+skips the rest of the drain. This fits orchestrators that send SIGTERM
+and then wait, such as Kubernetes: set its
+`terminationGracePeriodSeconds` above `drainTimeout` plus `timeout`.
+Without cluster mode there is nowhere else for new rooms to go, so while
+draining, joins that need a new room fail with `SERVER_SHUTTING_DOWN`,
+and your load balancer should already be sending players to the new
+instance.
+
 Clients see the 1001 as a dropped connection and reconnect, which is what
 you want across a restart or deploy. Seats aren't held across a restart,
 though: a single process loses its rooms when it stops, so a
@@ -176,3 +221,5 @@ reconnecting client finds nothing to resume and is told it left
 - Deploy client and server together. A stale client gets
   `CONTRACT_MISMATCH` on its next join: ask the player to reload.
 - Use `server.onError` to send hook and handler errors to your logging.
+- Point your load balancer's health check at `/ready`, not `/health`,
+  and drain a process before replacing it.

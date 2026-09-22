@@ -38,7 +38,13 @@ describe("getAllProcesses", () => {
 
     const processes = (await c.run(mm(c, 0).getAllProcesses())).unwrap()
     const byId = new Map(processes.map((p) => [p.id, p]))
-    expect(byId.get("p0")).toEqual({ id: "p0", roomCount: 0, clientCount: 0 })
+    expect(byId.get("p0")).toEqual({
+      id: "p0",
+      roomCount: 0,
+      clientCount: 0,
+      metadata: {},
+      draining: false,
+    })
     expect(byId.get("p1")?.roomCount).toBe(2)
     expect(byId.get("p1")?.clientCount).toBe(1)
     await c.stop()
@@ -95,6 +101,8 @@ describe("createRoom", () => {
         id: "nowhere",
         roomCount: 0,
         clientCount: 0,
+        metadata: {},
+        draining: false,
       })),
     )
     expect(created.isErr() && created.error.code).toBe("INVALID_OPTIONS")

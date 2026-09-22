@@ -24,11 +24,12 @@ export function createGameServer(env: {
     },
     metrics: { enabled: true }, // off (and free) by default
     http: {
-      enabled: true, // /health, /metrics, /rooms on their own port
+      enabled: true, // /health, /ready, /metrics, /rooms on their own port
       port: env.httpPort,
     },
     gracefulShutdown: {
-      timeout: 10_000, // exit(1) if stopping takes longer
+      drainTimeout: 5 * 60_000, // on SIGTERM, let games finish (up to 5 min)
+      timeout: 10_000, // then exit(1) if stopping takes longer
       handleSignals: env.handleSignals ?? true, // SIGTERM / SIGINT
       onShutdown: async () => console.log("bye"),
     },

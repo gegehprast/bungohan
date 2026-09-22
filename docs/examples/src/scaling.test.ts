@@ -4,7 +4,7 @@ import type { BungohanServer } from "@bungohan/core"
 import { createClusterHarness } from "@bungohan/testing"
 import { ArenaRoom } from "@bungohan/tutorial-server/ArenaRoom"
 import { ArenaState, arenaContract } from "@bungohan/tutorial-shared"
-import { createClusterServer } from "./scaling"
+import { createClusterServer, createMatch, retire } from "./scaling"
 
 const arena = { state: ArenaState, contract: arenaContract }
 const options = (name: string) => ({ create: { gems: 3 }, join: { name } })
@@ -30,6 +30,61 @@ test("clients on different processes meet in one room", async () => {
   await cluster.stop()
 })
 // #endregion harness
+
+test("a match is created in the player's region", async () => {
+  const cluster = await createClusterHarness({
+    size: 3,
+    rooms: { arena: ArenaRoom },
+  })
+  const regions = ["eu-west", "us-east", "ap-south"]
+  regions.forEach((region, i) => {
+    cluster.node(i).server.setProcessMetadata({ region }).unwrap()
+  })
+  const server = cluster.node(0).server
+  const us = await cluster.run(createMatch(server, "us-east"))
+  const ap = await cluster.run(createMatch(server, "ap-south"))
+  const nowhere = await cluster.run(createMatch(server, "mars"))
+  const owner = (id: string | undefined) =>
+    cluster.nodes.findIndex(
+      (node) => node.server.getMatchMaker().getRoom(id ?? "") !== undefined,
+    )
+  expect(owner(us)).toBe(1)
+  expect(owner(ap)).toBe(2)
+  expect(owner(nowhere)).toBe(0) // no such region: the least loaded
+  await cluster.stop()
+})
+
+test("a retiring process drains, then stops", async () => {
+  const cluster = await createClusterHarness({
+    size: 2,
+    rooms: { arena: ArenaRoom },
+  })
+  const ada = (
+    await (
+      await cluster.connect(0)
+    ).joinOrCreate("arena", options("Ada"), arena)
+  ).unwrap()
+  const server = cluster.node(0).server
+  let summary: string | undefined
+  const retiring = retire(server).then((s) => {
+    summary = s
+  })
+  await cluster.tick(1_000)
+  expect(server.isDraining()).toBe(true)
+  // A new player lands on the other process, not in the draining one's room.
+  const bo = (
+    await (await cluster.connect(0)).joinOrCreate("arena", options("Bo"), arena)
+  ).unwrap()
+  expect(bo.id).not.toBe(ada.id)
+  expect(summary).toBeUndefined()
+
+  await ada.leave() // the last game on process 0 ends
+  await cluster.flush()
+  await retiring
+  expect(summary).toBe("drained, 0 rooms left")
+  expect(server.isRunning()).toBe(false)
+  await cluster.stop()
+})
 
 const redisUrl = process.env["REDIS_URL"]
 let servers: BungohanServer[] = []

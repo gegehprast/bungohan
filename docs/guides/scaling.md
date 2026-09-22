@@ -29,6 +29,7 @@ export function createClusterServer(env: {
   redisUrl: string
   processId?: string
   namespace?: string
+  region?: string
 }): BungohanServer {
   const server = createBungohanServer({
     transport: { config: { port: env.port } },
@@ -36,6 +37,7 @@ export function createClusterServer(env: {
       enabled: true,
       processId: env.processId, // default: random
       namespace: env.namespace, // default "bungohan": clusters sharing a Redis differ here
+      metadata: { region: env.region ?? "eu-west" }, // what selectors see
       backplane: { config: { url: env.redisUrl } }, // Redis pub/sub
     },
     // Optional: a shared store for loadState/saveState.
@@ -53,6 +55,8 @@ export function createClusterServer(env: {
   Redis, or `backplane.provider` for your own `IBackplane`. Without one,
   `start()` fails with `INVALID_OPTIONS`.
 - `processId` names this process (random by default).
+- `metadata` describes it to the rest of the cluster (see
+  [placing rooms by region](#placing-rooms-by-region)).
 - `namespace` prefixes every channel (default `"bungohan"`), so unrelated
   clusters, or staging and production, can share one Redis.
 - The store is separate and optional. Give every process the same one if
@@ -67,8 +71,154 @@ type.
 
 `createRoom`, `joinOrCreate` and `reserve` take a **process selector** to
 choose where a new room goes. It's a function from the list of processes
-(with their room and client counts) to one of them, for example the least
-loaded. `matchMaker.getAllProcesses()` returns the same list.
+(with their room and client counts, and their `metadata`) to one of them,
+for example the least loaded. `matchMaker.getAllProcesses()` returns the
+same list. A selector is never offered a
+[draining](#draining-a-process) process.
+
+## Placing rooms by region
+
+Each process can describe itself with `cluster.metadata`, a small object
+such as `{ region: "eu-west" }`. Every process's selectors see it as
+`ProcessInfo.metadata`. `server.setProcessMetadata()` replaces it at
+runtime, and the change reaches the other processes at once.
+
+Metadata travels in every heartbeat (every 2 s), so it's capped at 1,024
+bytes once encoded. A larger `cluster.metadata` throws when the server is
+created; a larger `setProcessMetadata()` returns an `INVALID_OPTIONS`
+error and changes nothing. It's typed `Record<string, unknown>`, so check
+a field before relying on it:
+
+<!-- snippet: docs/examples/src/scaling.ts#region-selector -->
+[`docs/examples/src/scaling.ts`](../examples/src/scaling.ts)
+
+```ts
+/** The region a process says it runs in. Metadata is untyped: check it. */
+function regionOf(process: ProcessInfo): string | undefined {
+  const region = process.metadata["region"]
+  return typeof region === "string" ? region : undefined
+}
+
+/**
+ * The least loaded process in `region`, or the least loaded anywhere if
+ * none is there. Draining processes are never offered, and the list is
+ * never empty.
+ */
+export function inRegion(region: string): ProcessSelector {
+  return (processes) => {
+    const near = processes.filter((p) => regionOf(p) === region)
+    const pool = near.length > 0 ? near : processes
+    return pool.reduce((a, b) => (b.roomCount < a.roomCount ? b : a))
+  }
+}
+```
+<!-- /snippet -->
+
+**A selector sees processes, not the player.** It runs when a room is
+created and gets the process list, nothing about who asked. So region
+placement works when **your server code** places the room with the
+player's region in hand, for example a lobby endpoint:
+
+<!-- snippet: docs/examples/src/scaling.ts#region-placement -->
+[`docs/examples/src/scaling.ts`](../examples/src/scaling.ts)
+
+```ts
+/**
+ * A lobby endpoint: a new match in the player's region. Players then join
+ * it by id (`client.joinById`), which goes wherever the room is.
+ */
+export async function createMatch(
+  server: BungohanServer,
+  playerRegion: string,
+): Promise<string | undefined> {
+  const created = await server
+    .getMatchMaker()
+    .createRoom("arena", { gems: 3 }, inRegion(playerRegion))
+  return created.isOk() ? created.value.id : undefined
+}
+```
+<!-- /snippet -->
+
+It doesn't happen by itself for a client's own `joinOrCreate`: that
+creates the room on the process the client is connected to. Two more
+things to know:
+
+- A selector only decides where a **new** room goes. `joinOrCreate` and
+  `reserve` take any available room first, wherever it runs, and call the
+  selector only if they have to create one. To keep players in their
+  region, create rooms as above and send players to them by id, or put
+  the region in each room's `metadata` and find rooms with
+  `matchMaker.query({ type, metadata: { region } })`.
+- To keep clients on nearby processes in the first place, route them
+  with your load balancer or DNS (one endpoint per region).
+
+## Draining a process
+
+To replace a process without cutting games short, **drain** it first.
+`server.drain()` stops the process taking on new work, while every game
+it already runs carries on:
+
+- **No new rooms are created on it.** Selectors aren't offered it, and
+  `createRoom` called on it places the room on another process. A
+  client's `joinOrCreate` that reaches it and needs a new room gets one
+  on another process, created exactly as it would have been here (the
+  static `onAuth`, `onCreate`, then `onJoin`). The client doesn't notice.
+- **Matchmaking steers away from it.** `joinOrCreate`, `joinRoom` and
+  `reserve` no longer pick its rooms, so random matchmaking stops feeding
+  it.
+- **Explicit paths keep working.** `joinById` (an invite), reconnection,
+  and reservations made before the drain all still reach its rooms, so
+  draining never breaks a game in progress or a player's reconnect.
+- **`GET /ready` answers 503** (see
+  [production](production.md#health-and-readiness)), so a load balancer
+  stops sending it new connections.
+
+`drain()` resolves once the process holds no rooms, or when its
+`timeout` passes first. So a deploy script can wait, then stop:
+
+<!-- snippet: docs/examples/src/scaling.ts#rolling-deploy -->
+[`docs/examples/src/scaling.ts`](../examples/src/scaling.ts)
+
+```ts
+/** Your deploy tooling calls this on the process being replaced. */
+export async function retire(server: BungohanServer): Promise<string> {
+  // No new rooms here from now on, and GET /ready answers 503, so the load
+  // balancer sends new connections elsewhere. Running games carry on.
+  const drained = await server.drain({ timeout: 15 * 60_000 })
+  const summary = drained.isOk()
+    ? `${drained.value.outcome}, ${drained.value.rooms} rooms left`
+    : drained.error.code
+  await server.stop() // rooms still running get LEAVE(4001 SERVER_SHUTDOWN)
+  return summary
+}
+```
+<!-- /snippet -->
+
+The result's `outcome` is `"drained"`, `"timeout"` (the process keeps
+draining; `stop()` then ends what's left) or `"cancelled"`.
+`server.cancelDrain()` undoes a drain, and `isDraining()` says whether
+one is on. `ProcessInfo.draining` shows it to the rest of the cluster.
+A room type with `autoDispose: false` never empties by itself, so always
+pass a timeout.
+
+**When nothing can take a new room**, because every process is draining
+(or the only one, outside cluster mode), the join or `createRoom` fails
+with `SERVER_SHUTTING_DOWN`, the same error a stopping server gives.
+The client can retry, and should reach a process that is up by then.
+
+**A rolling deploy**, one process at a time:
+
+1. Start the new process. Once it's up, `/ready` answers 200 and the load
+   balancer adds it.
+2. Drain an old one. `/ready` turns 503 and the load balancer takes it
+   out of rotation; new rooms go to the other processes.
+3. When `drain()` resolves, `stop()` it (or send SIGTERM with
+   `gracefulShutdown.drainTimeout`, which does both, see
+   [production](production.md#graceful-shutdown)).
+
+Races are handled: a process that starts draining just as another one
+forwards it a new room refuses it, and the room is created on the next
+process instead.
 
 ## Testing a cluster
 
@@ -136,3 +286,6 @@ clock). `cluster.kill(index)` makes a process vanish, to test failures.
   If that matters, route a room type's matchmaking through one process.
 - A custom `ServerOptions.serializer` must carry binary data unchanged.
   `start()` checks it and refuses to start a cluster otherwise.
+- `matchMaker.query()` still lists a draining process's rooms, and
+  `joinById` still joins them. A lobby that lists rooms for players to
+  pick keeps showing them until they end.

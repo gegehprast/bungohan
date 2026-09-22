@@ -50,6 +50,15 @@ export interface ServerOptions {
     /** This process's id in the cluster. Default: a random nanoid. */
     processId?: string
     /**
+     * A small description of this process that every `ProcessSelector`
+     * sees as `ProcessInfo.metadata`, e.g. `{ region: "eu-west" }`. Change
+     * it later with `server.setProcessMetadata()`. It travels in every
+     * heartbeat, so it is capped at 1,024 bytes once encoded; a larger or
+     * unencodable value **throws** here, at startup. Default `{}`; it
+     * applies without cluster mode too.
+     */
+    metadata?: Record<string, unknown>
+    /**
      * Channel prefix, so unrelated clusters (or test runs) can share one
      * Redis. Default `"bungohan"`.
      */
@@ -84,9 +93,10 @@ export interface ServerOptions {
   /** Off by default; when off, metrics cost nothing. */
   metrics?: { enabled?: boolean }
   /**
-   * A small HTTP server on its own port: `GET /health`, `GET /metrics`
-   * and `GET /rooms` (public rooms), each switchable. Off unless
-   * `enabled`.
+   * A small HTTP server on its own port: `GET /health` (liveness),
+   * `GET /ready` (readiness: 503 while draining or stopping),
+   * `GET /metrics` and `GET /rooms` (public rooms), each switchable. Off
+   * unless `enabled`.
    */
   http?: {
     enabled?: boolean
@@ -100,6 +110,8 @@ export interface ServerOptions {
     enableMetrics?: boolean
     /** Default true. */
     enableHealthCheck?: boolean
+    /** Serve `GET /ready`. Default true. */
+    enableReadiness?: boolean
     /** Default true. */
     enableRoomsList?: boolean
   }
@@ -108,12 +120,21 @@ export interface ServerOptions {
   /** Default 20 Hz. */
   sync?: { tickRate?: number }
   /**
-   * What SIGTERM/SIGINT do: `stop()`, then `onShutdown`, then exit the
-   * process.
+   * What SIGTERM/SIGINT do: optionally `drain()`, then `stop()`, then
+   * `onShutdown`, then exit the process.
    */
   gracefulShutdown?: {
-    /** Milliseconds before a stuck shutdown exits with code 1. Default 30,000. */
+    /**
+     * Milliseconds before a stuck `stop()` exits with code 1. Counted from
+     * the end of the drain, if there is one. Default 30,000.
+     */
     timeout?: number
+    /**
+     * Drain before stopping: on a signal, `server.drain()` for up to this
+     * many milliseconds, so games in progress can finish, then `stop()`.
+     * A second signal stops at once. Default 0: stop right away.
+     */
+    drainTimeout?: number
     /** Runs after `stop()`, before the process exits. */
     onShutdown?: () => Promise<void>
     /** Install SIGTERM/SIGINT handlers in `start()`. Default true. */

@@ -19,6 +19,7 @@ test("the production server starts, serves HTTP and stops cleanly", async () => 
   const http = server.getHttpServer()?.getPort()
   const health = await fetch(`http://127.0.0.1:${http}/health`)
   expect(await health.json()).toMatchObject({ status: "ok", rooms: 0 })
+  expect((await fetch(`http://127.0.0.1:${http}/ready`)).status).toBe(200)
 
   const port = server.getPort() // the one port 0 picked
   const client = createBungohanClient({ url: `ws://127.0.0.1:${port}` })

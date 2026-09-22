@@ -40,6 +40,10 @@ export interface MatchMakerDeps {
   readonly clusterEnabled: boolean
   /** The running cluster node, once `start()` built one (spec §6.4). */
   readonly cluster: () => ClusterNode | undefined
+  /** True while this process drains: it creates and offers no new rooms. */
+  readonly draining: () => boolean
+  /** This process's `ProcessInfo.metadata`. */
+  readonly metadata: () => Record<string, unknown>
   readonly createId: (size: number) => string
 }
 
@@ -74,6 +78,12 @@ export function setMatchMaker(matchMaker: MatchMaker): void {
  * with the same `Room` type. Without it, a `ProcessSelector` that picks a
  * process other than this one is `CLUSTER_NOT_IMPLEMENTED`, since there is
  * no cluster to route to.
+ *
+ * While this process drains (`server.drain()`), it creates no rooms and
+ * matchmaking skips its rooms: `createRoom`, `joinOrCreate` and `reserve`
+ * place a new room on a process that isn't draining, or fail with
+ * `SERVER_SHUTTING_DOWN` when there is none. `joinById` and existing
+ * reservations are unaffected (see docs/guides/scaling.md#draining-a-process).
  */
 export class MatchMaker {
   private readonly _deps: MatchMakerDeps
@@ -137,20 +147,21 @@ export class MatchMaker {
     const name = this._nameOf(roomType)
     if (name.isErr()) return name
     const cluster = this._deps.cluster()
-    if (cluster !== undefined && processSelector !== undefined) {
-      const chosen = await this._select(cluster, processSelector)
-      if (chosen.isErr()) return chosen
-      if (chosen.value !== this._deps.processId) {
-        const packed = this._pack(name.value, "create", options)
-        if (packed.isErr()) return packed
-        const info = await cluster.createRoom(
-          chosen.value,
-          name.value,
-          packed.value,
-        )
-        return info.isErr() ? info : ok(this._proxy(info.value))
-      }
+    if (
+      cluster !== undefined &&
+      (processSelector !== undefined || this._deps.draining())
+    ) {
+      const placed = await this._place(
+        cluster,
+        name.value,
+        options,
+        processSelector,
+      )
+      if (placed.isErr()) return placed
+      // A room elsewhere, or `undefined`: this process was chosen.
+      if (placed.value !== undefined) return ok(placed.value)
     } else {
+      if (this._deps.draining()) return err(this._noProcessLeft())
       const local = this._selectLocal(processSelector)
       if (local.isErr()) return local
     }
@@ -165,7 +176,8 @@ export class MatchMaker {
 
   /**
    * An available room of the type (public, unlocked, not full); doesn't
-   * seat anyone. Looks on this process first, then across the cluster.
+   * seat anyone. Looks on this process first, then across the cluster,
+   * skipping draining processes.
    */
   public async joinRoom(
     roomType: string,
@@ -548,7 +560,14 @@ export class MatchMaker {
             return proxy
           }
           const taken = await take(proxy.value)
-          if (taken.isErr() && taken.error.code === "ROOM_FULL") continue
+          // Filled up, or its process started draining since it answered.
+          if (
+            taken.isErr() &&
+            (taken.error.code === "ROOM_FULL" ||
+              taken.error.code === "SERVER_SHUTTING_DOWN")
+          ) {
+            continue
+          }
           return taken
         }
         if (!known) {
@@ -569,11 +588,15 @@ export class MatchMaker {
     }
   }
 
-  /** @internal An available room of the type, ready or still being created. */
+  /**
+   * @internal An available room of the type, ready or still being created.
+   * None while this process drains: matchmaking must stop feeding it.
+   */
   public _findAvailable(
     roomType: string,
     exclude: readonly string[] = [],
   ): Room | undefined {
+    if (this._deps.draining()) return undefined
     for (const room of this._deps.manager.getRooms()) {
       if (room.roomType !== roomType || !room.isAvailable()) continue
       if (exclude.includes(room.id)) continue
@@ -629,7 +652,19 @@ export class MatchMaker {
       id: this._deps.processId,
       roomCount: this.getRoomCount(),
       clientCount: this.getClientCount(),
+      metadata: this._deps.metadata(),
+      draining: this._deps.draining(),
     }
+  }
+
+  /** @internal Why a new room has nowhere to go. */
+  public _noProcessLeft(): BungohanError {
+    return this._error(
+      "SERVER_SHUTTING_DOWN",
+      this._deps.cluster() === undefined
+        ? "this server is draining and creates no new rooms"
+        : "no process can take a new room: every process is draining",
+    )
   }
 
   /** @internal */
@@ -741,26 +776,72 @@ export class MatchMaker {
     return ok(room)
   }
 
-  /** Runs a selector over the real cluster list and checks what it picked. */
-  private async _select(
+  /**
+   * Chooses the process a new room goes on, among those that aren't
+   * draining, and creates it there if that isn't this process. `ok(undefined)`
+   * means "here". The selector's choice is honoured; without one (this
+   * process is draining) the least loaded wins. A chosen process that
+   * refuses because it started draining meanwhile is struck off, and the
+   * next choice is made from the same list, so the loop is bounded by the
+   * cluster's size.
+   */
+  private async _place(
     cluster: ClusterNode,
+    name: string,
+    options: unknown,
+    selector: ProcessSelector | undefined,
+  ): Promise<Result<Room | undefined, BungohanError>> {
+    const all = await cluster.processes()
+    const refused = new Set<string>()
+    for (;;) {
+      const offered = all.filter(
+        (process) => !process.draining && !refused.has(process.id),
+      )
+      if (offered.length === 0) return err(this._noProcessLeft())
+      const chosen =
+        selector === undefined
+          ? ok(leastLoaded(offered).id)
+          : this._runSelector(selector, offered)
+      if (chosen.isErr()) return chosen
+      if (chosen.value === this._deps.processId) {
+        // It may have started draining while the list was gathered.
+        if (!this._deps.draining()) return ok(undefined)
+        refused.add(chosen.value)
+        continue
+      }
+      const packed = this._pack(name, "create", options)
+      if (packed.isErr()) return packed
+      const info = await cluster.createRoom(chosen.value, name, packed.value)
+      if (info.isOk()) return ok(this._proxy(info.value))
+      // Our own choice may land on a process without the type; a
+      // selector's choice is the selector's to fix.
+      const retry =
+        info.error.code === "SERVER_SHUTTING_DOWN" ||
+        (selector === undefined && info.error.code === "ROOM_TYPE_NOT_DEFINED")
+      if (!retry) return info
+      refused.add(chosen.value)
+    }
+  }
+
+  /** Runs a selector over `offered` and checks what it picked. */
+  private _runSelector(
     selector: ProcessSelector,
-  ): Promise<Result<string, BungohanError>> {
-    const processes = await cluster.processes()
+    offered: ProcessInfo[],
+  ): Result<string, BungohanError> {
     let chosen: ProcessInfo
     try {
-      chosen = selector(processes)
+      chosen = selector(offered)
     } catch (error) {
       return err(
         this._error("INVALID_OPTIONS", `process selector threw: ${error}`),
       )
     }
-    if (!processes.some((process) => process.id === chosen?.id)) {
+    if (!offered.some((process) => process.id === chosen?.id)) {
       return err(
         this._error(
           "INVALID_OPTIONS",
           `the process selector picked "${chosen?.id}", which is not one of ` +
-            `the ${processes.length} processes it was given`,
+            `the ${offered.length} processes it was given`,
         ),
       )
     }
@@ -804,4 +885,14 @@ export class MatchMaker {
       processId: this._deps.processId,
     }
   }
+}
+
+/** Fewest rooms, then fewest seats; the first on a tie. */
+function leastLoaded(processes: ProcessInfo[]): ProcessInfo {
+  return processes.reduce((a, b) =>
+    b.roomCount < a.roomCount ||
+    (b.roomCount === a.roomCount && b.clientCount < a.clientCount)
+      ? b
+      : a,
+  )
 }

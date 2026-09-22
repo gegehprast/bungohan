@@ -12,8 +12,20 @@ export interface Peer {
   readonly id: string
   roomCount: number
   clientCount: number
+  /** From its last heartbeat. */
+  draining: boolean
+  /** From its last heartbeat. */
+  metadata: Record<string, unknown>
   /** This process's clock reading when its last message arrived. */
   lastSeenAt: number
+}
+
+/** What a heartbeat says about its process. */
+export interface PeerBeat {
+  rooms: number
+  clients: number
+  draining: boolean
+  meta: Record<string, unknown>
 }
 
 export interface PeerRegistryOptions {
@@ -62,23 +74,27 @@ export class PeerRegistry {
   }
 
   /** Records a peer's heartbeat (or any message: it proves it is alive). */
-  public seen(processId: string, counts?: { rooms: number; clients: number }) {
+  public seen(processId: string, beat?: PeerBeat) {
     const now = this._options.clock.now()
     const existing = this._peers.get(processId)
     if (existing === undefined) {
       this._peers.set(processId, {
         id: processId,
-        roomCount: counts?.rooms ?? 0,
-        clientCount: counts?.clients ?? 0,
+        roomCount: beat?.rooms ?? 0,
+        clientCount: beat?.clients ?? 0,
+        draining: beat?.draining ?? false,
+        metadata: beat?.meta ?? {},
         lastSeenAt: now,
       })
       this._options.onFound?.(processId)
       return
     }
     existing.lastSeenAt = now
-    if (counts !== undefined) {
-      existing.roomCount = counts.rooms
-      existing.clientCount = counts.clients
+    if (beat !== undefined) {
+      existing.roomCount = beat.rooms
+      existing.clientCount = beat.clients
+      existing.draining = beat.draining
+      existing.metadata = beat.meta
     }
   }
 

@@ -36,10 +36,15 @@ export type { ClientMetrics, RoomMetrics, ServerMetrics } from "./metrics"
 export { MetricsCollector } from "./metrics"
 export { Room } from "./room"
 export { RoomManager } from "./room-manager"
-export { BungohanServer, createBungohanServer } from "./server"
+export {
+  BungohanServer,
+  createBungohanServer,
+  MAX_PROCESS_METADATA_BYTES,
+} from "./server"
 export type {
   ContractOf,
   DefineRoomOptions,
+  DrainResult,
   ErrorContext,
   ErrorSource,
   MatchMakerQueryOptions,

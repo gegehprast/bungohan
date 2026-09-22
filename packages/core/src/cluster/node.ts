@@ -176,6 +176,38 @@ export class ClusterNode {
     return this._registry.list().map((peer) => peer.id)
   }
 
+  /**
+   * Peers that said in their last heartbeat that they take new rooms,
+   * least loaded first (rooms, then seats). No round trip: a draining
+   * process uses it to place a client's new room elsewhere without adding
+   * a collection window to the join. It can be a heartbeat stale, so the
+   * chosen peer may still refuse.
+   */
+  public placementCandidates(): ProcessInfo[] {
+    return this._registry
+      .list()
+      .filter((peer) => !peer.draining)
+      .sort(
+        (a, b) => a.roomCount - b.roomCount || a.clientCount - b.clientCount,
+      )
+      .map((peer) => ({
+        id: peer.id,
+        roomCount: peer.roomCount,
+        clientCount: peer.clientCount,
+        metadata: peer.metadata,
+        draining: peer.draining,
+      }))
+  }
+
+  /**
+   * Publishes a heartbeat now rather than at the next interval, so peers
+   * learn at once that this process started or stopped draining, or
+   * changed its metadata.
+   */
+  public announce(): void {
+    if (this._running) this._beat()
+  }
+
   // ==========================================================================
   // Lifecycle
   // ==========================================================================
@@ -524,6 +556,8 @@ export class ClusterNode {
         this._registry.seen(message.from, {
           rooms: message.rooms,
           clients: message.clients,
+          draining: message.draining === true,
+          meta: isRecord(message.meta) ? message.meta : {},
         })
         return
       case "bye":
@@ -746,6 +780,8 @@ export class ClusterNode {
       t: "hb",
       rooms: info.roomCount,
       clients: info.clientCount,
+      draining: info.draining,
+      meta: info.metadata,
     })
   }
 
@@ -791,4 +827,8 @@ export class ClusterNode {
       error,
     )
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
 }

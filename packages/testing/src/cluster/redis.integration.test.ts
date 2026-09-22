@@ -183,4 +183,49 @@ describe.skipIf(url === undefined)("cluster over a real Redis", () => {
       "p0 dropped p1 on its goodbye",
     )
   })
+
+  test("process metadata reaches another process's selector", async () => {
+    const c = await cluster(3)
+    c.node(2).server.setProcessMetadata({ region: "eu-west" }).unwrap()
+    await until(
+      c,
+      () =>
+        c
+          .node(0)
+          .server.getCluster()
+          ?.placementCandidates()
+          .some((p) => p.metadata["region"] === "eu-west") === true,
+      "p2's heartbeat carried its metadata",
+    )
+    const created = (
+      await c.run(
+        mm(c, 0).createRoom("game", {}, (offered) => {
+          const eu = offered.find((p) => p.metadata["region"] === "eu-west")
+          if (eu === undefined) throw new Error("no eu-west process offered")
+          return eu
+        }),
+      )
+    ).unwrap()
+    expect((created as RoomProxy).processId).toBe("p2")
+  })
+
+  test("a draining process sends a client's new room elsewhere", async () => {
+    const c = await cluster()
+    ;(await c.run(mm(c, 0).createRoom("game"))).unwrap()
+    void c.node(0).server.drain()
+    await until(
+      c,
+      () => c.node(1).server.getCluster()?.placementCandidates().length === 0,
+      "p1 heard that p0 is draining",
+    )
+    // p0's own room is skipped, and it creates nothing itself.
+    const room = (await joinOrCreate(await c.connect(0))).unwrap()
+    expect(mm(c, 1).getRoom(room.id)).toBeDefined()
+    expect(mm(c, 0).getRoomCount()).toBe(1)
+
+    // Once every process drains, nothing can take a new room.
+    void c.node(1).server.drain()
+    const refused = await c.run(mm(c, 0).createRoom("game"))
+    expect(refused.isErr() && refused.error.code).toBe("SERVER_SHUTTING_DOWN")
+  })
 })

@@ -53,6 +53,15 @@ export interface ServerOptions {
     /** This process's id in the cluster. Default: a random nanoid. */
     processId?: string
     /**
+     * A small description of this process that every `ProcessSelector`
+     * sees as `ProcessInfo.metadata`, e.g. `{ region: "eu-west" }`. Change
+     * it later with `server.setProcessMetadata()`. It travels in every
+     * heartbeat, so it is capped at 1,024 bytes once encoded; a larger or
+     * unencodable value **throws** here, at startup. Default `{}`; it
+     * applies without cluster mode too.
+     */
+    metadata?: Record<string, unknown>
+    /**
      * Channel prefix, so unrelated clusters (or test runs) can share one
      * Redis. Default `"bungohan"`.
      */
@@ -87,9 +96,10 @@ export interface ServerOptions {
   /** Off by default; when off, metrics cost nothing. */
   metrics?: { enabled?: boolean }
   /**
-   * A small HTTP server on its own port: `GET /health`, `GET /metrics`
-   * and `GET /rooms` (public rooms), each switchable. Off unless
-   * `enabled`.
+   * A small HTTP server on its own port: `GET /health` (liveness),
+   * `GET /ready` (readiness: 503 while draining or stopping),
+   * `GET /metrics` and `GET /rooms` (public rooms), each switchable. Off
+   * unless `enabled`.
    */
   http?: {
     enabled?: boolean
@@ -103,6 +113,8 @@ export interface ServerOptions {
     enableMetrics?: boolean
     /** Default true. */
     enableHealthCheck?: boolean
+    /** Serve `GET /ready`. Default true. */
+    enableReadiness?: boolean
     /** Default true. */
     enableRoomsList?: boolean
   }
@@ -111,12 +123,21 @@ export interface ServerOptions {
   /** Default 20 Hz. */
   sync?: { tickRate?: number }
   /**
-   * What SIGTERM/SIGINT do: `stop()`, then `onShutdown`, then exit the
-   * process.
+   * What SIGTERM/SIGINT do: optionally `drain()`, then `stop()`, then
+   * `onShutdown`, then exit the process.
    */
   gracefulShutdown?: {
-    /** Milliseconds before a stuck shutdown exits with code 1. Default 30,000. */
+    /**
+     * Milliseconds before a stuck `stop()` exits with code 1. Counted from
+     * the end of the drain, if there is one. Default 30,000.
+     */
     timeout?: number
+    /**
+     * Drain before stopping: on a signal, `server.drain()` for up to this
+     * many milliseconds, so games in progress can finish, then `stop()`.
+     * A second signal stops at once. Default 0: stop right away.
+     */
+    drainTimeout?: number
     /** Runs after `stop()`, before the process exits. */
     onShutdown?: () => Promise<void>
     /** Install SIGTERM/SIGINT handlers in `start()`. Default true. */
@@ -384,18 +405,42 @@ export interface ProcessInfo {
   roomCount: number
   /** Seats taken across its rooms. */
   clientCount: number
-  /** Not set by Bungohan; reserved for a description of the process. */
-  metadata?: Record<string, unknown>
+  /**
+   * What the process says about itself: `ServerOptions.cluster.metadata`,
+   * or the last `server.setProcessMetadata()`. `{}` when unset. Untyped:
+   * check a field before relying on it (see
+   * docs/guides/scaling.md#placing-rooms-by-region).
+   */
+  metadata: Record<string, unknown>
+  /**
+   * True while the process drains (`server.drain()`): it takes no new
+   * rooms, so a selector is never offered it, but its rooms still run.
+   */
+  draining: boolean
 }
 
 /**
- * Picks the process a room is created on, in cluster mode:
+ * Picks the process a room is created on:
  * `(processes) => processes.reduce((a, b) => a.roomCount <= b.roomCount ?
- * a : b)` balances by room count. It must return one of `processes`.
- * Without cluster mode the only choice is this process, and choosing
- * another fails with `CLUSTER_NOT_IMPLEMENTED`.
+ * a : b)` balances by room count. It must return one of `processes`,
+ * which never includes a draining process; when every process is
+ * draining it isn't called, and the call fails with
+ * `SERVER_SHUTTING_DOWN`. Without cluster mode the only choice is this
+ * process, and choosing another fails with `CLUSTER_NOT_IMPLEMENTED`.
  */
 export type ProcessSelector = (processes: ProcessInfo[]) => ProcessInfo
+
+/** How a `server.drain()` ended. */
+export interface DrainResult {
+  /**
+   * `"drained"`: this process holds no rooms. `"timeout"`: the drain's
+   * `timeout` passed first. `"cancelled"`: `cancelDrain()` was called
+   * first. In the last two cases the rooms are still running.
+   */
+  outcome: "drained" | "timeout" | "cancelled"
+  /** Rooms this process still held when the promise resolved. */
+  rooms: number
+}
 
 /** A custom `matchMaker.query()` condition: keeps rooms it returns true for. */
 export type RoomFilter = (room: RoomListingInfo) => boolean

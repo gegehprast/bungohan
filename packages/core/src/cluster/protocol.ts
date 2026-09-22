@@ -28,8 +28,11 @@ import type { ProcessInfo, RoomListingInfo } from "../types"
  * message with a different version is dropped (and logged once per peer),
  * so a rolling deploy degrades to "those processes don't see each other"
  * rather than to corruption.
+ *
+ * 2: heartbeats carry `draining` and `meta`, and a forwarded join can ask
+ * the owner to create the room (`JoinTarget` `create`), for draining.
  */
-export const CLUSTER_PROTOCOL = 1
+export const CLUSTER_PROTOCOL = 2
 
 /** Where every process listens for broadcasts. */
 export function allChannel(namespace: string): string {
@@ -131,11 +134,18 @@ export type RoomOp =
   | { op: "broadcastRaw"; type: string; message: unknown; except?: string }
   | { op: "kick"; sessionId: string; code: number; reason?: string }
 
-/** What a resolved join tells the owning process to do (spec §6.4). */
+/**
+ * What a resolved join tells the owning process to do (spec §6.4).
+ * `create` comes from a draining process, which creates no room itself:
+ * the owner creates one and seats the client exactly as a local
+ * `JOIN_OR_CREATE` would (static `onAuth`, `onCreate`, `onJoin`), with the
+ * client's create options as they came off the wire.
+ */
 export type JoinTarget =
   | { kind: "room"; roomId: string; mode: JoinMode }
   | { kind: "reconnect"; token: string }
   | { kind: "reservation"; reservationId: string }
+  | { kind: "create"; roomType: string; createOptions: unknown }
 
 // ---------------------------------------------------------------------------
 // Messages
@@ -153,6 +163,10 @@ export interface Heartbeat extends Envelope {
   t: "hb"
   rooms: number
   clients: number
+  /** The process takes no new rooms (`server.drain()`). */
+  draining: boolean
+  /** Its `ProcessInfo.metadata`, at most 1 KiB encoded. */
+  meta: Record<string, unknown>
 }
 
 /** "I just started; announce yourselves." Answered with a `Heartbeat`. */

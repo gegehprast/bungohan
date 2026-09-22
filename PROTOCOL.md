@@ -645,7 +645,7 @@ server.
 | Code | When |
 |---|---|
 | `INVALID_OPTIONS` | the `JOIN` array has the wrong shape, an unknown `mode`, or typed options that don't decode (§6.2.1) |
-| `SERVER_SHUTTING_DOWN` | the server is shutting down |
+| `SERVER_SHUTTING_DOWN` | the server is shutting down, or the join needs a new room and no server can create one because every one that could is draining; a later attempt, typically on another server, may succeed |
 | `ROOM_TYPE_NOT_DEFINED` | no room type of that name (modes 0–2) |
 | `CONTRACT_MISMATCH` | `contractHash` differs from the room type's |
 | `ROOM_NOT_FOUND` | mode 2: no available room; mode 3: no such room, or it is being disposed |

@@ -16,6 +16,8 @@ export interface HttpServerOptions {
   enableMetrics: boolean
   /** Serve `GET /health`. */
   enableHealthCheck: boolean
+  /** Serve `GET /ready`. */
+  enableReadiness: boolean
   /** Serve `GET /rooms`. */
   enableRoomsList: boolean
 }
@@ -23,14 +25,18 @@ export interface HttpServerOptions {
 /** What the HTTP endpoints read from the game server. */
 export interface HttpSource {
   health(): unknown
+  /** Whether to answer `GET /ready` with 200 (or 503), and the body. */
+  ready(): { ready: boolean; body: unknown }
   /** `undefined` when metrics are disabled (the endpoint answers 404). */
   metrics(): unknown
   rooms(): unknown
 }
 
 /**
- * The optional built-in HTTP server: `GET /health`, `GET /metrics` and
- * `GET /rooms` as JSON, each individually switchable. Runs on its own
+ * The optional built-in HTTP server: `GET /health` (liveness: 200 while
+ * the process runs), `GET /ready` (readiness: 503 while it drains or
+ * stops), `GET /metrics` and `GET /rooms` as JSON, each individually
+ * switchable. Runs on its own
  * port, separate from the WebSocket transport. The game server creates it
  * when `ServerOptions.http.enabled` is set (see
  * docs/guides/production.md#http-endpoints); `server.getHttpServer()`
@@ -82,6 +88,10 @@ export class HttpServer {
     const o = this._options
     if (path === "/health" && o.enableHealthCheck) {
       return this._json(this._source.health())
+    }
+    if (path === "/ready" && o.enableReadiness) {
+      const { ready, body } = this._source.ready()
+      return this._json(body, ready ? 200 : 503)
     }
     if (path === "/metrics" && o.enableMetrics) {
       const metrics = this._source.metrics()

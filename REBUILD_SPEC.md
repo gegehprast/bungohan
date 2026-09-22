@@ -1079,6 +1079,158 @@ stopping (`failure.test.ts`), byte-identity with a local seat
 (`wire.test.ts`), and the whole thing again over a real `RedisBackplane`
 (`redis.integration.test.ts`, with `REDIS_URL`).
 
+#### 6.4.2 Process metadata and draining — **[DECIDED]** (`packages/core/src/{server,matchmaker}.ts`, `cluster/`)
+
+Processes describe themselves, and a process can be **drained** for a
+zero-downtime deploy. Both work without cluster mode too (one instance
+behind a load balancer during a deploy).
+
+**Process metadata.** `ServerOptions.cluster.metadata` sets it at start,
+`server.setProcessMetadata()` replaces it later, `getProcessMetadata()`
+reads it. `ProcessInfo.metadata` is now **always present** (default `{}`);
+the "reserved" wording is gone. It reaches other processes in the
+`pi!` reply that `getAllProcesses()` and every selector read, and in every
+heartbeat (below).
+
+- **Size limit: 1,024 bytes encoded** (`MAX_PROCESS_METADATA_BYTES`),
+  measured with the server's own `ISerializer`, i.e. exactly what rides in
+  the heartbeat. It must be a plain object. Past the limit (or not an
+  object, or unencodable): the **static option throws a `TypeError` from
+  the constructor** (a definition-time error, §2 / CLAUDE.md rule 1), and
+  **the setter returns `INVALID_OPTIONS` and changes nothing**.
+  1 KiB is several short fields; at the default 2 s interval it costs a
+  peer at most ~0.5 KiB/s per process, and metadata describes a process,
+  it doesn't carry data.
+- **Stored as the serializer round trip** of the value (encode, then
+  decode): a deep copy the caller can't mutate afterwards, and exactly
+  what peers see, so the local `ProcessInfo` never differs from a remote
+  one.
+- **Typing: `Record<string, unknown>`, not a generic.** A generic
+  `metadata: M` would have to thread through `ServerOptions`,
+  `BungohanServer`, `MatchMaker`, `ProcessInfo` and `ProcessSelector`, and
+  would still be a lie: the value comes off a backplane from *other*
+  processes, possibly other builds, so nothing checks it against `M`. A
+  selector narrows the field it reads (the docs example has a three-line
+  `regionOf`), which is honest about where the value came from.
+- A setter change (and a drain change) **publishes a heartbeat at once**
+  (`ClusterNode.announce()`), so peers don't wait up to an interval.
+
+**Draining is a first-class state, not a metadata key**, so the framework
+honours it itself instead of relying on every selector to check.
+`server.drain({ timeout? })` → `Promise<Result<DrainResult>>` with
+`outcome: "drained" | "timeout" | "cancelled"` and the rooms still held;
+`cancelDrain()`; `isDraining()`; `isReady()`; `ProcessInfo.draining`.
+`drain()` on a stopped server is `INVALID_STATE`; calling it again while
+draining just adds a waiter; a timeout ends *the wait*, not the drain (a
+deploy script then calls `stop()`); `stop()` settles pending waiters with
+`"drained"` (its rooms are gone). The timeout is a `Clock` timer, so tests
+drive it with `ManualClock`. Completion is checked from the host's
+`roomDisposed` callback, the one place a room leaves the `RoomManager`.
+
+Semantics:
+
+- **No new rooms on a draining process, ever.** Guarded at every creation
+  point: `matchMaker.createRoom` (in cluster mode it places the room
+  elsewhere, least loaded; without cluster mode `SERVER_SHUTTING_DOWN`),
+  a client's `JOIN_OR_CREATE`/`CREATE`, and the owner side of a peer's
+  `create?` and forwarded create (below). `_createAndJoin` checks again
+  *after* the static `onAuth` await, because a drain that began, and even
+  resolved, during `onAuth` must not be followed by a room it never
+  counted.
+- **Selectors are offered only non-draining processes**, and are **not
+  called at all** when that list is empty (`SERVER_SHUTTING_DOWN`
+  instead), so a selector never has to handle an empty array.
+- **A client's `JOIN_OR_CREATE` reaching a draining process** that needs a
+  new room gets one elsewhere. The edge forwards the join with a new
+  `JoinTarget` `{ kind: "create", roomType, createOptions }`; the chosen
+  process runs **exactly the local create path** (static `onAuth`,
+  `onCreate`, seat, `onJoin`) with the edge's `roomRef`, then sends
+  `JOIN_SUCCESS` as for any forwarded join. The alternative, "create a
+  room remotely, then forward a `JOIN_BY_ID`", was rejected: it would run
+  the *instance* `onAuth` instead of the static one, so a static `onAuth`
+  that gates room creation would be bypassed. The candidate list comes
+  from the **heartbeat registry** (`ClusterNode.placementCandidates()`:
+  non-draining peers, fewest rooms then seats), not a `pi?` gather, so a
+  client join doesn't pay a 200 ms collection window. This is what the
+  heartbeat's `draining`/`meta` fields are for. A candidate that refuses
+  with `SERVER_SHUTTING_DOWN`, `ROOM_TYPE_NOT_DEFINED`, `TIMEOUT` or
+  `CONNECTION_LOST` passes the turn to the next; none left is
+  `SERVER_SHUTTING_DOWN`.
+- **Matchmaking steers away, strictly.** A draining process's rooms are
+  skipped by the local lookup (`_findAvailable`, the client routing
+  loop), it doesn't answer `find?`, and an owner that began draining
+  refuses a matchmaking-mode forwarded join (`ROOM_NOT_FOUND`, the
+  existing lost-race code) and a new `reserve?` (`SERVER_SHUTTING_DOWN`;
+  `_findOrCreate` now retries on it as on `ROOM_FULL`). "Prefer" was
+  read strictly — there is **no fallback into a draining room** when
+  nothing else exists: filling its rooms would keep it alive and make the
+  drain unbounded. `query()` still lists its rooms (informational), which
+  is documented.
+- **Explicit paths are untouched**: `joinById` (client and matchmaker),
+  reconnection, consuming a reservation made before the drain, and
+  `RoomProxy` control. `_route` refuses only on `_shuttingDown`, as
+  before.
+- **No process can take a new room** (single process draining, or every
+  process draining): **`SERVER_SHUTTING_DOWN`, reused, no new code.** To
+  a client it means the same thing either way — this server won't take
+  you now, retry (a load balancer will have sent the retry elsewhere) —
+  and client-js treats it as an ordinary join error. PROTOCOL.md §8.1's
+  row was reworded to say so; no byte, vector or client changed. A
+  JOIN-only (mode 2) with nothing available stays `ROOM_NOT_FOUND`.
+- **Races.** A process that starts draining while a create is forwarded to
+  it refuses (`SERVER_SHUTTING_DOWN`), and the requester retries
+  elsewhere: `matchMaker._place` strikes it off the list it already
+  gathered and asks the selector (or picks the least loaded) again, so
+  the loop is bounded by the cluster size; the edge's forwarded-create
+  loop moves to the next candidate. The owner checks before running any
+  room code, so a refusal normally runs no `onAuth`; only a drain that
+  begins *during* the owner's static `onAuth` makes the next candidate
+  run it a second time. A local client create caught the same way (drain
+  begun during its static `onAuth`) is not rerouted: it fails with
+  `SERVER_SHUTTING_DOWN`, since rerouting would run that hook twice for a
+  join that arrived before the drain.
+
+**Load balancers: readiness.** `GET /ready` (on by default,
+`http.enableReadiness`): 200 `{ status: "ready" }` when running and not
+draining, 503 with `"draining"` or `"shutting_down"` otherwise. `/health`
+stays liveness (200, now with a `draining` field). A draining process
+**still accepts connections**: a reconnecting player may need to reach
+its held seat, which outside cluster mode can only be on this process.
+Readiness is what keeps new players away.
+
+**Drain-first shutdown.** `gracefulShutdown.drainTimeout` (ms, default 0
+= today's behaviour): a signal drains for up to that long, then runs the
+usual `stop()` → `onShutdown` → exit. The stuck-shutdown timer
+(`gracefulShutdown.timeout`) is armed **after** the drain, so it bounds
+`stop()` alone. A second signal cuts the drain short (it settles only the
+signal's own waiter, not a user's `drain()`).
+
+**Cluster protocol bumped to 2.** Heartbeats carry `draining` and `meta`,
+and `JoinTarget` gained `create`, which a version-1 process can't handle.
+By §6.4.1's rule a mixed cluster degrades to "those processes don't see
+each other"; nothing of version 1 was released, so this costs nothing,
+and later rolling deploys between version-2 builds work.
+
+**Limitation, documented:** a `ProcessSelector` sees processes, not the
+player. Region placement works when server code places the room with the
+player's region in hand (`createRoom`/`reserve` with a region selector);
+a client's own `joinOrCreate` creates on the process it reached, and
+`joinOrCreate`/`reserve` take any available room before a selector is
+consulted.
+
+**Tests:** `packages/testing/src/cluster/drain.test.ts` (metadata reaching
+other selectors, static and after runtime updates, and in heartbeats;
+draining excluded from selection; `createRoom` and a client's
+`joinOrCreate` on a draining process placed elsewhere, with the static
+`onAuth` run once on the owner; a refusing candidate skipped; matchmaking
+and `reserve` avoiding draining rooms while `joinById`, reconnection and
+an earlier reservation work; `drain()` on the last room and on timeout;
+every process draining; the three races), `core/drain.test.ts`
+(single-process drain, metadata limits, `/ready`, drain-first SIGTERM
+including the timeout and a second signal) and two cases in
+`redis.integration.test.ts`. Each owner-side draining guard was checked
+by disabling it: a race test fails for each.
+
 ### 6.5 Error codes
 
 ```typescript
