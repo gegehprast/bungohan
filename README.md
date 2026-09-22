@@ -52,12 +52,12 @@ Read the [documentation](docs/README.md). The
 talking in three files, and the [tutorial](docs/tutorial.md) builds a small game
 from scratch.
 
-The packages aren't published yet; these are the names they will be published
-under.
+Bungohan is at `0.1.0-alpha.1`, published on the `alpha` tag. The API can
+still change between alpha releases.
 
 ```sh
-bun add @bungohan/core @bungohan/schema      # server
-bun add @bungohan/client-js @bungohan/schema # client
+bun add @bungohan/core@alpha @bungohan/schema@alpha      # server
+bun add @bungohan/client-js@alpha @bungohan/schema@alpha # client
 ```
 
 ## This repository

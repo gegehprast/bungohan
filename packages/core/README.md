@@ -6,11 +6,11 @@ a game's state and rules; clients join them, send typed messages, and
 receive the state as compact binary patches.
 
 ```sh
-bun add @bungohan/core @bungohan/schema
+bun add @bungohan/core@alpha @bungohan/schema@alpha
 ```
 
-Requires Bun 1.3.3 or newer. (Not published yet: these are the names the
-packages will be published under.)
+Requires Bun 1.3.3 or newer. Published at `0.1.0-alpha.1` on the
+`alpha` tag; the API can still change between alpha releases.
 
 <!-- snippet: docs/examples/src/getting-started/server.ts#server -->
 [`docs/examples/src/getting-started/server.ts`](../../docs/examples/src/getting-started/server.ts)

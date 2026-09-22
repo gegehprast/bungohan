@@ -6,12 +6,12 @@ messages, keeps a live copy of each room's state, and reconnects on its
 own. React hooks are at `@bungohan/client-js/react`.
 
 ```sh
-bun add @bungohan/client-js @bungohan/schema
+bun add @bungohan/client-js@alpha @bungohan/schema@alpha
 ```
 
-(Not published yet: these are the names the packages will be published
-under.) `react` (18 or newer) is an optional peer dependency, needed only
-for `@bungohan/client-js/react`.
+Published at `0.1.0-alpha.1` on the `alpha` tag. `react` (18 or newer)
+is an optional peer dependency, needed only for
+`@bungohan/client-js/react`.
 
 <!-- snippet: docs/examples/src/getting-started/client.ts#client -->
 [`docs/examples/src/getting-started/client.ts`](../../docs/examples/src/getting-started/client.ts)

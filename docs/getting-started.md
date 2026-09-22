@@ -50,14 +50,14 @@ the client can never disagree about their shapes.
 
 ## Install
 
-> The packages aren't on npm yet; these are the names they will be
-> published under.
+> Bungohan is at `0.1.0-alpha.1`, published on the `alpha` tag.
+> The API can still change between alpha releases.
 
 The server needs Bun 1.3.3 or newer.
 
 ```sh
-bun add @bungohan/core @bungohan/schema      # server
-bun add @bungohan/client-js @bungohan/schema # client
+bun add @bungohan/core@alpha @bungohan/schema@alpha      # server
+bun add @bungohan/client-js@alpha @bungohan/schema@alpha # client
 ```
 
 The server imports from `@bungohan/core` and the client from
