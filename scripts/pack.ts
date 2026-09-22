@@ -172,7 +172,10 @@ async function stage(name: string): Promise<string> {
       `packages/${name}`,
     ),
   )
-  await cp(join(ROOT, "LICENSE"), join(out, "LICENSE"))
+  // Each package carries its own copy (kept identical to the root one by
+  // scripts/license.test.ts), so the license is visible where the package is,
+  // on GitHub as well as on npm.
+  await cp(join(dir, "LICENSE"), join(out, "LICENSE"))
   return out
 }
 

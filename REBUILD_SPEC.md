@@ -2249,6 +2249,13 @@ depend on which tool ran. `bun run pack` therefore applies it itself, and:
 - stages `dist` + `README.md` + `LICENSE` and packs that, so the tarball
   cannot contain more than `files` lists.
 
+Each package holds its own `LICENSE`, a copy of the root one rather than a
+file the pack step conjures: `files` can only include what is inside the
+package, and a license should be visible where the package is, on GitHub as
+well as on npm. Hard copies drift, so `scripts/license.test.ts` (in
+`bun test`) checks every copy byte for byte against the root and fails a
+published package that doesn't list `LICENSE` in `files`.
+
 **The tarball is what gets published**, never a package directory: `bun
 publish .pack/bungohan-core-<v>.tgz`. Each package carries a
 `prepublishOnly` guard that refuses a publish from its own directory, since
