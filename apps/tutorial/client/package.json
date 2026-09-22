@@ -1,0 +1,25 @@
+{
+  "name": "@bungohan/tutorial-client",
+  "version": "0.0.0",
+  "description": "Browser client of the tutorial game, vanilla and React (docs/tutorial.md)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun ./index.html",
+    "dev:react": "bun ./react.html",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@bungohan/client-js": "workspace:*",
+    "@bungohan/tutorial-shared": "workspace:*",
+    "react": "catalog:",
+    "react-dom": "catalog:"
+  },
+  "devDependencies": {
+    "@bungohan/testing": "workspace:*",
+    "@types/bun": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:"
+  },
+  "license": "MIT"
+}

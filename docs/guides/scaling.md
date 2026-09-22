@@ -1,0 +1,133 @@
+# Scaling with cluster mode
+
+One Bun process runs many rooms. When one process isn't enough, run
+several, connected through Redis (or Valkey), and put a load balancer in
+front. That's **cluster mode**.
+
+## What it does
+
+- **A room lives on exactly one process.** Its state, its loops and its
+  hooks run there. Nothing about a room's code changes.
+- **A client can connect to any process.** If its room lives elsewhere,
+  the process holding its socket relays the frames unchanged. The client
+  can't tell the difference: same messages, same bytes.
+- **Matchmaking spans the cluster.** `joinOrCreate` looks on the local
+  process first, then asks the others, and creates a room locally only
+  when nobody has one available. `joinById`, `query`, `reserve` and
+  reconnection all find rooms wherever they are.
+- **Processes find each other** through heartbeats on the backplane.
+
+## Setting it up
+
+<!-- snippet: docs/examples/src/scaling.ts#cluster -->
+[`docs/examples/src/scaling.ts`](../examples/src/scaling.ts)
+
+```ts
+/** One process of a cluster. Run as many as you like behind a load balancer. */
+export function createClusterServer(env: {
+  port: number
+  redisUrl: string
+  processId?: string
+  namespace?: string
+}): BungohanServer {
+  const server = createBungohanServer({
+    transport: { config: { port: env.port } },
+    cluster: {
+      enabled: true,
+      processId: env.processId, // default: random
+      namespace: env.namespace, // default "bungohan": clusters sharing a Redis differ here
+      backplane: { config: { url: env.redisUrl } }, // Redis pub/sub
+    },
+    // Optional: a shared store for loadState/saveState.
+    store: { config: { url: env.redisUrl } },
+    gracefulShutdown: { handleSignals: false },
+  })
+  // Every process defines the room types it may host.
+  server.defineRoomType("arena", ArenaRoom, { maxClients: 16 })
+  return server
+}
+```
+<!-- /snippet -->
+
+- `cluster.enabled` requires a backplane: `backplane.config.url` for
+  Redis, or `backplane.provider` for your own `IBackplane`. Without one,
+  `start()` fails with `INVALID_OPTIONS`.
+- `processId` names this process (random by default).
+- `namespace` prefixes every channel (default `"bungohan"`), so unrelated
+  clusters, or staging and production, can share one Redis.
+- The store is separate and optional. Give every process the same one if
+  rooms use `saveState`/`loadState`.
+- Timings (`heartbeatInterval` 2 s, `peerTimeout` 6 s,
+  `requestTimeout` 5 s, `gatherTimeout` 200 ms) are in the
+  [reference](../reference.md#serveroptions).
+
+A process needs to define only the room types it should host. A join for
+a type it doesn't define is routed to a process that has a room of that
+type.
+
+`createRoom`, `joinOrCreate` and `reserve` take a **process selector** to
+choose where a new room goes. It's a function from the list of processes
+(with their room and client counts) to one of them, for example the least
+loaded. `matchMaker.getAllProcesses()` returns the same list.
+
+## Testing a cluster
+
+`createClusterHarness` runs several servers in one test process on one
+manual clock, over an in-memory backplane:
+
+<!-- snippet: docs/examples/src/scaling.test.ts#harness -->
+[`docs/examples/src/scaling.test.ts`](../examples/src/scaling.test.ts)
+
+```ts
+test("clients on different processes meet in one room", async () => {
+  const cluster = await createClusterHarness({
+    size: 2,
+    rooms: { arena: ArenaRoom },
+  })
+  const a = await cluster.connect(0) // socket on process 0
+  const b = await cluster.connect(1) // socket on process 1
+  const ada = (
+    await cluster.run(a.joinOrCreate("arena", options("Ada"), arena))
+  ).unwrap()
+  const bo = (
+    await cluster.run(b.joinOrCreate("arena", options("Bo"), arena))
+  ).unwrap()
+  await cluster.tick(50)
+
+  expect(bo.id).toBe(ada.id) // one room, on process 0
+  expect(bo.state.players.size).toBe(2)
+  await cluster.stop()
+})
+```
+<!-- /snippet -->
+
+`cluster.run(promise)` drives the cluster until the work settles (a
+cross-process call waits for replies, which are timers on the shared
+clock). `cluster.kill(index)` makes a process vanish, to test failures.
+
+## When a process dies
+
+- Clients with seats in its rooms get `LEAVE` with `ROOM_DISPOSED`
+  (4002). Their connection and their other rooms are unaffected. A
+  graceful `stop()` is better: its rooms dispose first, and clients get
+  `SERVER_SHUTDOWN` (4001).
+- Held seats and reservations in its rooms are gone with it.
+- A matchmaking call waiting on it fails with `CONNECTION_LOST` or
+  `TIMEOUT`, never hangs.
+- If the process holding a client's *socket* dies, the room's process
+  sees that client drop, and holds its seat for reconnection as usual.
+  The client can reconnect to any process.
+
+## Limitations
+
+- A client whose socket is on another process than its room can't be
+  *paused* by backpressure, because the room's process can't see its
+  queue. The socket's process still enforces the hard limit, so such a
+  client is shed (1013) rather than paused.
+- `ClientMetrics.avgLatency` isn't recorded for such a client, either.
+- Untyped options that the *server* builds and passes to
+  `createRoom`/`reserve` for another process cross the backplane as
+  MessagePack. A `Map` or `Set` arrives as a plain object, and `-0` as `0`.
+  Typed options (declared in the contract) don't have this problem.
+- A custom `ServerOptions.serializer` must carry binary data unchanged.
+  `start()` checks it and refuses to start a cluster otherwise.

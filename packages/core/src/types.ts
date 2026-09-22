@@ -14,8 +14,9 @@ import type { Client, Connection } from "./client"
 import type { LoggerOptions } from "./logger"
 import type { Room } from "./room"
 
+// #region server-options
 export interface ServerOptions {
-  /** Port only ever lives at `transport.config.port` (spec §6.1 [FIX]). */
+  /** Port only ever lives at `transport.config.port`. */
   transport?: {
     provider?: ITransport
     config?: {
@@ -24,7 +25,7 @@ export interface ServerOptions {
       maxPayloadLength?: number
       idleTimeout?: number
       compression?: boolean
-      /** Smallest frame worth deflating, in bytes. Default 128 (spec §5.7.7). */
+      /** Smallest frame worth deflating, in bytes. Default 128. */
       compressionThreshold?: number
     }
   }
@@ -33,7 +34,7 @@ export interface ServerOptions {
     config?: { url?: string; host?: string; port?: number; password?: string }
   }
   /**
-   * Cluster mode (spec §6.4). With `enabled`, rooms may live on any
+   * Cluster mode. With `enabled`, rooms may live on any
    * process: matchmaking looks across the cluster, and a client connected
    * here can sit in a room that runs elsewhere. It needs a backplane.
    *
@@ -71,12 +72,12 @@ export interface ServerOptions {
   /** Room messages and envelope bodies. Default `MessagePackSerializer`. */
   serializer?: ISerializer
   /**
-   * The rooms' codec: state sync and contract messages (PROTOCOL.md §13).
+   * The rooms' codec: state sync and contract messages.
    * Default `SchemaCodec`; `MessagePackStateCodec` is inspectable, for
    * debugging.
    */
   stateCodec?: IStateCodec
-  /** Off by default; when off, metrics cost nothing (spec §6.6). */
+  /** Off by default; when off, metrics cost nothing. */
   metrics?: { enabled?: boolean }
   http?: {
     enabled?: boolean
@@ -108,14 +109,16 @@ export interface ServerOptions {
   /** Time source for every loop and timeout. Default `SystemClock`. */
   clock?: Clock
   /**
-   * Per-connection limits (spec §6.9). On by default, with headroom a
+   * Per-connection limits. On by default, with headroom a
    * normal game never reaches. `false` turns every limit off.
    */
   limits?: LimitOptions | false
 }
+// #endregion server-options
 
+// #region limit-options
 /**
- * Per-connection limits (spec §6.9). Every number is a maximum, and `0`
+ * Per-connection limits. Every number is a maximum, and `0`
  * means "no limit" for that one.
  */
 export interface LimitOptions {
@@ -154,6 +157,7 @@ export interface LimitOptions {
     perMinute?: number
   }
 }
+// #endregion limit-options
 
 /** {@link LimitOptions} with every default filled in; `0` means no limit. */
 export interface ResolvedLimits {
@@ -197,6 +201,7 @@ export function resolveLimits(
   }
 }
 
+// #region define-room-options
 /** Per room type (`defineRoomType`); every field is optional. */
 export interface DefineRoomOptions {
   /** Default unlimited. */
@@ -215,6 +220,7 @@ export interface DefineRoomOptions {
   /** Seconds a reservation holds its seat. Default 60. */
   reservationTimeout?: number
 }
+// #endregion define-room-options
 
 export interface ResolvedRoomOptions {
   maxClients: number

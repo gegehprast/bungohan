@@ -1,0 +1,32 @@
+{
+  "name": "@bungohan/docs-examples",
+  "version": "0.0.0",
+  "description": "The code behind every snippet in docs/ that isn't from the tutorial app. Typechecked and tested with the rest of the repo.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@bungohan/backplane": "workspace:*",
+    "@bungohan/client-js": "workspace:*",
+    "@bungohan/core": "workspace:*",
+    "@bungohan/serializer": "workspace:*",
+    "@bungohan/state": "workspace:*",
+    "@bungohan/store": "workspace:*",
+    "@bungohan/testing": "workspace:*",
+    "@bungohan/transport": "workspace:*",
+    "@bungohan/tutorial-server": "workspace:*",
+    "@bungohan/tutorial-shared": "workspace:*",
+    "@bungohan/types": "workspace:*",
+    "react": "catalog:",
+    "react-dom": "catalog:"
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "catalog:",
+    "@types/bun": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:"
+  },
+  "license": "MIT"
+}

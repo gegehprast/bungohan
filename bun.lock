@@ -53,6 +53,68 @@
         "@bungohan/types": "workspace:*",
       },
     },
+    "apps/tutorial/client": {
+      "name": "@bungohan/tutorial-client",
+      "version": "0.0.0",
+      "dependencies": {
+        "@bungohan/client-js": "workspace:*",
+        "@bungohan/tutorial-shared": "workspace:*",
+        "react": "catalog:",
+        "react-dom": "catalog:",
+      },
+      "devDependencies": {
+        "@bungohan/testing": "workspace:*",
+        "@types/bun": "catalog:",
+        "@types/react": "catalog:",
+        "@types/react-dom": "catalog:",
+      },
+    },
+    "apps/tutorial/server": {
+      "name": "@bungohan/tutorial-server",
+      "version": "0.0.0",
+      "dependencies": {
+        "@bungohan/core": "workspace:*",
+        "@bungohan/tutorial-shared": "workspace:*",
+      },
+      "devDependencies": {
+        "@bungohan/client-js": "workspace:*",
+        "@bungohan/testing": "workspace:*",
+        "@types/bun": "catalog:",
+      },
+    },
+    "apps/tutorial/shared": {
+      "name": "@bungohan/tutorial-shared",
+      "version": "0.0.0",
+      "dependencies": {
+        "@bungohan/state": "workspace:*",
+        "@bungohan/types": "workspace:*",
+      },
+    },
+    "docs/examples": {
+      "name": "@bungohan/docs-examples",
+      "version": "0.0.0",
+      "dependencies": {
+        "@bungohan/backplane": "workspace:*",
+        "@bungohan/client-js": "workspace:*",
+        "@bungohan/core": "workspace:*",
+        "@bungohan/serializer": "workspace:*",
+        "@bungohan/state": "workspace:*",
+        "@bungohan/store": "workspace:*",
+        "@bungohan/testing": "workspace:*",
+        "@bungohan/transport": "workspace:*",
+        "@bungohan/tutorial-server": "workspace:*",
+        "@bungohan/tutorial-shared": "workspace:*",
+        "@bungohan/types": "workspace:*",
+        "react": "catalog:",
+        "react-dom": "catalog:",
+      },
+      "devDependencies": {
+        "@happy-dom/global-registrator": "catalog:",
+        "@types/bun": "catalog:",
+        "@types/react": "catalog:",
+        "@types/react-dom": "catalog:",
+      },
+    },
     "packages/backplane": {
       "name": "@bungohan/backplane",
       "version": "0.0.0",
@@ -219,6 +281,8 @@
 
     "@bungohan/core": ["@bungohan/core@workspace:packages/core"],
 
+    "@bungohan/docs-examples": ["@bungohan/docs-examples@workspace:docs/examples"],
+
     "@bungohan/example-shooter-client": ["@bungohan/example-shooter-client@workspace:apps/example-shooter/client"],
 
     "@bungohan/example-shooter-server": ["@bungohan/example-shooter-server@workspace:apps/example-shooter/server"],
@@ -236,6 +300,12 @@
     "@bungohan/testing": ["@bungohan/testing@workspace:packages/testing"],
 
     "@bungohan/transport": ["@bungohan/transport@workspace:packages/transport"],
+
+    "@bungohan/tutorial-client": ["@bungohan/tutorial-client@workspace:apps/tutorial/client"],
+
+    "@bungohan/tutorial-server": ["@bungohan/tutorial-server@workspace:apps/tutorial/server"],
+
+    "@bungohan/tutorial-shared": ["@bungohan/tutorial-shared@workspace:apps/tutorial/shared"],
 
     "@bungohan/types": ["@bungohan/types@workspace:packages/types"],
 

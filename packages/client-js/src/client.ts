@@ -57,6 +57,7 @@ export interface ClientLogger {
   error(message: string, detail?: unknown): void
 }
 
+// #region client-options
 export interface ClientOptions {
   /** Server URL, e.g. `wss://game.example.com`. */
   url: string
@@ -73,8 +74,9 @@ export interface ClientOptions {
   serializer?: ISerializer
   /**
    * State codecs this client can decode. The handshake names the room's;
-   * one missing here fails the join with `CODEC_MISMATCH` (spec §6.7.4).
-   * Default: MessagePack (Phase 1).
+   * one missing here fails the join with `CODEC_MISMATCH`.
+   * Default: `[new SchemaCodec(), new MessagePackStateCodec()]`, so either
+   * server setting works.
    */
   stateCodecs?: IStateCodec[]
   /** How connections are opened. Default: the platform `WebSocket`. */
@@ -88,6 +90,7 @@ export interface ClientOptions {
   /** Where dropped frames and listener errors are reported. Default `console`. */
   logger?: ClientLogger
 }
+// #endregion client-options
 
 /**
  * The join inputs for a contract with typed options: the contract is

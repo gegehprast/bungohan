@@ -10,6 +10,8 @@ Authoritative multiplayer game server framework for Bun, with a language-indepen
 
 **`reference/` holds the previous implementation (alpha 1) — read-only.** It is excluded from the workspace, from `tsc`, from Biome, and from `bun test`. Consult it when the spec is silent on some behavior; never edit it, never import from it, and don't try to fix its type or lint errors. See `reference/README.md`. Where the spec and that code disagree, the spec wins.
 
+**Current focus: JavaScript first.** Finish the JS stack — the Bun server, `@bungohan/client-js` and its React hooks — before the other clients. The C# (`clients/csharp`) and Godot (`clients/godot`) clients are deferred, not dropped: don't add features to them or mention them in JS docs and examples, but keep them working. Their checks stay in `bun run verify`, so a wire change that would break them still fails.
+
 ## Runtime: Bun, not Node
 
 - `bun <file>` instead of `node <file>` / `ts-node <file>`
@@ -110,6 +112,10 @@ import { test, expect } from "bun:test"
 - **Type binary buffers precisely.** Under TypeScript 7, `WebSocket.send` only accepts views over a regular `ArrayBuffer`, so a plain `Uint8Array` (which could be backed by a `SharedArrayBuffer`) is rejected. Functions that allocate with `new Uint8Array(n)` should declare `Uint8Array<ArrayBuffer>` as their return type, not widen it to `Uint8Array`, and should never cast.
 - **GDScript has no exceptions.** A typed function cut short by a script error returns its type's default (`""` for `-> String`), so a failing check can read as a pass. The Godot runners extend `clients/godot/tests/harness.gd`, which fails the run on any logged engine/script error; keep new suites under it. Also: `String == int` is a runtime error in Godot 4 (check `typeof` first), a Godot `String` can't hold U+0000, and Godot's own JSON/float parsing isn't correctly rounded (the runners use `tests/json_exact.gd`). PROTOCOL.md §15 has the rest.
 - **Numeric ids are never baked into generated client code.** Message-type and schema-class ids come from the join handshake and resolve by name at runtime (spec §4.2), so a stale Unity/Godot build can't silently desync.
+
+## Docs
+
+User docs live in `docs/` (JavaScript only). Every ts/tsx block in them is copied from a `// #region` in real code — the tutorial app in `apps/tutorial/` or `docs/examples/` — and a `bun test` suite fails if a block is stale, hand-written, or links somewhere that doesn't exist. Never edit a code block in the Markdown directly: change the source file, then run `bun run docs:sync`. When a framework change alters an API, update the affected example code so the docs stay correct.
 
 ## Example app
 

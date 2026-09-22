@@ -14,13 +14,16 @@
     "codegen:interop": "bun packages/codegen/src/cli.ts --contract packages/testing/src/interop/shared.ts --state packages/testing/src/interop/shared.ts --lang csharp --namespace Bungohan.Interop --out clients/csharp/Bungohan.Bindings/Interop && bun packages/codegen/src/cli.ts --contract packages/testing/src/interop/shared.ts --state packages/testing/src/interop/shared.ts --lang gdscript --out clients/godot/tests/interop",
     "codegen:example": "bun packages/codegen/src/cli.ts --contract apps/example-shooter/shared/src/index.ts --state apps/example-shooter/shared/src/index.ts --lang csharp --namespace Bungohan.Example.Shooter --out clients/csharp/Bungohan.Bindings/Shooter && bun packages/codegen/src/cli.ts --contract apps/example-shooter/shared/src/index.ts --state apps/example-shooter/shared/src/index.ts --lang gdscript --out clients/godot/example/shooter && bun packages/codegen/src/cli.ts --contract apps/example-shooter/shared/src/index.ts --state apps/example-shooter/shared/src/index.ts --lang json --out clients/fixtures",
     "test:csharp": "bun scripts/interop.ts dotnet run --project clients/csharp/Bungohan.Protocol.Tests",
-    "test:godot": "bun scripts/interop.ts --cwd clients/godot godot-mono --headless --script tests/run_all.gd"
+    "test:godot": "bun scripts/interop.ts --cwd clients/godot godot-mono --headless --script tests/run_all.gd",
+    "docs:sync": "bun scripts/docs-snippets.ts --write"
   },
   "workspaces": {
     "packages": [
       "packages/*",
       "apps/*",
-      "apps/example-shooter/*"
+      "apps/example-shooter/*",
+      "apps/tutorial/*",
+      "docs/examples"
     ],
     "catalog": {
       "@biomejs/biome": "2.5.14",

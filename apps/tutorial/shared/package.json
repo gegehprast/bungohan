@@ -1,0 +1,15 @@
+{
+  "name": "@bungohan/tutorial-shared",
+  "version": "0.0.0",
+  "description": "State and contract shared by the tutorial's server and client (docs/tutorial.md)",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@bungohan/state": "workspace:*",
+    "@bungohan/types": "workspace:*"
+  },
+  "license": "MIT"
+}
