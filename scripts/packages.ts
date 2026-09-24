@@ -41,3 +41,26 @@ export async function version(): Promise<string> {
 
 /** `https://github.com/<owner>/<repo>`, from the manifests' repository field. */
 export const REPO_URL = "https://github.com/gegehprast/bungohan"
+
+/**
+ * The docs that name the released version. `bun run version` rewrites the
+ * version in each, and `release-docs.test.ts` fails if one drifts from the
+ * manifests (the READMEs ship in the tarballs, so npm shows what they say).
+ */
+export const VERSION_NOTES = [
+  "docs/getting-started.md",
+  "packages/core/README.md",
+  "packages/client-js/README.md",
+] as const
+
+const VERSION_NOTE = /(Bungohan is at|Published at) `([^`]+)`/g
+
+/** The versions a doc names, in order. */
+export function versionsNamed(text: string): string[] {
+  return [...text.matchAll(VERSION_NOTE)].map((match) => match[2] ?? "")
+}
+
+/** The doc with every version it names set to `next`. */
+export function nameVersion(text: string, next: string): string {
+  return text.replace(VERSION_NOTE, (_, phrase) => `${phrase} \`${next}\``)
+}

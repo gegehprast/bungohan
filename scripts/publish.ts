@@ -90,6 +90,5 @@ console.log(
   dryRun
     ? "dry run finished; nothing was uploaded"
     : `published ${released} on "${tag}".\n` +
-        "Next: tag the commit, then `bun scripts/published.ts` " +
-        "(see RELEASING.md).",
+        "Next: tag the release commit (see RELEASING.md).",
 )

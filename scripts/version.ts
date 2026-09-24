@@ -1,6 +1,7 @@
 /**
  * Moves every published package to one version (lockstep), including the
- * exact `@bungohan/state` peer ranges that pin them to each other.
+ * exact `@bungohan/state` peer ranges that pin them to each other, and the
+ * version the docs and READMEs name (`VERSION_NOTES`).
  *
  *     bun run version 0.1.0-alpha.2
  *     bun run version 0.1.0-alpha.2 --dry-run
@@ -10,7 +11,13 @@
  * copy (spec §6.10). Bumping one package alone would break its siblings' pins.
  */
 import { join } from "node:path"
-import { PUBLISHED, packageDir } from "./packages"
+import {
+  nameVersion,
+  PUBLISHED,
+  packageDir,
+  ROOT,
+  VERSION_NOTES,
+} from "./packages"
 
 const SEMVER =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[\w.-]+)?(?:\+[\w.-]+)?$/
@@ -53,6 +60,14 @@ for (const name of PUBLISHED) {
   const note = pins > 0 ? `, ${pins} exact pin${pins === 1 ? "" : "s"}` : ""
   console.log(`@bungohan/${name}: ${was} → ${next}${note}`)
   if (!dryRun) await Bun.write(path, `${JSON.stringify(pkg, null, 2)}\n`)
+}
+
+for (const file of VERSION_NOTES) {
+  const path = join(ROOT, file)
+  const text = await Bun.file(path).text()
+  const named = nameVersion(text, next)
+  console.log(`${file}: ${named === text ? "unchanged" : `names ${next}`}`)
+  if (!dryRun && named !== text) await Bun.write(path, named)
 }
 
 console.log(

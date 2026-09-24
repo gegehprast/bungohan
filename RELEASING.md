@@ -68,6 +68,12 @@ Every published package moves to the same version, and the exact
 bun run version 0.1.0-alpha.2     # writes the manifests; --dry-run to preview
 ```
 
+It also rewrites the version named in `docs/getting-started.md`,
+`packages/core/README.md` and `packages/client-js/README.md` ("Published at
+`…`"). The READMEs ship in the tarballs and npm renders them from there, so
+they have to be right before step 5, not after. `scripts/release-docs.test.ts`
+fails if one of them drifts from the manifests.
+
 ### 2. Verify and commit
 
 ```sh
@@ -155,19 +161,3 @@ git push origin main --tags
 
 If a tag was created too early and hasn't been pushed, delete it with
 `git tag -d v0.1.0-alpha.2` and create it again on the bump commit.
-
-### 7. After publishing
-
-The docs say the packages aren't on npm yet. That note is wrong the moment
-step 5 succeeds, and the change that removes it is prepared:
-
-```sh
-bun scripts/published.ts          # --dry-run to see the three edits first
-bun test scripts/docs-snippets.test.ts
-```
-
-It rewrites the note in `docs/getting-started.md`,
-`packages/core/README.md` and `packages/client-js/README.md` to say which
-version is out and on which tag. Commit it, and update the READMEs on npm by
-publishing the next version (npm renders the README from the tarball, so the
-published pages keep the old note until then).
