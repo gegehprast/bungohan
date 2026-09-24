@@ -23,6 +23,7 @@ export {
   type RoomTypes,
   ServerHarness,
   type ServerHarnessOptions,
+  type TestClientExtras,
   type TestClientOptions,
   TestHarness,
   type TestHarnessOptions,
@@ -36,3 +37,4 @@ export {
   type LoopbackTransportOptions,
 } from "./loopback"
 export { settle } from "./settle"
+export { snapshotFor } from "./snapshot"

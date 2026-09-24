@@ -1,5 +1,76 @@
 import { err, ok, type Result } from "@bungohan/result"
 import type { Server } from "bun"
+import type { RoomMetrics, ServerMetrics } from "./metrics"
+
+/**
+ * A handler for requests the built-in endpoints don't answer
+ * (`ServerOptions.http.fetch`). Return `undefined` to fall through to the
+ * built-in answer: a CORS preflight, or a 404.
+ */
+export type HttpFallback = (
+  request: Request,
+) => Response | undefined | Promise<Response | undefined>
+
+/** `GET /health`'s body. */
+export interface HealthResponse {
+  /** `"shutting_down"` from the start of a graceful stop. */
+  status: "ok" | "shutting_down"
+  /** This process's id. */
+  processId: string
+  /** Seconds since `start()`. */
+  uptime: number
+  /** Rooms on this process, private ones included. */
+  rooms: number
+  /** Connections open now. */
+  connections: number
+  /** Whether the process is draining (`server.drain()`). */
+  draining: boolean
+}
+
+/** `GET /ready`'s body: status 200 when `"ready"`, 503 otherwise. */
+export interface ReadyResponse {
+  /** `"draining"` after `server.drain()`, `"shutting_down"` once stopping. */
+  status: "ready" | "draining" | "shutting_down"
+  /** This process's id. */
+  processId: string
+  /** Rooms on this process, private ones included. */
+  rooms: number
+}
+
+/**
+ * One room in `GET /metrics`. A private room is counted without its
+ * `roomId`: anyone who knew the id could join it.
+ */
+export type RoomMetricsEntry = Omit<RoomMetrics, "roomId"> & {
+  /** The room's id; absent for a private room. */
+  roomId?: string
+}
+
+/** `GET /metrics`'s body (404 while metrics are off). */
+export interface MetricsResponse {
+  /** Process-wide numbers, as `server.getServerMetrics()` returns them. */
+  server: ServerMetrics
+  /** Every room on this process, private ones without their id. */
+  rooms: RoomMetricsEntry[]
+}
+
+/** One entry of `GET /rooms`, which lists ready public rooms only. */
+export interface RoomsResponseEntry {
+  /** The room's id, for `joinById`. */
+  id: string
+  /** Its room type. */
+  type: string
+  /** Seats taken (joining, joined and held). */
+  clients: number
+  /** Its `maxClients`. */
+  maxClients: number
+  /** Always `"public"`: private rooms aren't listed. */
+  visibility: "public"
+  /** A locked room refuses new joins. */
+  locked: boolean
+  /** The room's `metadata`. */
+  metadata: Record<string, unknown>
+}
 
 /**
  * {@link HttpServer}'s settings, all required (the server fills them from
@@ -20,16 +91,20 @@ export interface HttpServerOptions {
   enableReadiness: boolean
   /** Serve `GET /rooms`. */
   enableRoomsList: boolean
+  /** Answers what the built-in endpoints don't; `undefined` for none. */
+  fetch: HttpFallback | undefined
 }
 
 /** What the HTTP endpoints read from the game server. */
 export interface HttpSource {
-  health(): unknown
+  health(): HealthResponse
   /** Whether to answer `GET /ready` with 200 (or 503), and the body. */
-  ready(): { ready: boolean; body: unknown }
+  ready(): { ready: boolean; body: ReadyResponse }
   /** `undefined` when metrics are disabled (the endpoint answers 404). */
-  metrics(): unknown
-  rooms(): unknown
+  metrics(): MetricsResponse | undefined
+  rooms(): RoomsResponseEntry[]
+  /** The `fetch` fallback threw or rejected (it answers 500). */
+  reportError(error: unknown): void
 }
 
 /**
@@ -79,11 +154,28 @@ export class HttpServer {
     return this._server?.port
   }
 
-  private _handle(request: Request): Response {
+  private async _handle(request: Request): Promise<Response> {
+    const builtIn = this._builtIn(request)
+    if (builtIn !== undefined) return builtIn
+    const fallback = this._options.fetch
+    if (fallback !== undefined) {
+      try {
+        const response = await fallback(request)
+        if (response !== undefined) return response
+      } catch (error) {
+        this._source.reportError(error)
+        return this._json({ error: "internal error" }, 500)
+      }
+    }
     if (request.method === "OPTIONS" && this._options.cors) {
       return new Response(null, { status: 204, headers: this._headers() })
     }
-    if (request.method !== "GET") return this._json({ error: "not found" }, 404)
+    return this._json({ error: "not found" }, 404)
+  }
+
+  /** The answer of an enabled built-in endpoint, or undefined. */
+  private _builtIn(request: Request): Response | undefined {
+    if (request.method !== "GET") return undefined
     const path = new URL(request.url).pathname
     const o = this._options
     if (path === "/health" && o.enableHealthCheck) {
@@ -102,7 +194,7 @@ export class HttpServer {
     if (path === "/rooms" && o.enableRoomsList) {
       return this._json(this._source.rooms())
     }
-    return this._json({ error: "not found" }, 404)
+    return undefined
   }
 
   private _headers(): Record<string, string> {

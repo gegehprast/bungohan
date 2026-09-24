@@ -2,8 +2,17 @@
  * The harness itself (spec §11.2): it drives the server only through its
  * own loops and clock, as a real deployment would, with no shortcuts.
  */
-import { afterEach, beforeEach, expect, test } from "bun:test"
-import { Room, type ServerOptions } from "@bungohan/core"
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test"
+import {
+  type Client,
+  createFiltered,
+  createSchemaMap,
+  createString,
+  f,
+  Room,
+  Schema,
+  type ServerOptions,
+} from "@bungohan/core"
 import {
   calls,
   GameRoom,
@@ -12,6 +21,7 @@ import {
   resetFaults,
 } from "./core/fixtures"
 import { createTestHarness, type TestHarness } from "./harness"
+import { snapshotFor } from "./snapshot"
 
 const game = { state: GameState, contract: gameContract }
 const quiet = { warn() {}, error() {} }
@@ -126,4 +136,121 @@ test("stateOf reads a room's state without making it public", async () => {
 
   expect(() => h?.stateOf(GameRoom, view)).toThrow(/not a GameRoom/)
   expect(() => h?.stateOf(SealedRoom, "nope")).toThrow(/no room "nope"/)
+})
+
+/**
+ * A room whose onJoin awaits `gate`, standing in for real I/O (a fetch to
+ * another process): something the harness clock can't move along.
+ */
+let gate: Promise<void> = Promise.resolve()
+
+class SlowJoinRoom extends GameRoom {
+  protected override async onJoin(client: Client): Promise<void> {
+    await gate
+    await super.onJoin(client)
+  }
+}
+
+function gated(): () => void {
+  let open = () => {}
+  gate = new Promise((resolve) => {
+    open = resolve
+  })
+  return open
+}
+
+test("a join whose hooks await real I/O outruns simulated time without joinRealWait", async () => {
+  const open = gated()
+  const warn = spyOn(console, "warn").mockImplementation(() => {})
+  h = await createTestHarness({
+    rooms: { game: SlowJoinRoom },
+    client: { pingInterval: 0, logger: quiet },
+  })
+  try {
+    const joined = await (await h.connect()).joinOrCreate("game", {}, game)
+    // The clock ran to the client's joinTimeout before the "fetch" was back.
+    expect(joined.isErr() && joined.error.code).toBe("TIMEOUT")
+    await h.flush() // delivery gives up, and says why
+    expect(warn.mock.calls.flat().join()).toContain("joinRealWait")
+  } finally {
+    open()
+    warn.mockRestore()
+  }
+})
+
+test("joinRealWait holds the clock while a join's hooks do real I/O", async () => {
+  const open = gated()
+  h = await createTestHarness({
+    rooms: { game: SlowJoinRoom },
+    client: { pingInterval: 0, logger: quiet },
+    joinRealWait: 5000,
+  })
+  const client = await h.connect()
+  // The "fetch" answers after 20 ms of real time.
+  setTimeout(open, 20)
+  const room = (await client.joinOrCreate("game", {}, game)).unwrap()
+  expect(room.state.players.has(room.sessionId)).toBe(true)
+  // Only the sync boundary after the join cost simulated time.
+  expect(h.clock.now()).toBeLessThanOrEqual(50)
+})
+
+test("autoJoin: false on one client leaves its join to the test", async () => {
+  const t = await harness()
+  const held = await t.connect({ autoJoin: false })
+  let settled = false
+  const pending = held.joinOrCreate("game", {}, game).then((r) => {
+    settled = true
+    return r
+  })
+  // Another client's join still completes by itself.
+  const other = (
+    await (await t.connect()).joinOrCreate("game", {}, game)
+  ).unwrap()
+  expect(other.state.players.has(other.sessionId)).toBe(true)
+  const clock = t.clock.now()
+  await t.flush()
+  expect(t.clock.now()).toBe(clock) // nothing moved the clock for it
+  if (!settled) await t.tick(50)
+  const room = (await pending).unwrap()
+  expect(room.state.players.has(room.sessionId)).toBe(true)
+})
+
+class Hero extends Schema {
+  public static override readonly schemaName = "Harness.Hero"
+  public owner = createString("")
+  public quest = createFiltered(
+    createString(""),
+    function (this: Hero, client) {
+      return this.owner.get() === client.id
+    },
+  )
+}
+
+class Party extends Schema {
+  public static override readonly schemaName = "Harness.Party"
+  public leader = createString("")
+  public heroes = createSchemaMap(f.string, Hero)
+}
+
+test("snapshotFor shows what one client would receive", () => {
+  const party = new Party()
+  party.leader.set("carol")
+  const hero = new Hero()
+  hero.owner.set("alice")
+  hero.quest.set("find the lost map")
+  party.heroes.set("alice", hero)
+
+  const alice = snapshotFor(party, "alice")
+  const bob = snapshotFor(party, { id: "bob" })
+  expect(alice).not.toBe(party)
+  expect(alice.heroes.get("alice")?.quest.get()).toBe("find the lost map")
+  expect(bob.heroes.get("alice")?.quest.get()).toBe("")
+  expect(bob.leader.get()).toBe("carol")
+
+  // Later changes show up too: the state needn't be fresh.
+  hero.owner.set("bob")
+  expect(snapshotFor(party, "bob").heroes.get("alice")?.quest.get()).toBe(
+    "find the lost map",
+  )
+  expect(snapshotFor(party, "alice").heroes.get("alice")?.quest.get()).toBe("")
 })

@@ -1,3 +1,13 @@
+// What apps otherwise need other @bungohan packages for.
+export {
+  Err,
+  err,
+  Ok,
+  ok,
+  type Result,
+  tryCatch,
+  tryCatchAsync,
+} from "@bungohan/result"
 // The shared definitions (state schemas, contracts, options), so a room
 // file needs no other @bungohan package. A module shared with the browser
 // should import these from @bungohan/schema instead of from here.
@@ -28,13 +38,22 @@ export type { RoomInfo, RoomOp } from "./cluster/protocol"
 export { RoomProxy } from "./cluster/proxy"
 export { RemoteConnection } from "./cluster/remote"
 export { BungohanError, type ErrorCode } from "./errors"
-export { HttpServer, type HttpServerOptions } from "./http"
+export {
+  type HealthResponse,
+  type HttpFallback,
+  HttpServer,
+  type HttpServerOptions,
+  type MetricsResponse,
+  type ReadyResponse,
+  type RoomMetricsEntry,
+  type RoomsResponseEntry,
+} from "./http"
 export { Logger, type LoggerOptions, type LogLevel } from "./logger"
 export { IntervalLoop, SimulationLoop } from "./loop"
 export { getMatchMaker, MatchMaker } from "./matchmaker"
 export type { ClientMetrics, RoomMetrics, ServerMetrics } from "./metrics"
 export { MetricsCollector } from "./metrics"
-export { Room } from "./room"
+export { type AuthResult, Room } from "./room"
 export { RoomManager } from "./room-manager"
 export {
   BungohanServer,
@@ -47,6 +66,7 @@ export type {
   DrainResult,
   ErrorContext,
   ErrorSource,
+  LimitOptions,
   MatchMakerQueryOptions,
   ProcessInfo,
   ProcessSelector,

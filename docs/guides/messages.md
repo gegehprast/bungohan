@@ -64,7 +64,9 @@ The field builders:
 | `f.nested(OtherMessage)` | that message's payload | |
 
 `Infer<typeof Say>` gives you the payload type, for helper functions and
-components.
+components. For a contract's join and create options,
+`InferJoinOptions<typeof contract>` and `InferCreateOptions<typeof contract>`
+do the same (see [options](options.md)).
 
 Why builders and not an interface? An interface disappears at compile
 time. The builder is a value, so the same declaration gives TypeScript

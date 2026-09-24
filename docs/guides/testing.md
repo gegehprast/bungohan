@@ -63,11 +63,23 @@ async function join(name: string, client?: BungohanClient) {
 - `client`: defaults for every `h.connect()`. `pingInterval: 0` keeps
   pings out of byte counts, and `logger: { warn() {}, error() {} }`
   silences expected warnings.
+- `autoJoin` (default true) and `joinRealWait` (default 0): how joins are
+  delivered, below.
 
 `await h.connect(options?)` returns a real, connected `BungohanClient`.
 A join resolves by itself, like in production: the harness runs the
 server's clock forward until the join's snapshot arrives (up to one sync
 period). `await h.stop()` closes everything. Call it in `afterEach`.
+
+Because the join's first snapshot arrives inside `joinOrCreate`, a
+listener attached after the `await` has already missed it. To watch a
+client's raw frames from the start, `connect()`, attach
+`h.socketOf(client).onMessage(…)`, and only then join.
+
+`h.connect({ autoJoin: false })` turns automatic delivery off for one
+client: its `JOIN` waits until the test calls `flush()` or `tick()`, and
+no time moves for it, while other clients' joins still complete by
+themselves.
 
 ## Moving time
 
@@ -87,8 +99,12 @@ test("time only moves when the test moves it", async () => {
   await h.flush() // delivers frames and runs due timers; no time passes
   expect(me?.x.get()).toBe(x)
 
-  await h.tick(250) // delivers, advances 250 ms of loops, delivers again
-  expect(Math.abs((me?.x.get() ?? 0) - x)).toBeCloseTo(50, -1)
+  await h.flushSync() // the next patch: one sync period passes, it arrives
+  const next = me?.x.get() ?? 0
+  expect(next).not.toBe(x)
+
+  await h.tick(250) // game time: 250 ms of loops, delivered as they run
+  expect(Math.abs((me?.x.get() ?? 0) - next)).toBeCloseTo(50, -1)
 })
 ```
 <!-- /snippet -->
@@ -99,10 +115,128 @@ test("time only moves when the test moves it", async () => {
 | `await h.tick(ms)` | delivers, advances the clock by `ms` (running every simulation step, sync and timer due in that time, in order), and delivers again. |
 | `await h.flushSync()` | ticks by one sync period, so every room reaches a sync boundary. |
 
-So after `send`, `await h.tick(50)` is "the next patch has arrived":
-the message is handled, the loops run, and the resulting patch is
-applied on every client. Timers set through the room's `this.clock` run
-on the same clock, and so do the client's reconnection backoff and pings.
+**After `send`, `await h.flushSync()` is "the next patch has arrived"**,
+whatever the room's sync rate: the message is handled, the loops run to
+a sync boundary, and the resulting patch is applied on every client.
+Use `tick(ms)` when game time must pass (movement, a turn timer).
+
+Don't use a fixed `tick(50)` to wait for a patch. 50 ms is one sync
+period only at the default 20 Hz. A room syncing at 5 Hz needs 200 ms,
+and a test that reads a replica too early sees the previous state with
+nothing pointing at the cause. Timers set through the room's
+`this.clock` run on the same clock, and so do the client's reconnection
+backoff and pings.
+
+## Real I/O in join hooks
+
+Automatic join delivery moves the clock from timer to timer until the
+join is through. It can't see a real `fetch` or database query that
+`onAuth`, `onCreate` or `onJoin` is waiting on. So simulated time races
+ahead of the real round trip: the client's `joinTimeout` fires after a
+few milliseconds of real time, or, with no timer left to run, delivery
+stops and the reply is never delivered. The harness prints a warning
+when it gives up on a join the server is still running.
+
+`joinRealWait` gives the server that much real time to finish a join
+before the clock moves on:
+
+<!-- snippet: docs/examples/src/testing.test.ts#real-io -->
+[`docs/examples/src/testing.test.ts`](../examples/src/testing.test.ts)
+
+```ts
+test("a join whose hooks call a real service", async () => {
+  // A stand-in for the profile service, on a real port, as slow as a
+  // round trip to another machine.
+  const service = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: async (request) => {
+      await Bun.sleep(20)
+      return new URL(request.url).pathname === "/session"
+        ? Response.json({ playerId: "p1" })
+        : Response.json({ name: "Ada", level: 7 })
+    },
+  })
+  try {
+    const url = `http://127.0.0.1:${service.port}`
+    h = await createTestHarness({
+      rooms: { party: createPartyRoom(httpProfiles(url)) },
+      // Real milliseconds a join's hooks get before the clock moves on.
+      joinRealWait: 2000,
+    })
+    const client = await h.connect({ token: "session-1" })
+    const view = (
+      await client.joinOrCreate("party", {}, { state: PartyState })
+    ).unwrap()
+    expect(view.state.heroes.get(view.sessionId)?.level.get()).toBe(7)
+  } finally {
+    await service.stop(true)
+  }
+})
+```
+<!-- /snippet -->
+
+The clock stands still while a join's hooks run, up to `joinRealWait`
+at a time. A hook that waits on the room's clock itself (a retry
+backoff) then costs up to that much real time per timer, so keep it
+near the service's real latency.
+
+Most tests shouldn't need it. Pass the room a fake instead (see
+[dependencies](rooms.md#giving-a-room-its-dependencies)), which keeps
+the test fast and deterministic:
+
+<!-- snippet: docs/examples/src/testing.test.ts#fake-deps -->
+[`docs/examples/src/testing.test.ts`](../examples/src/testing.test.ts)
+
+```ts
+test("a fake service needs no network and no real time", async () => {
+  const noHeroes = createPartyRoom({
+    playerOf: async (token) => token,
+    heroOf: async () => undefined,
+  })
+  h = await createTestHarness({
+    rooms: { party: noHeroes },
+    client: { logger: { warn() {}, error() {} } },
+  })
+  const client = await h.connect({ token: "p1" })
+  const joined = await client.joinOrCreate("party", {}, { state: PartyState })
+  expect(joined.isErr() && joined.error.code).toBe("JOIN_FAILED")
+})
+```
+<!-- /snippet -->
+
+## Testing filters
+
+`snapshotFor(state, client)` returns what one client would decode from
+its join snapshot: the state encoded with that client's filters, through
+the wire codec, into a new instance. That makes "bob never receives
+ada's secret quest" a unit test, with no server or room:
+
+<!-- snippet: docs/examples/src/testing.test.ts#filters -->
+[`docs/examples/src/testing.test.ts`](../examples/src/testing.test.ts)
+
+```ts
+test("each player receives only their own hero's quest", () => {
+  const party = new PartyState()
+  for (const id of ["ada", "bob"]) {
+    const hero = new Hero()
+    hero.owner.set(id)
+    hero.quest.set(`${id}'s quest`)
+    party.heroes.set(id, hero)
+  }
+  // What bob's client would decode from its join snapshot.
+  const bob = snapshotFor(party, "bob")
+  expect(bob.heroes.get("bob")?.quest.get()).toBe("bob's quest")
+  expect(bob.heroes.get("ada")?.quest.get()).toBe("") // hidden: the zero value
+})
+```
+<!-- /snippet -->
+
+`client` is the `sessionId` your filters compare `client.id` to, or the
+object they receive if they read more than the id. Pass a state the
+test built: the call treats its pending changes as synced, which would
+cost a running room's clients those changes. For a room's state, read
+the replicas of clients joined through the harness.
 
 ## Reaching into the server
 
@@ -168,6 +302,10 @@ test("drops, outages and byte counts", async () => {
 
 - `h.dropConnection(client, code = 1006)` drops a client's connection
   from the network side, so its client reconnects as it would for real.
+  Until it's back, that client's own replica receives nothing and keeps
+  its last values (a `connected` flag still reads `true`). To check what
+  the others see while it's down, read another client's replica or
+  `h.stateOf(…)`.
 - `h.offline = true` makes new connections fail, as if the server were
   unreachable.
 - `h.bytesSent()` / `h.bytesReceived()` count what the server sent and

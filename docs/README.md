@@ -19,10 +19,10 @@ state patches.
 | [State and schemas](guides/state.md) | field factories, number types, collections, nested objects and the ownership rule, per-client filtering |
 | [Messages and contracts](guides/messages.md) | typed and raw messages, why there's no runtime validation, handler ordering |
 | [Join and create options](guides/options.md) | typed options on both ends, server-built options |
-| [Rooms and their lifecycle](guides/rooms.md) | hooks, auth, reconnection, pausing, presence, persistence |
+| [Rooms and their lifecycle](guides/rooms.md) | hooks, auth, reconnection, pausing, presence, persistence and restarts, dependencies |
 | [Matchmaking](guides/matchmaking.md) | join modes, metadata and queries, reservations |
 | [client-js and the React hooks](guides/client.md) | the client, listening to state, reconnection, React and StrictMode |
-| [Testing](guides/testing.md) | the in-process harness, the manual clock, simulating the network |
+| [Testing](guides/testing.md) | the in-process harness, the manual clock, real I/O in join hooks, testing filters, simulating the network |
 | [Going to production](guides/production.md) | tick rates, limits and close code 1013, metrics, HTTP endpoints, graceful shutdown |
 | [Scaling with cluster mode](guides/scaling.md) | several processes over Redis |
 
@@ -39,16 +39,17 @@ state patches.
 
 | Package | Where | For |
 |---|---|---|
-| `@bungohan/core` | server | `createBungohanServer`, `Room`, the matchmaker, and everything a room file needs: `Schema`, the field factories, `f`, `defineMessage`, `defineContract`, `ConnectionContext`, `MemoryStore` |
-| `@bungohan/client-js` | browser | the client, and the same `Schema`, factories, `f`, `defineMessage` and `defineContract` for the state and contract module both sides import; React hooks at `@bungohan/client-js/react` |
-| `@bungohan/testing` | tests | the harness and the manual clock |
+| `@bungohan/schema` | shared | what server and client share: `Schema`, the field factories, `f`, `defineMessage`, `defineContract` and the `Infer*` types |
+| `@bungohan/core` | server | `createBungohanServer`, `Room`, the matchmaker, `MemoryStore`, the `Result` helpers, and everything in `@bungohan/schema` |
+| `@bungohan/client-js` | browser | the client, the `Result` helpers, and everything in `@bungohan/schema`; React hooks at `@bungohan/client-js/react` |
+| `@bungohan/testing` | tests | the harness, the manual clock and `snapshotFor` |
 
 A server file imports from `@bungohan/core`, a client file from
 `@bungohan/client-js`. The module that holds the state and the contract is
-imported by both, so it imports from `@bungohan/client-js`, which runs
-anywhere (core would drag the server into the browser bundle). Both
-packages re-export the same classes, so the two sides agree. The packages
-they're built from (`@bungohan/state`, `@bungohan/types`,
+imported by both, so it imports from `@bungohan/schema` alone: that keeps
+server code out of the browser bundle and the client out of the server.
+Core and client-js re-export the same classes, so the two sides agree. The
+packages they're built from (`@bungohan/state`, `@bungohan/types`,
 `@bungohan/store`, `@bungohan/transport`, `@bungohan/serializer`,
 `@bungohan/backplane`) are for custom transports, stores and tooling.
 

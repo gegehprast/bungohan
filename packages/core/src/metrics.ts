@@ -7,8 +7,9 @@
 import type { Clock } from "@bungohan/types"
 
 /**
- * Process-wide numbers, from `server.getServerMetrics()` and
- * `GET /metrics` (see docs/guides/production.md#metrics). Totals count
+ * Process-wide numbers, from `server.getServerMetrics()`, and the `server`
+ * field of `GET /metrics`'s body (`MetricsResponse`; see
+ * docs/guides/production.md#metrics). Totals count
  * since `start()`; rates are averages over the whole uptime, not recent
  * windows.
  */

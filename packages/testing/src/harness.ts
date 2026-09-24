@@ -262,7 +262,35 @@ export interface TestHarnessOptions<
    * That is what lets `await client.joinOrCreate(…)` resolve with no
    * manual pumping. Time moves as it would on a real server, typically up
    * to one sync period. Nothing else a client sends is delivered until the
-   * test flushes or ticks.
+   * test flushes or ticks. `harness.connect({ autoJoin })` overrides it for
+   * one client.
+   */
+  autoJoin?: boolean
+  /**
+   * Real (wall-clock) milliseconds automatic join delivery waits for the
+   * server to finish a join before moving the clock on. Default 0: no
+   * waiting, which is right while `onAuth`, `onCreate` and `onJoin` wait
+   * only on the room's clock or on in-process fakes.
+   *
+   * Set it when they await real I/O (a `fetch` to another process, a
+   * database). Without it, simulated time races past the round trip: the
+   * client's `joinTimeout` fires first, or, with no timer left to run,
+   * delivery stops and the reply is never delivered. With it, the clock
+   * stands still while a join's hooks run, up to this long at a time. A
+   * hook that waits on the clock itself then costs up to this long of real
+   * time per timer, so keep it close to the I/O's real latency. See
+   * docs/guides/testing.md#real-io-in-join-hooks.
+   */
+  joinRealWait?: number
+}
+
+/** Harness-only options of one client (see {@link TestClientOptions}). */
+export interface TestClientExtras {
+  /**
+   * Deliver this client's joins automatically. Defaults to the harness's
+   * `autoJoin`. With `false`, its `JOIN` waits in the loopback until the
+   * test calls `flush()` or `tick()`, while other clients' joins still
+   * complete by themselves: the way to hold one join in flight.
    */
   autoJoin?: boolean
 }
@@ -274,7 +302,8 @@ export type TestClientOptions = Partial<
   Omit<
     LoopbackClientTransportOptions,
     "offline" | "onSend" | "onReceive" | "onClose"
-  >
+  > &
+  TestClientExtras
 
 /**
  * The full harness (see docs/guides/testing.md): a real server and real
@@ -287,6 +316,7 @@ export class TestHarness extends HarnessBase {
   public offline = false
   private readonly _clientDefaults: TestClientOptions
   private readonly _autoJoin: boolean
+  private readonly _joinRealWait: number
   private readonly _transports = new Map<
     IBungohanClient,
     LoopbackClientTransport
@@ -300,6 +330,7 @@ export class TestHarness extends HarnessBase {
     super(options)
     this._clientDefaults = options.client ?? {}
     this._autoJoin = options.autoJoin ?? true
+    this._joinRealWait = Math.max(0, options.joinRealWait ?? 0)
     for (const [name, entry] of Object.entries(options.rooms ?? {})) {
       if (Array.isArray(entry)) {
         const [RoomClass, roomOptions] = entry
@@ -318,16 +349,23 @@ export class TestHarness extends HarnessBase {
     options: TestClientOptions = {},
   ): Promise<BungohanClient> {
     const merged = { ...this._clientDefaults, ...options }
-    const { ip, headers, searchParams, ...clientOptions } = merged
+    const {
+      ip,
+      headers,
+      searchParams,
+      autoJoin = this._autoJoin,
+      ...clientOptions
+    } = merged
     const joins = new JoinTracker()
-    this._joins.add(joins)
+    // Only automatically delivered joins keep delivery going.
+    if (autoJoin) this._joins.add(joins)
     const transport = new LoopbackClientTransport(this.transport, {
       ...(ip === undefined ? {} : { ip }),
       ...(headers === undefined ? {} : { headers }),
       ...(searchParams === undefined ? {} : { searchParams }),
       offline: () => this.offline,
       onSend: (data) => {
-        if (joins.sent(data) && this._autoJoin) this._pumpJoins()
+        if (joins.sent(data) && autoJoin) this._pumpJoins()
       },
       onReceive: (data) => joins.received(data),
       onClose: () => joins.reset(),
@@ -400,19 +438,46 @@ export class TestHarness extends HarnessBase {
    * timer by timer (every loop and timeout runs as it falls due) until
    * every join clients have in flight is through: snapshot received, join
    * refused, or given up by the client. Nothing is short-circuited, so a
-   * join takes exactly as long as it would on a real server.
+   * join takes exactly as long as it would on a real server. With
+   * `joinRealWait`, a join the server is still working on gets that much
+   * real time to finish before the clock moves.
    */
   private _pumpJoins(): void {
     this._pumping = this._pumping.then(async () => {
       const limit = this.clock.now() + JOIN_DELIVERY_LIMIT_MS
       await this._network()
       while ([...this._joins].some((joins) => joins.pending)) {
+        if (await this._serverJoinFinished()) {
+          await this._network()
+          continue
+        }
         const due = this.clock.nextDue()
-        if (due === undefined || due > limit) break
+        if (due === undefined || due > limit) {
+          if (this.server._joinActivity().running > 0) {
+            console.warn(STUCK_JOIN_WARNING)
+          }
+          break
+        }
         await this.clock.advanceTo(due)
         await this._network()
       }
     })
+  }
+
+  /**
+   * Waits up to `joinRealWait` of real time while the server is working on
+   * a join; true once one finished (without the clock moving).
+   */
+  private async _serverJoinFinished(): Promise<boolean> {
+    if (this._joinRealWait <= 0) return false
+    const before = this.server._joinActivity()
+    if (before.running === 0) return false
+    const deadline = performance.now() + this._joinRealWait
+    while (performance.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 1))
+      if (this.server._joinActivity().settled !== before.settled) return true
+    }
+    return false
   }
 
   /** Waits for automatic join delivery, including deliveries it started. */
@@ -430,6 +495,13 @@ export class TestHarness extends HarnessBase {
  * never completes, e.g. one the client abandoned without telling it).
  */
 const JOIN_DELIVERY_LIMIT_MS = 60_000
+
+const STUCK_JOIN_WARNING =
+  "[bungohan/testing] automatic join delivery stopped while the server was " +
+  "still running a join's hooks: onAuth, onCreate or onJoin is awaiting " +
+  "something other than the harness clock (a real fetch?). Pass " +
+  "createTestHarness({ joinRealWait: <ms> }) so real I/O can finish; see " +
+  "docs/guides/testing.md#real-io-in-join-hooks"
 
 /**
  * One harness client's joins in flight, followed through its frames: a

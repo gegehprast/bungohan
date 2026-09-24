@@ -3,6 +3,7 @@
  * metrics (§6.6) and the optional HTTP server.
  */
 import { describe, expect, test } from "bun:test"
+import type { HealthResponse, MetricsResponse } from "@bungohan/core"
 import { ClientFrameType, CloseCode, PROTOCOL_VERSION } from "@bungohan/types"
 import { createServerHarness } from "../harness"
 import { GameRoom } from "./fixtures"
@@ -163,8 +164,11 @@ describe("HTTP server", () => {
     expect(health).toMatchObject({ status: "ok", rooms: 1, connections: 1 })
     const rooms = await (await fetch(`${base}/rooms`)).json()
     expect(rooms).toMatchObject([{ type: "game", clients: 1 }])
-    const metrics = await (await fetch(`${base}/metrics`)).json()
+    const metrics: MetricsResponse = await (
+      await fetch(`${base}/metrics`)
+    ).json()
     expect(metrics.server.activeRooms).toBe(1)
+    expect(metrics.rooms).toMatchObject([{ roomType: "game", clientCount: 1 }])
     const missing = await fetch(`${base}/nope`)
     expect(missing.status).toBe(404)
     expect(missing.headers.get("access-control-allow-origin")).toBe("*")
@@ -199,6 +203,49 @@ describe("HTTP server", () => {
     expect(metrics).not.toContain(later.id)
     // Still counted, just not identified.
     expect(JSON.parse(metrics).rooms).toHaveLength(3)
+    await h.stop()
+  })
+
+  test("a fetch fallback serves the app's own routes", async () => {
+    const errors: [unknown, string][] = []
+    const h = await createServerHarness({
+      server: {
+        http: {
+          enabled: true,
+          port: 0,
+          hostname: "127.0.0.1",
+          enableRoomsList: false,
+          fetch: (request) => {
+            const { pathname } = new URL(request.url)
+            if (pathname === "/admin/worlds" && request.method === "POST") {
+              return Response.json({ created: true }, { status: 201 })
+            }
+            if (pathname === "/rooms") return new Response("mine")
+            if (pathname === "/health") return new Response("shadowed")
+            if (pathname === "/boom") throw new Error("admin broke")
+            return undefined
+          },
+        },
+      },
+    })
+    h.server.onError((error, context) => errors.push([error, context.source]))
+    const base = `http://127.0.0.1:${h.server.getHttpServer()?.getPort()}`
+
+    const created = await fetch(`${base}/admin/worlds`, { method: "POST" })
+    expect(created.status).toBe(201)
+    expect(await created.json()).toEqual({ created: true })
+    // A built-in endpoint answers first; a disabled one is the app's.
+    const health: HealthResponse = await (await fetch(`${base}/health`)).json()
+    expect(health.status).toBe("ok")
+    expect(await (await fetch(`${base}/rooms`)).text()).toBe("mine")
+    // Undefined falls through: preflight, then 404.
+    const preflight = await fetch(`${base}/metrics`, { method: "OPTIONS" })
+    expect(preflight.status).toBe(204)
+    expect((await fetch(`${base}/nope`)).status).toBe(404)
+    // A throw is a 500 and a reported error, never a crash.
+    expect((await fetch(`${base}/boom`)).status).toBe(500)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.[1]).toBe("http")
     await h.stop()
   })
 })

@@ -2,7 +2,7 @@ import { afterEach, expect, spyOn, test } from "bun:test"
 import { createBungohanClient } from "@bungohan/client-js"
 import type { BungohanServer } from "@bungohan/core"
 import { ArenaState, arenaContract } from "@bungohan/tutorial-shared"
-import { createGameServer, report } from "./production"
+import { busiestRoom, createGameServer, report } from "./production"
 
 let server: BungohanServer | undefined
 
@@ -36,6 +36,19 @@ test("the production server starts, serves HTTP and stops cleanly", async () => 
 
   const metrics = await fetch(`http://127.0.0.1:${http}/metrics`)
   expect(await metrics.json()).toMatchObject({ server: { activeRooms: 1 } })
+  const busiest = await busiestRoom(`http://127.0.0.1:${http}`)
+  expect(busiest).toBe(joined.isOk() ? joined.value.id : "")
+
+  // The admin route, behind its token.
+  const admin = `http://127.0.0.1:${http}/admin/arenas`
+  expect((await fetch(admin, { method: "POST" })).status).toBe(403)
+  process.env["ADMIN_TOKEN"] = "s3cret"
+  const created = await fetch(admin, {
+    method: "POST",
+    headers: { authorization: "Bearer s3cret" },
+  })
+  expect(created.status).toBe(201)
+  delete process.env["ADMIN_TOKEN"]
 
   await client.disconnect()
   expect((await server.stop()).isOk()).toBe(true)

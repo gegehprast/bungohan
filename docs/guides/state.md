@@ -62,10 +62,10 @@ because bundlers minify it. A room whose state is missing one fails
 
 | Factory | Wire | Use it for |
 |---|---|---|
-| `createNumber()` | float64, 9 bytes | anything that must be exact, or whose range you don't know |
+| `createNumber()` | float64, 9 bytes | anything that must be exact, or whose range you don't know. Exact for every integer up to 2^53 (about 9 × 10^15), so it's the type for currencies and large counters |
 | `createFloat32()` | 4 bytes, ~7 significant digits | smooth values where a tiny error doesn't matter |
 | `createFixedPoint(n)` | a zigzag integer, usually 1–3 bytes | positions, angles, anything with a known resolution (`n` decimal places, 0–9) |
-| `createInt(f.int8 … f.uint32)` | the integer, 1 byte for 8-bit kinds | counts, health, scores, ids |
+| `createInt(f.int8 … f.uint32)` | the integer, 1 byte for 8-bit kinds | counts, health, scores, ids, within 32 bits (`f.uint32` tops out at 4,294,967,295) |
 
 Fixed-point and float32 are **lossy on the wire only**. The server keeps
 the exact value you set (so `x += vx * dt` accumulates correctly, even in
@@ -250,6 +250,14 @@ export class Card extends Schema {
 - The filter gets the client (its `id` is the `sessionId`) and runs
   with `this` as the instance. It must be pure and cheap: it runs on
   every sync tick, for every client, for every filtered field.
+- The filter runs later, at each sync, not when the field is declared.
+  A `function` gets `this` bound to the instance then, so it works
+  anywhere, including a filter written once outside the class and
+  shared. An arrow function written inline in the field initializer
+  also works, because it captures that instance's `this`. An arrow
+  written anywhere else has no instance to see.
+- [`snapshotFor`](testing.md#testing-filters) checks a filter in a unit
+  test.
 - When a field becomes visible to a client, that client receives its
   current value. When it becomes hidden, the client sees the zero value
   (`""`, `0`, `false`) or, for a collection, an empty one.

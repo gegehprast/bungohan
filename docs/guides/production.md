@@ -31,6 +31,7 @@ export function createGameServer(env: {
     http: {
       enabled: true, // /health, /ready, /metrics, /rooms on their own port
       port: env.httpPort,
+      fetch: (request) => adminRoutes(server, request), // and your own
     },
     gracefulShutdown: {
       drainTimeout: 5 * 60_000, // on SIGTERM, let games finish (up to 5 min)
@@ -139,13 +140,77 @@ default) with:
 |---|---|
 | `GET /health` | always 200 while the process runs: `{ status, processId, uptime, rooms, connections, draining }`; `status` is `"shutting_down"` during a graceful stop |
 | `GET /ready` | 200 `{ status: "ready", processId, rooms }` while the process takes new work; **503** with `status` `"draining"` or `"shutting_down"` otherwise |
-| `GET /metrics` | `{ server, rooms }` from the getters above (404 when metrics are off); private rooms are counted without their `roomId` |
+| `GET /metrics` | `{ server, rooms }`: `getServerMetrics()` and `getAllRoomMetrics()` (404 when metrics are off); private rooms are counted without their `roomId` |
 | `GET /rooms` | every ready **public** room: id, type, clients, maxClients, visibility, locked, metadata |
 
 Each can be switched off (`enableHealthCheck`, `enableReadiness`,
 `enableMetrics`, `enableRoomsList`), and CORS headers are on unless
 `cors: false`. Private rooms never appear with their ids: a private room
 can be joined by id, so its id is what keeps it private.
+
+The bodies are typed, for a dashboard or another process that reads
+them: `HealthResponse`, `ReadyResponse`, `MetricsResponse` and
+`RoomsResponseEntry[]`, all from `@bungohan/core`. Note that `/metrics`
+wraps the getters' results: its body is `{ server, rooms }`, not a
+`ServerMetrics`.
+
+<!-- snippet: docs/examples/src/production.ts#metrics-response -->
+[`docs/examples/src/production.ts`](../examples/src/production.ts)
+
+```ts
+/** Another process reading this one's /metrics, typed. */
+export async function busiestRoom(base: string): Promise<string | undefined> {
+  const body: MetricsResponse = await (await fetch(`${base}/metrics`)).json()
+  const [top] = [...body.rooms].sort((a, b) => b.clientCount - a.clientCount)
+  return top?.roomId // absent for a private room
+}
+```
+<!-- /snippet -->
+
+### Your own routes
+
+`http.fetch` puts your own routes (an admin API, a webhook) on the same
+port, so there's one server to run instead of a second `Bun.serve`. It
+gets every request an enabled built-in endpoint doesn't answer.
+Returning `undefined` falls through to the built-in answer:
+
+<!-- snippet: docs/examples/src/production.ts#http-routes -->
+[`docs/examples/src/production.ts`](../examples/src/production.ts)
+
+```ts
+/** An admin API on the HTTP port, next to /health and /metrics. */
+export async function adminRoutes(
+  server: BungohanServer,
+  request: Request,
+): Promise<Response | undefined> {
+  const { pathname } = new URL(request.url)
+  if (!pathname.startsWith("/admin/")) return undefined // the built-in 404
+  // Nothing checks who is asking: that part is yours.
+  const token = process.env["ADMIN_TOKEN"]
+  const auth = request.headers.get("authorization")
+  if (token === undefined || auth !== `Bearer ${token}`) {
+    return new Response("forbidden", { status: 403 })
+  }
+  if (request.method === "POST" && pathname === "/admin/arenas") {
+    const room = await server.getMatchMaker().createRoom(ArenaRoom, { gems: 5 })
+    return room.isOk()
+      ? Response.json({ roomId: room.value.id }, { status: 201 })
+      : Response.json({ error: room.error.code }, { status: 503 })
+  }
+  return undefined
+}
+```
+<!-- /snippet -->
+
+- The built-in endpoints answer first. Switch one off to serve that
+  path yourself.
+- Your responses are sent as they are, without the CORS headers, and
+  that includes your answers to `OPTIONS`. Add the headers yourself if a
+  browser calls your routes cross-origin.
+- Nothing checks who is asking, and the port is often reachable from
+  inside your network, so check a token on anything that changes state.
+- A throw (or rejected promise) answers 500 and goes to `server.onError`
+  with `source: "http"`.
 
 ## Health and readiness
 

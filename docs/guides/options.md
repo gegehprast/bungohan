@@ -85,6 +85,14 @@ As with messages, **the shape is guaranteed and the values are not.**
 `laps` is certainly a `uint8`, but "0 laps" or "250 laps" is for your
 code to refuse or clamp.
 
+Strings arrive with two substitutions, made by every client's encoder:
+U+0000 (NUL) and unpaired UTF-16 surrogates become U+FFFD (`�`), since
+some engines' strings can't hold them. Everything else arrives as sent,
+control characters such as `\n` and BEL (`\u0007`) included, so a name
+check has to refuse those itself. A test that sends `"\u0000"` sees
+`"\uFFFD"` in `onJoin`. A hand-written client can still put a raw NUL
+on the wire, though, so the server can't count on never seeing one.
+
 ## From the client
 
 <!-- snippet: docs/examples/src/options.client.ts#client -->

@@ -12,6 +12,7 @@ import type {
   InferJoinOptions,
 } from "@bungohan/types"
 import type { Client, Connection } from "./client"
+import type { HttpFallback } from "./http"
 import type { LoggerOptions } from "./logger"
 import type { Room } from "./room"
 
@@ -98,8 +99,8 @@ export interface ServerOptions {
   /**
    * A small HTTP server on its own port: `GET /health` (liveness),
    * `GET /ready` (readiness: 503 while draining or stopping),
-   * `GET /metrics` and `GET /rooms` (public rooms), each switchable. Off
-   * unless `enabled`.
+   * `GET /metrics` and `GET /rooms` (public rooms), each switchable, plus
+   * your own routes through `fetch`. Off unless `enabled`.
    */
   http?: {
     enabled?: boolean
@@ -117,6 +118,15 @@ export interface ServerOptions {
     enableReadiness?: boolean
     /** Default true. */
     enableRoomsList?: boolean
+    /**
+     * Your own routes (an admin API) on the same port: called for every
+     * request an enabled built-in endpoint doesn't answer, including
+     * `OPTIONS`. Return `undefined` to fall through to the built-in
+     * answer (a CORS preflight, or 404). Its responses are sent as they
+     * are, without the CORS headers, and nothing here checks who is
+     * asking. A throw answers 500 and goes to `server.onError`.
+     */
+    fetch?: HttpFallback
   }
   /** Default 60 steps per second. */
   simulation?: { tickRate?: number; maxCatchUpSteps?: number }
@@ -498,6 +508,7 @@ export type ErrorSource =
   | "transport"
   | "protocol"
   | "callback"
+  | "http"
 
 /** Second argument of `server.onError` callbacks. */
 export interface ErrorContext {

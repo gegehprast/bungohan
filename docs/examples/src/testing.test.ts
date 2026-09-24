@@ -2,10 +2,12 @@ import { afterEach, expect, test } from "bun:test"
 import {
   createTestHarness,
   ManualClock,
+  snapshotFor,
   type TestHarness,
 } from "@bungohan/testing"
 import { ArenaRoom } from "@bungohan/tutorial-server/ArenaRoom"
 import { ArenaState, arenaContract } from "@bungohan/tutorial-shared"
+import { createPartyRoom, Hero, httpProfiles, PartyState } from "./dependencies"
 
 const arena = { state: ArenaState, contract: arenaContract }
 const options = (name: string) => ({ create: { gems: 3 }, join: { name } })
@@ -47,8 +49,12 @@ test("time only moves when the test moves it", async () => {
   await h.flush() // delivers frames and runs due timers; no time passes
   expect(me?.x.get()).toBe(x)
 
-  await h.tick(250) // delivers, advances 250 ms of loops, delivers again
-  expect(Math.abs((me?.x.get() ?? 0) - x)).toBeCloseTo(50, -1)
+  await h.flushSync() // the next patch: one sync period passes, it arrives
+  const next = me?.x.get() ?? 0
+  expect(next).not.toBe(x)
+
+  await h.tick(250) // game time: 250 ms of loops, delivered as they run
+  expect(Math.abs((me?.x.get() ?? 0) - next)).toBeCloseTo(50, -1)
 })
 // #endregion time
 
@@ -130,3 +136,95 @@ test("a client that stops reading is paused, then re-synced", async () => {
   expect(slow.state).not.toBe(replica)
 })
 // #endregion stall
+
+// #region real-io
+test("a join whose hooks call a real service", async () => {
+  // A stand-in for the profile service, on a real port, as slow as a
+  // round trip to another machine.
+  const service = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: async (request) => {
+      await Bun.sleep(20)
+      return new URL(request.url).pathname === "/session"
+        ? Response.json({ playerId: "p1" })
+        : Response.json({ name: "Ada", level: 7 })
+    },
+  })
+  try {
+    const url = `http://127.0.0.1:${service.port}`
+    h = await createTestHarness({
+      rooms: { party: createPartyRoom(httpProfiles(url)) },
+      // Real milliseconds a join's hooks get before the clock moves on.
+      joinRealWait: 2000,
+    })
+    const client = await h.connect({ token: "session-1" })
+    const view = (
+      await client.joinOrCreate("party", {}, { state: PartyState })
+    ).unwrap()
+    expect(view.state.heroes.get(view.sessionId)?.level.get()).toBe(7)
+  } finally {
+    await service.stop(true)
+  }
+})
+// #endregion real-io
+
+// #region fake-deps
+test("a fake service needs no network and no real time", async () => {
+  const noHeroes = createPartyRoom({
+    playerOf: async (token) => token,
+    heroOf: async () => undefined,
+  })
+  h = await createTestHarness({
+    rooms: { party: noHeroes },
+    client: { logger: { warn() {}, error() {} } },
+  })
+  const client = await h.connect({ token: "p1" })
+  const joined = await client.joinOrCreate("party", {}, { state: PartyState })
+  expect(joined.isErr() && joined.error.code).toBe("JOIN_FAILED")
+})
+// #endregion fake-deps
+
+// #region filters
+test("each player receives only their own hero's quest", () => {
+  const party = new PartyState()
+  for (const id of ["ada", "bob"]) {
+    const hero = new Hero()
+    hero.owner.set(id)
+    hero.quest.set(`${id}'s quest`)
+    party.heroes.set(id, hero)
+  }
+  // What bob's client would decode from its join snapshot.
+  const bob = snapshotFor(party, "bob")
+  expect(bob.heroes.get("bob")?.quest.get()).toBe("bob's quest")
+  expect(bob.heroes.get("ada")?.quest.get()).toBe("") // hidden: the zero value
+})
+// #endregion filters
+
+// #region quick-start
+test("one player's move reaches the other", async () => {
+  const harness = await createTestHarness({ rooms: { arena: ArenaRoom } })
+  const join = async (name: string) => {
+    const client = await harness.connect()
+    const joined = await client.joinOrCreate(
+      "arena",
+      { create: { gems: 3 }, join: { name } },
+      { state: ArenaState, contract: arenaContract },
+    )
+    return joined.unwrap()
+  }
+  const ada = await join("Ada")
+  const bob = await join("Bob")
+  const before = bob.state.players.get(ada.sessionId)?.x.get()
+
+  ada.send("move", { dx: 1, dy: 0 })
+  await harness.tick(250) // 250 ms of game time, and no real waiting
+
+  const seenByBob = bob.state.players.get(ada.sessionId)?.x.get()
+  const onServer = harness.stateOf(ArenaRoom, ada).players.get(ada.sessionId)
+  expect(seenByBob).not.toBe(before)
+  // Positions are fixed-point on the wire: clients get them rounded.
+  expect(seenByBob).toBeCloseTo(onServer?.x.get() ?? 0, 1)
+  await harness.stop()
+})
+// #endregion quick-start

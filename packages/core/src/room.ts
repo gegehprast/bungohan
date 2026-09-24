@@ -92,7 +92,12 @@ export interface RoomHost {
 
 type Handler = (client: Client, message: unknown) => unknown
 
-type AuthResult = Record<string, unknown> | boolean
+/**
+ * What `onAuth` (static or instance) returns: `false` refuses the join
+ * (`AUTH_FAILED`), `true` admits it, and an object admits it and becomes
+ * `client.auth` and `onJoin`'s third argument.
+ */
+export type AuthResult = Record<string, unknown> | boolean
 
 interface HeldReservation {
   readonly reservation: Reservation
@@ -649,7 +654,13 @@ export abstract class Room<
   // Persistence (through the server's IStore)
   // ==========================================================================
 
-  /** Store key of this room's state. */
+  /**
+   * Store key of this room's state. The default contains the room id,
+   * which is random and never reissued, so a state saved under it is only
+   * found again by this room. Override it with a key from your game (a
+   * world id) to load a state after a restart; see
+   * docs/guides/rooms.md#what-survives-a-restart.
+   */
   protected stateKey(): string {
     return `room:${this.roomType}:${this.id}:state`
   }
@@ -685,7 +696,11 @@ export abstract class Room<
       : ok(state.value)
   }
 
-  /** Saves `state` (default: the room's state). No-op without a store. */
+  /**
+   * Saves `state` (default: the room's state) under `stateKey()`. No-op
+   * without a store. Nothing saves automatically: call it when the state
+   * must survive (on a timer, at the end of a round, in `onDispose`).
+   */
   protected async saveState(
     state: TState = this.state,
   ): Promise<Result<void, BungohanError>> {

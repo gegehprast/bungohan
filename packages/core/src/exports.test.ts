@@ -3,10 +3,22 @@
  * without depending on the packages core is built from.
  */
 import { expect, test } from "bun:test"
+import * as result from "@bungohan/result"
 import * as state from "@bungohan/state"
 import * as store from "@bungohan/store"
 import * as types from "@bungohan/types"
 import * as core from "./index"
+
+test("re-exports the Result helpers", () => {
+  expect(core.ok).toBe(result.ok)
+  expect(core.err).toBe(result.err)
+  expect(core.Ok).toBe(result.Ok)
+  expect(core.Err).toBe(result.Err)
+  expect(core.tryCatch).toBe(result.tryCatch)
+  expect(core.tryCatchAsync).toBe(result.tryCatchAsync)
+  const typed: core.Result<number, Error> = core.err(new Error("no"))
+  expect(typed.isErr()).toBe(true)
+})
 
 test("re-exports the schema, contract and option building blocks", () => {
   expect(core.Schema).toBe(state.Schema)
@@ -54,5 +66,16 @@ test("re-exports the types a room's hooks and options are written with", () => {
   const reservation: core.Reservation | undefined = undefined
   const provider: core.IStore = new core.MemoryStore()
   const typed: core.Contract = contract
-  expect([arg, context, timer, reservation, provider, typed]).toBeDefined()
+  const auth: core.AuthResult = { name: "Ada" }
+  const limits: core.LimitOptions = { joins: { perMinute: 10 } }
+  expect([
+    arg,
+    context,
+    timer,
+    reservation,
+    provider,
+    typed,
+    auth,
+    limits,
+  ]).toBeDefined()
 })

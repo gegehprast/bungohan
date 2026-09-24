@@ -166,6 +166,14 @@ for (let i = 0; i < 3; i++) room.send("increment", { by: 1 })
 ```
 <!-- /snippet -->
 
+`joinOrCreate`'s second argument holds the join options: `undefined`
+here, since the counter's contract declares none. Its shape follows the
+contract. With only join options declared, you pass them as they are.
+Once create options are declared too, the creating modes (`create`,
+`joinOrCreate`) take `{ create, join }`. `InferJoinOptions` and
+`InferCreateOptions` give you the types, and
+[join and create options](guides/options.md) has the details.
+
 Run the server in one terminal and the client in another:
 
 ```sh

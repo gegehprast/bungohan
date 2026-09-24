@@ -218,17 +218,154 @@ With a store configured (`store: { provider }` or `store: { config: { url } }`
 for Redis, in `ServerOptions`), a room can save and load its state:
 
 - `await this.saveState()` saves `this.state` (or the state you pass).
+  Nothing saves automatically: what changed since your last call is lost
+  in a crash.
 - `await this.loadState()` returns a new instance of the current state's
   class, filled from the store, or `undefined` if nothing is saved.
   Assign it to `this.state`.
 - Both return a `Result`, and both are no-ops (`ok(undefined)`) without a
   store.
 - The key comes from `stateKey()`, by default `room:<type>:<id>:state`.
-  Room ids are random, so **override `stateKey()`** to load a state saved
-  by an earlier room, as the example does.
 
 Only synchronized fields are saved, at full precision. Plain fields are
 not.
+
+### What survives a restart
+
+**Room ids are random and never reissued.** After a restart, or on
+another process, no room has the old id: `joinById` with it fails with
+`ROOM_NOT_FOUND`, and the clients' reconnection tokens are void, since a
+token names its room. The default `stateKey()` contains the id, so
+nothing would ever load it again. What survives is the saved state,
+under a key you choose:
+
+- **Override `stateKey()`** with a key from your game, not the room id:
+  one fixed key, as the example above does, or a world or match id
+  taken from the create options in `onCreate`.
+- **Bring the rooms back yourself.** On startup, create one room per
+  saved key (`server.getMatchMaker().createRoom(WorldRoom, { worldId })`),
+  and let its `onCreate` call `loadState()`. Put the key in
+  `this.metadata` so clients can find the room with `query`.
+- **Players join again as new seats.** Seats, presence, plain fields and
+  timers aren't saved. Anything a player must not lose (progress,
+  items) belongs in the saved state, not in a seat.
+
+## Giving a room its dependencies
+
+The server constructs rooms itself, with no arguments, so a room can't
+take its services (a profile service, a database) through its
+constructor. Build the class inside a function instead, and every hook
+reads the dependencies from the closure. That includes the static
+`onAuth`, which runs before any instance exists:
+
+<!-- snippet: docs/examples/src/dependencies.ts#deps -->
+[`docs/examples/src/dependencies.ts`](../examples/src/dependencies.ts)
+
+```ts
+/** What the party needs from outside: one per deployment, or per test. */
+export interface Profiles {
+  /** The player a session token belongs to, or undefined. */
+  playerOf(token: string): Promise<string | undefined>
+  /** The player's hero, or undefined if they haven't made one. */
+  heroOf(playerId: string): Promise<{ name: string; level: number } | undefined>
+}
+
+/** Both onAuth hooks share this, so it takes the service as an argument. */
+async function authenticate(
+  profiles: Profiles,
+  context: ConnectionContext,
+): Promise<AuthResult> {
+  if (context.token === undefined) return false
+  const playerId = await profiles.playerOf(context.token)
+  return playerId === undefined ? false : { playerId }
+}
+
+/** Builds the room class around its dependencies. */
+export function createPartyRoom(
+  profiles: Profiles,
+): RoomClass<Room<PartyState>> {
+  return class PartyRoom extends Room<PartyState> {
+    protected override state = new PartyState()
+
+    // Static hooks see `profiles` too, though no instance exists yet.
+    protected static override onAuth(
+      _client: Client,
+      _options: Record<string, unknown>,
+      context: ConnectionContext,
+    ): Promise<AuthResult> {
+      return authenticate(profiles, context)
+    }
+
+    protected override onAuth(
+      _client: Client,
+      _options: Record<string, unknown>,
+      context: ConnectionContext,
+    ): Promise<AuthResult> {
+      return authenticate(profiles, context)
+    }
+
+    protected override async onJoin(
+      client: Client,
+      _options: Record<string, unknown>,
+      auth: Record<string, unknown>,
+    ): Promise<void> {
+      const found = await profiles.heroOf(String(auth["playerId"]))
+      // A throw refuses the join (JOIN_FAILED).
+      if (found === undefined) throw new Error("no hero yet")
+      const hero = new Hero()
+      hero.owner.set(client.sessionId)
+      hero.name.set(found.name)
+      hero.level.set(found.level)
+      this.state.heroes.set(client.sessionId, hero)
+    }
+  }
+}
+```
+<!-- /snippet -->
+
+Each deployment passes its own:
+
+<!-- snippet: docs/examples/src/dependencies.ts#http-profiles -->
+[`docs/examples/src/dependencies.ts`](../examples/src/dependencies.ts)
+
+```ts
+/** The production service: another process, over HTTP. */
+export function httpProfiles(baseUrl: string): Profiles {
+  const get = async (path: string, token?: string): Promise<unknown> => {
+    const response = await fetch(`${baseUrl}${path}`, {
+      headers: token === undefined ? {} : { authorization: `Bearer ${token}` },
+    })
+    return response.ok ? response.json() : undefined
+  }
+  return {
+    async playerOf(token) {
+      const body = await get("/session", token)
+      return typeof body === "object" && body !== null && "playerId" in body
+        ? String(body.playerId)
+        : undefined
+    },
+    async heroOf(playerId) {
+      const body = await get(`/heroes/${encodeURIComponent(playerId)}`)
+      if (typeof body !== "object" || body === null) return undefined
+      if (!("name" in body) || !("level" in body)) return undefined
+      const { name, level } = body
+      return typeof name === "string" && typeof level === "number"
+        ? { name, level }
+        : undefined
+    },
+  }
+}
+
+// In the entry point:
+//   server.defineRoomType("party", createPartyRoom(httpProfiles(PROFILES_URL)))
+```
+<!-- /snippet -->
+
+A test passes a fake, with no network involved (see
+[testing](testing.md#real-io-in-join-hooks) for testing against the real
+service). Keep the explicit `RoomClass<…>` return type: an inferred one
+exposes `Room`'s internals, and a package that emits declaration files
+fails to build with it (TS4094).
 
 ## Server callbacks
 

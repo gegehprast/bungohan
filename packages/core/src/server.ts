@@ -268,6 +268,9 @@ export class BungohanServer {
   private readonly _onLeave = new Set<Callback<[Client, Room, boolean]>>()
   private readonly _onError = new Set<Callback<[Error, ErrorContext]>>()
   private _http: HttpServer | undefined
+  /** `JOIN` frames being handled (hooks included), and finished. */
+  private _joinsRunning = 0
+  private _joinsSettled = 0
   private _running = false
   private _shuttingDown = false
   private _signalled = false
@@ -422,6 +425,7 @@ export class BungohanServer {
           enableHealthCheck: http.enableHealthCheck ?? true,
           enableReadiness: http.enableReadiness ?? true,
           enableRoomsList: http.enableRoomsList ?? true,
+          fetch: http.fetch,
         },
         {
           health: () => ({
@@ -472,10 +476,11 @@ export class BungohanServer {
                 type: room.roomType,
                 clients: room.getClientCount(),
                 maxClients: room.maxClients,
-                visibility: room.visibility,
+                visibility: "public",
                 locked: room.locked,
                 metadata: room.metadata,
               })),
+          reportError: (error) => this._report(error, { source: "http" }),
         },
       )
       const started = this._http.start()
@@ -710,6 +715,16 @@ export class BungohanServer {
   /** The server-wide counters, or undefined when metrics are off. */
   public getMetricsCollector(): MetricsCollector | undefined {
     return this._metrics
+  }
+
+  /**
+   * @internal `JOIN` frames this process is handling (decoded, not yet
+   * answered, hooks included) and how many it has finished. The test
+   * harness watches them to let join hooks finish real I/O before it moves
+   * its clock.
+   */
+  public _joinActivity(): { running: number; settled: number } {
+    return { running: this._joinsRunning, settled: this._joinsSettled }
   }
 
   /** The built-in HTTP server while it runs (`ServerOptions.http`). */
@@ -947,9 +962,15 @@ export class BungohanServer {
           )
           return
         }
-        void this._handleJoin(connection, ref, body).catch((error: unknown) =>
-          this._report(error, { source: "protocol", connection }),
-        )
+        this._joinsRunning++
+        void this._handleJoin(connection, ref, body)
+          .catch((error: unknown) =>
+            this._report(error, { source: "protocol", connection }),
+          )
+          .finally(() => {
+            this._joinsRunning--
+            this._joinsSettled++
+          })
         return
       }
       case ClientFrameType.LEAVE: {

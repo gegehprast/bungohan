@@ -1,4 +1,8 @@
-import { type BungohanServer, createBungohanServer } from "@bungohan/core"
+import {
+  type BungohanServer,
+  createBungohanServer,
+  type MetricsResponse,
+} from "@bungohan/core"
 import { ArenaRoom } from "@bungohan/tutorial-server/ArenaRoom"
 
 // #region server
@@ -26,6 +30,7 @@ export function createGameServer(env: {
     http: {
       enabled: true, // /health, /ready, /metrics, /rooms on their own port
       port: env.httpPort,
+      fetch: (request) => adminRoutes(server, request), // and your own
     },
     gracefulShutdown: {
       drainTimeout: 5 * 60_000, // on SIGTERM, let games finish (up to 5 min)
@@ -52,3 +57,36 @@ export function report(server: BungohanServer): string {
   return `${m.activeConnections} connected, ${m.activeRooms} rooms, ${m.totalShed} shed`
 }
 // #endregion metrics
+
+// #region http-routes
+/** An admin API on the HTTP port, next to /health and /metrics. */
+export async function adminRoutes(
+  server: BungohanServer,
+  request: Request,
+): Promise<Response | undefined> {
+  const { pathname } = new URL(request.url)
+  if (!pathname.startsWith("/admin/")) return undefined // the built-in 404
+  // Nothing checks who is asking: that part is yours.
+  const token = process.env["ADMIN_TOKEN"]
+  const auth = request.headers.get("authorization")
+  if (token === undefined || auth !== `Bearer ${token}`) {
+    return new Response("forbidden", { status: 403 })
+  }
+  if (request.method === "POST" && pathname === "/admin/arenas") {
+    const room = await server.getMatchMaker().createRoom(ArenaRoom, { gems: 5 })
+    return room.isOk()
+      ? Response.json({ roomId: room.value.id }, { status: 201 })
+      : Response.json({ error: room.error.code }, { status: 503 })
+  }
+  return undefined
+}
+// #endregion http-routes
+
+// #region metrics-response
+/** Another process reading this one's /metrics, typed. */
+export async function busiestRoom(base: string): Promise<string | undefined> {
+  const body: MetricsResponse = await (await fetch(`${base}/metrics`)).json()
+  const [top] = [...body.rooms].sort((a, b) => b.clientCount - a.clientCount)
+  return top?.roomId // absent for a private room
+}
+// #endregion metrics-response
