@@ -149,11 +149,23 @@ the script leaves `latest` on it and alphas move only `alpha`. Pass
 `--no-latest` (`bun scripts/publish.ts --tag alpha --no-latest`) to skip the
 step.
 
-If the step fails partway, everything is already published; move the rest by
-hand:
+**Two-factor auth.** `bun publish` signs in through the browser, but each
+`npm dist-tag` needs a one-time password. Pass the current code from your
+authenticator, and run the command as soon as you've read it (a code lasts
+about 30 seconds, which covers all eleven packages):
 
 ```sh
-bunx npm dist-tag add @bungohan/<package>@<version> latest
+bun run --silent publish:alpha --otp=123456   # --silent: bun run doesn't echo the code
+```
+
+Without `--otp`, npm asks for a code in the terminal for each package.
+
+If the `latest` step fails partway (a code that expired, say), everything
+is already published. Get a fresh code and move just `latest`. It skips the
+packages that already point at this version:
+
+```sh
+bun run --silent publish:latest --otp=123456
 ```
 
 Check one:
