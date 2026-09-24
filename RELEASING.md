@@ -68,9 +68,10 @@ Every published package moves to the same version, and the exact
 bun run version 0.1.0-alpha.2     # writes the manifests; --dry-run to preview
 ```
 
-It also rewrites the version named in `docs/getting-started.md`,
-`packages/core/README.md` and `packages/client-js/README.md` ("Published at
-`…`"). The READMEs ship in the tarballs and npm renders them from there, so
+It also rewrites the version named in `README.md`,
+`docs/getting-started.md`, `packages/core/README.md` and
+`packages/client-js/README.md` (the list is `VERSION_NOTES` in
+`scripts/packages.ts`). The READMEs ship in the tarballs and npm renders them from there, so
 they have to be right before step 5, not after. `scripts/release-docs.test.ts`
 fails if one of them drifts from the manifests.
 

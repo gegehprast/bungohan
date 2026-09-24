@@ -48,6 +48,7 @@ export const REPO_URL = "https://github.com/gegehprast/bungohan"
  * manifests (the READMEs ship in the tarballs, so npm shows what they say).
  */
 export const VERSION_NOTES = [
+  "README.md",
   "docs/getting-started.md",
   "packages/core/README.md",
   "packages/client-js/README.md",
