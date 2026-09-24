@@ -26,6 +26,7 @@ export {
   Client,
   type ClientStatus,
   Connection,
+  type JoinedBy,
   type RemoteSeat,
 } from "./client"
 export {

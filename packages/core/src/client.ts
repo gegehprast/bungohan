@@ -96,6 +96,20 @@ export type ClientStatus =
   | "left"
 
 /**
+ * How a seat was taken (`client.joinedBy`). Set by the server, so a room
+ * can rely on it; the client can't claim another.
+ */
+export type JoinedBy =
+  /** A client consumed a reservation (`matchMaker.reserve…`). */
+  | "reservation"
+  /** A client joined an existing room: by id, or found by matchmaking. */
+  | "join"
+  /** A client's join created the room. */
+  | "create"
+  /** Server code seated it with `room.join(client)` (a bot, a test). */
+  | "server"
+
+/**
  * A client's seat in one room: what the room's hooks and message handlers
  * receive. The same object survives a reconnection: `sessionId` is
  * stable, only `connection` changes. Use `sessionId` (or `id`, the same
@@ -104,6 +118,14 @@ export type ClientStatus =
 export class Client {
   /** Stable for the life of the seat, across reconnections. */
   public readonly sessionId: string
+  /**
+   * How the seat was taken: from a reservation, by joining an existing
+   * room (by id or through matchmaking), by a join that created the room,
+   * or by server code. Set before `onAuth` runs, so a room that admits
+   * only players its lobby placed checks `joinedBy === "reservation"`
+   * there. A reconnection keeps the seat, and with it this value.
+   */
+  public readonly joinedBy: JoinedBy
   /** Data returned by `onAuth` (`{}` when it returned `true`). */
   public auth: Record<string, unknown> = {}
   /** Free for game code. */
@@ -132,9 +154,14 @@ export class Client {
   /** @internal Metrics; undefined when metrics are off. */
   public _stats: ClientStats | undefined
 
-  public constructor(sessionId: string, connection?: Connection) {
+  public constructor(
+    sessionId: string,
+    connection?: Connection,
+    joinedBy: JoinedBy = "server",
+  ) {
     this.sessionId = sessionId
     this._connection = connection
+    this.joinedBy = joinedBy
   }
 
   /** Same as `sessionId`, which is the name to prefer. */

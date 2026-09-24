@@ -1,4 +1,5 @@
 import {
+  type Client,
   createString,
   defineContract,
   defineMessage,
@@ -138,3 +139,19 @@ export async function reserveInScheduled(matchId: string, rating: number) {
   )
 }
 // #endregion keys
+
+// #region reserved-only
+/**
+ * Only players the lobby placed. A room id can leak (a shared link, an
+ * old listing); a reservation can't be made up.
+ */
+export class PlacedMatchRoom extends Room {
+  protected static override async onAuth(client: Client) {
+    return client.joinedBy === "reservation"
+  }
+
+  protected override async onAuth(client: Client) {
+    return client.joinedBy === "reservation"
+  }
+}
+// #endregion reserved-only

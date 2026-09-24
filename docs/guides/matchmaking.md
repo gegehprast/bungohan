@@ -177,6 +177,34 @@ export async function findMatch(client: IBungohanClient) {
   options given at reservation time. The client's own options don't
   count.
 
+A seat taken from a reservation has `client.joinedBy === "reservation"`,
+set by the server, so a room that admits only players its lobby placed
+checks it:
+
+<!-- snippet: docs/examples/src/matchmaking.ts#reserved-only -->
+[`docs/examples/src/matchmaking.ts`](../examples/src/matchmaking.ts)
+
+```ts
+/**
+ * Only players the lobby placed. A room id can leak (a shared link, an
+ * old listing); a reservation can't be made up.
+ */
+export class PlacedMatchRoom extends Room {
+  protected static override async onAuth(client: Client) {
+    return client.joinedBy === "reservation"
+  }
+
+  protected override async onAuth(client: Client) {
+    return client.joinedBy === "reservation"
+  }
+}
+```
+<!-- /snippet -->
+
+`joinedBy` is otherwise `"join"` (an existing room, by id or through
+matchmaking), `"create"` (the join created the room) or `"server"`
+(`room.join(client)`). A reconnection keeps the seat's value.
+
 Concurrent `reserve` calls need no queue: like `joinOrCreate`, one that
 arrives while another is creating a room waits for that room, and takes a
 seat in it if one is left.
@@ -289,7 +317,9 @@ the seat and hand the client the reservation.
 `matchMaker.createRoom(RoomClass, createOptions)` creates a room nobody
 has joined yet, such as a lobby at startup. A room that nobody ever
 joins stays until it's disposed, and `autoDispose` only applies once it has
-had a seat. `matchMaker.joinOrCreate` and `joinRoom` return a room
+had a seat. A join that fails (refused by `onAuth`, say) doesn't count:
+it leaves the room as it was, so a stranger with the id can't get it
+disposed. `matchMaker.joinOrCreate` and `joinRoom` return a room
 without seating anyone, and `removeRoom(id)` disposes one.
 `getAllRooms()`, `getRoom(id)`, `getRoomCount()` and `getClientCount()`
 are about this process only.

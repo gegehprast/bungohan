@@ -1382,7 +1382,7 @@ export class BungohanServer {
           if (checked.isErr()) return checked
           const joinOptions = this._readOptions(room, options)
           if (joinOptions.isErr()) return joinOptions
-          const client = new Client(nanoid(12), connection)
+          const client = new Client(nanoid(12), connection, "join")
           return local(
             this._joinExisting(
               connection,
@@ -1492,7 +1492,7 @@ export class BungohanServer {
             await room._readyPromise
             continue
           }
-          const client = new Client(nanoid(12), connection)
+          const client = new Client(nanoid(12), connection, "join")
           return local(
             this._joinExisting(connection, room, client, joinOptions, false),
           )
@@ -1600,7 +1600,7 @@ export class BungohanServer {
       return err(this._error("INVALID_OPTIONS", roomOptions.error.message))
     }
     // Create: the static onAuth decides before the room exists.
-    const client = new Client(nanoid(12), connection)
+    const client = new Client(nanoid(12), connection, "create")
     const auth = await Room._authorizeCreate(
       type.ctor,
       client,
@@ -1679,7 +1679,7 @@ export class BungohanServer {
     const { room, reservation, options } = taken.value
     const checked = this._checkRoom(connection, room, hash)
     if (checked.isErr()) return checked
-    const client = new Client(reservation.sessionId, connection)
+    const client = new Client(reservation.sessionId, connection, "reservation")
     return this._joinExisting(connection, room, client, options, true, ref)
   }
 
@@ -2097,7 +2097,7 @@ export class BungohanServer {
         if (checked.isErr()) return checked
         const joinOptions = this._readOptions(room, options)
         if (joinOptions.isErr()) return joinOptions
-        const client = new Client(nanoid(12), connection)
+        const client = new Client(nanoid(12), connection, "join")
         return this._joinExisting(
           connection,
           room,

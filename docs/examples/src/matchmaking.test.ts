@@ -6,6 +6,7 @@ import {
   MatchState,
   matchContract,
   openMatches,
+  PlacedMatchRoom,
   reserveInBand,
   reserveInFullest,
   reserveInScheduled,
@@ -92,4 +93,18 @@ test("a key names one room", async () => {
   const third = await reserveInScheduled("final-7", 1200)
   expect(third.isErr() && third.error.code).toBe("ROOM_FULL")
   expect(h.server.getMatchMaker().getRoom(first.roomId)?.key).toBe("final-7")
+})
+
+test("a room can admit only players with a reservation", async () => {
+  h = await createTestHarness({
+    rooms: { placed: PlacedMatchRoom },
+    client: { pingInterval: 0, logger: { warn() {}, error() {} } },
+  })
+  const mm = h.server.getMatchMaker()
+  const room = (await mm.createRoom("placed")).unwrap()
+  const direct = await (await h.connect()).joinById(room.id)
+  expect(direct.isErr() && direct.error.code).toBe("AUTH_FAILED")
+  const reservation = (await mm.reserveById(room.id)).unwrap()
+  const placed = await (await h.connect()).consumeReservation(reservation)
+  expect(placed.isOk()).toBe(true)
 })

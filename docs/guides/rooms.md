@@ -77,6 +77,10 @@ export class GuildRoom extends Room<GuildState> {
   check it once in the server's
   [`authenticate`](#authenticating-a-connection-once) instead: it runs
   once per connection, and every join waits for it before either hook.
+- `client.joinedBy` says how the seat was taken: `"reservation"`,
+  `"join"`, `"create"` or `"server"`. The server sets it, so `onAuth`
+  can rely on it, e.g. to admit only players a lobby placed
+  ([matchmaking](matchmaking.md#reservations)).
 - `onAuth` runs for every join: each room a connection joins, and each
   reservation consumed. It doesn't run when a client
   [resumes a held seat](#reconnection); the reconnection token proves

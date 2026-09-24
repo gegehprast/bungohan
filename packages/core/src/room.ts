@@ -1046,7 +1046,15 @@ export abstract class Room<
     this._unbind(client)
     client._status = "left"
     client._queue = undefined
-    this._checkEmpty()
+    // A join that never completed empties the room only if the room was
+    // there for it: it created the room, or it used the reservation that
+    // was keeping the room. A refused join into an existing room (by id,
+    // or a bot's) leaves it as it was: otherwise anyone with the id of a
+    // room made by `createRoom` could dispose it with one join its onAuth
+    // turns down.
+    if (client.joinedBy === "create" || client.joinedBy === "reservation") {
+      this._checkEmpty()
+    }
   }
 
   /** @internal Instance `onAuth`. */
