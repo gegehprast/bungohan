@@ -75,7 +75,13 @@ It also rewrites the version named in `README.md`,
 they have to be right before step 5, not after. `scripts/release-docs.test.ts`
 fails if one of them drifts from the manifests.
 
-### 2. Verify and commit
+### 2. Write the release notes, verify and commit
+
+Rewrite `release_notes.md` for this version: what changed since the last
+tag (`git log --oneline v<previous>..HEAD`), grouped by package, with
+breaking changes first and a compare link at the end. It's what the
+GitHub release shows (step 7), so write it for people using the packages,
+not for people working on the repo.
 
 ```sh
 bun run verify
@@ -90,7 +96,7 @@ release notes should say so.
 Commit the bump on its own, before publishing: it's the commit step 6 tags,
 so the tag points at manifests that carry the version that went to npm.
 Feature work belongs in earlier commits, and `-a` is only safe when the bumped
-manifests are the sole changes in the tree.
+manifests and `release_notes.md` are the sole changes in the tree.
 
 ### 3. Build, pack and smoke-test
 
@@ -197,3 +203,16 @@ git push origin main --tags
 
 If a tag was created too early and hasn't been pushed, delete it with
 `git tag -d v0.1.0-alpha.2` and create it again on the bump commit.
+
+### 7. Publish the GitHub release
+
+A prerelease, from the tag, with the notes from step 2:
+
+```sh
+gh release create v0.1.0-alpha.2 --prerelease \
+  --title "v0.1.0-alpha.2" --notes-file release_notes.md
+```
+
+Check the notes' compare link names the previous tag and this one. Fix a
+typo afterwards with `gh release edit v0.1.0-alpha.2 --notes-file
+release_notes.md`.
