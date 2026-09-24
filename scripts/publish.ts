@@ -5,6 +5,12 @@
  *     bun run publish:alpha        # the real thing, on the "alpha" dist-tag
  *     bun scripts/publish.ts --tag latest
  *
+ * A prerelease published on another tag also moves `latest` to it, as long
+ * as no stable version exists: npm won't delete `latest`, so otherwise a
+ * plain `bun add @bungohan/core` keeps installing the first alpha. Pass
+ * `--no-latest` to skip that. Once a stable version is out, `latest` stays on
+ * it and alphas only move their own tag.
+ *
  * It publishes `.pack/*.tgz` — the tarballs `bun run pack` produced and
  * `bun run check:pack` proved — never a package directory. A directory would
  * be packed by `bun publish` itself, which does not apply `publishConfig`,
@@ -20,10 +26,13 @@ import { PUBLISHED, ROOT, version } from "./packages"
 
 const args = process.argv.slice(2)
 const dryRun = args.includes("--dry-run")
+const moveLatest = !args.includes("--no-latest")
 const tag = args[args.indexOf("--tag") + 1]
 
 if (!args.includes("--tag") || tag === undefined || tag.startsWith("-")) {
-  console.error("usage: bun scripts/publish.ts --tag <dist-tag> [--dry-run]")
+  console.error(
+    "usage: bun scripts/publish.ts --tag <dist-tag> [--dry-run] [--no-latest]",
+  )
   process.exit(1)
 }
 
@@ -85,6 +94,63 @@ for (const { name, path } of tarballs) {
   }
   console.log("")
 }
+
+/** Whether any stable (non-prerelease) version of the packages is on npm. */
+async function stableExists(): Promise<boolean | undefined> {
+  const proc = Bun.spawn(
+    ["bunx", "npm", "view", "@bungohan/core", "versions", "--json"],
+    { cwd: ROOT, stdout: "pipe", stderr: "ignore" },
+  )
+  const [out, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    proc.exited,
+  ])
+  if (code !== 0) return undefined
+  const parsed: unknown = JSON.parse(out)
+  const versions = Array.isArray(parsed) ? parsed : [parsed]
+  return versions.some((v) => typeof v === "string" && !v.includes("-"))
+}
+
+async function pointLatest(): Promise<void> {
+  if (!moveLatest || tag === "latest" || !released.includes("-")) return
+  const stable = await stableExists()
+  if (stable === undefined && dryRun) {
+    console.log("(couldn't read the published versions; listing anyway)")
+  } else if (stable === undefined) {
+    console.error(
+      "couldn't read the published versions, so `latest` wasn't moved. " +
+        "See RELEASING.md step 5 to move it by hand.",
+    )
+    process.exit(1)
+  }
+  if (stable) {
+    console.log("a stable version is published; `latest` stays on it\n")
+    return
+  }
+  console.log(`no stable version yet: pointing "latest" at ${released}\n`)
+  for (const { name } of tarballs) {
+    const spec = `@bungohan/${name}@${released}`
+    const cmd = ["bunx", "npm", "dist-tag", "add", spec, "latest"]
+    console.log(`$ ${cmd.join(" ")}`)
+    if (dryRun) continue
+    const code = await Bun.spawn(cmd, {
+      cwd: ROOT,
+      stdout: "inherit",
+      stderr: "inherit",
+    }).exited
+    if (code !== 0) {
+      console.error(
+        `\nmoving "latest" failed at @bungohan/${name} (exit ${code}). ` +
+          "Everything is published; re-run the dist-tag commands from here " +
+          "on by hand (RELEASING.md step 5).",
+      )
+      process.exit(1)
+    }
+  }
+  console.log("")
+}
+
+await pointLatest()
 
 console.log(
   dryRun

@@ -8,7 +8,7 @@ deferred C# and Godot clients — and every app and docs example is `private`.
 |---|---|
 | Published | result, types, state, schema, serializer, transport, store, backplane, core, client-js, testing |
 | First version | `0.1.0-alpha.1` |
-| dist-tag | `alpha` |
+| dist-tag | `alpha`, and `latest` too until a stable version exists |
 | Order | the order in [`scripts/packages.ts`](scripts/packages.ts) — a package is published after everything it depends on |
 
 ## How it is built and packed
@@ -129,7 +129,8 @@ exist on your account or org.
 
 ```sh
 bunx npm login
-bun run publish:alpha             # bun publish <tarball> --tag alpha --access public, in order
+bun run publish:alpha             # bun publish <tarball> --tag alpha --access public, in order,
+                                  # then points latest at the same version
 ```
 
 Publish **in dependency order** — the order `scripts/packages.ts` lists.
@@ -137,15 +138,28 @@ npm rejects a package whose dependencies don't exist yet only at install
 time, not at publish time, so a wrong order leaves a window in which
 `bun add @bungohan/core` fails.
 
-> The very first version of a brand-new package is given the `latest`
-> dist-tag by the registry whatever `--tag` says. That is npm's behaviour,
-> not ours, and it only affects publish #1. From the second release on,
-> `--tag alpha` keeps `latest` where it is.
+Then, while the release is a prerelease and no stable version is on npm,
+the script points `latest` at it too (`npm dist-tag add … latest`, per
+package). npm won't delete `latest`, so without this a plain `bun add
+@bungohan/core` would keep installing whichever alpha got `latest` first,
+and the npm page would show that alpha's README. `alpha` still moves as
+before, and it's what the docs install. Once a stable version is published,
+the script leaves `latest` on it and alphas move only `alpha`. Pass
+`--no-latest` (`bun scripts/publish.ts --tag alpha --no-latest`) to skip the
+step.
+
+If the step fails partway, everything is already published; move the rest by
+hand:
+
+```sh
+bunx npm dist-tag add @bungohan/<package>@<version> latest
+```
 
 Check one:
 
 ```sh
-bunx npm view @bungohan/core@0.1.0-alpha.1
+bunx npm view @bungohan/core@0.1.0-alpha.2
+bunx npm view @bungohan/core dist-tags   # alpha and latest both on it
 ```
 
 ### 6. Tag the release commit
