@@ -1,6 +1,6 @@
 {
   "name": "@bungohan/store",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "description": "Key-value store for Bungohan, with in-memory and Redis implementations",
   "keywords": [
     "bungohan",

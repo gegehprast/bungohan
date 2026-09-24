@@ -9,7 +9,7 @@ own. React hooks are at `@bungohan/client-js/react`.
 bun add @bungohan/client-js@alpha @bungohan/schema@alpha
 ```
 
-Published at `0.1.0-alpha.2` on the `alpha` tag. `react` (18 or newer)
+Published at `0.1.0-alpha.3` on the `alpha` tag. `react` (18 or newer)
 is an optional peer dependency, needed only for
 `@bungohan/client-js/react`.
 

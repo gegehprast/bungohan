@@ -52,7 +52,7 @@ Read the [documentation](docs/README.md). The
 talking in three files, and the [tutorial](docs/tutorial.md) builds a small game
 from scratch.
 
-Bungohan is at `0.1.0-alpha.2`, published on the `alpha` tag. The API can
+Bungohan is at `0.1.0-alpha.3`, published on the `alpha` tag. The API can
 still change between alpha releases.
 
 ```sh
