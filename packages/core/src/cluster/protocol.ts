@@ -303,6 +303,11 @@ export interface JoinForwardRequest extends Envelope {
   options: unknown
   hash: string | null
   context: WireContext
+  /**
+   * The edge's `connection.auth`, from its `authenticate` (spec §10.1).
+   * Absent from a process that predates it, which means `{}`.
+   */
+  auth?: Record<string, unknown>
 }
 
 export interface JoinForwardReply extends Envelope {

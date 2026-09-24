@@ -146,10 +146,14 @@ Sec-WebSocket-Protocol: bungohan.v1
 - The version string is **`bungohan.v1`**. A client supporting several
   versions offers them all, most preferred first.
 - An authentication token MAY be passed as the `token` query parameter or as
-  `Authorization: Bearer <token>`. The server hands it to the room's
-  authentication hook; the protocol itself doesn't interpret it. Browsers
+  `Authorization: Bearer <token>`. The server hands it to its
+  authentication hooks; the protocol itself doesn't interpret it. Browsers
   can't set headers on a WebSocket, so the query parameter is the portable
-  choice.
+  choice. A server MAY check it once per connection and treat it as spent
+  afterwards, so a client that reconnects SHOULD be able to supply a
+  fresh one for each connection (the reference client takes a function
+  for this). A server that refuses the credentials does not close the
+  connection: it answers each `JOIN` with `AUTH_FAILED` (§8.1).
 
 ### 2.2 Negotiation
 
@@ -652,7 +656,7 @@ server.
 | `ROOM_LOCKED` | mode 3: the room is locked |
 | `ROOM_FULL` | mode 3: the room is full |
 | `ALREADY_JOINED` | this connection already holds a seat in that room |
-| `AUTH_FAILED` | the room refused the client |
+| `AUTH_FAILED` | the room refused the client, or the server refused this connection's credentials (then every `JOIN` on the connection, in any mode, gets it) |
 | `JOIN_FAILED` | the room's code failed while creating the room or admitting the client (no details are given) |
 | `RATE_LIMITED` | too many `JOIN`s on this connection (§8.4); the connection stays open and a later attempt may succeed |
 | `INVALID_TOKEN` | mode 4: unknown token, or the seat is no longer held |

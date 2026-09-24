@@ -46,6 +46,15 @@ export class Connection {
   public _nextRoomRef = 1
   /** @internal */
   public _open = true
+  /** @internal See `auth`. */
+  public _auth: Record<string, unknown> | undefined = {}
+  /**
+   * @internal Settles when `authenticate` has decided; undefined when
+   * nothing is pending. Every JOIN awaits it (spec §10.1).
+   */
+  public _admitting: Promise<void> | undefined
+  /** @internal Set once `authenticate` refused (or threw). */
+  public _refused: "AUTH_FAILED" | "JOIN_FAILED" | undefined
 
   public constructor(id: string, context: ConnectionContext, now: number) {
     this.id = id
@@ -56,6 +65,17 @@ export class Connection {
   /** False once the transport reported the close. */
   public get open(): boolean {
     return this._open
+  }
+
+  /**
+   * What the server's `authenticate` option admitted this connection
+   * with: the object it returned, or `{}` when it returned `true` or the
+   * server has no `authenticate`. `undefined` while `authenticate` is
+   * still running, and for good once it refused the connection or threw.
+   * A room's `onAuth` can read it as `client.connection?.auth`.
+   */
+  public get auth(): Record<string, unknown> | undefined {
+    return this._auth
   }
 
   /** Clients (room seats) this connection currently holds. */

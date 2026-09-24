@@ -93,9 +93,11 @@ export interface RoomHost {
 type Handler = (client: Client, message: unknown) => unknown
 
 /**
- * What `onAuth` (static or instance) returns: `false` refuses the join
- * (`AUTH_FAILED`), `true` admits it, and an object admits it and becomes
- * `client.auth` and `onJoin`'s third argument.
+ * What `onAuth` (static or instance) and the server's `authenticate`
+ * return: `false` refuses (`AUTH_FAILED`), `true` admits, and an object
+ * admits and becomes the auth data. From `onAuth`, that is `client.auth`
+ * and `onJoin`'s third argument, and `true` gives the seat a copy of
+ * `connection.auth`.
  */
 export type AuthResult = Record<string, unknown> | boolean
 
@@ -286,7 +288,9 @@ export abstract class Room<
 
   /**
    * Runs only when a join *creates* the room, before `onCreate`. Return
-   * `false` to refuse, or an object to become `client.auth`. `options` are
+   * `false` to refuse, an object to become `client.auth`, or `true` (the
+   * default) to use a copy of `client.connection?.auth`, what the server's
+   * `authenticate` admitted the connection with. `options` are
    * the joiner's options, as `onJoin` gets them (a static method can't see
    * the class's contract type, so declare the parameter's type yourself).
    */
@@ -300,7 +304,7 @@ export abstract class Room<
 
   /**
    * Runs when joining an existing room (including through a reservation).
-   * `options` are typed by the contract's join options and were decoded
+   * Returns as the static `onAuth` does. `options` are typed by the contract's join options and were decoded
    * against them: their shape is guaranteed, their values are
    * still the client's, so check game rules (a name's length) here or in
    * `onJoin`.
@@ -935,7 +939,9 @@ export abstract class Room<
       )
     })
     if (!ran) return err(this._error("JOIN_FAILED", "onAuth threw"))
-    return authOutcome(result, (code, message) => this._error(code, message))
+    return authOutcome(result, client, (code, message) =>
+      this._error(code, message),
+    )
   }
 
   /** @internal Static `onAuth` of a room class, for a join that creates a room. */
@@ -948,7 +954,9 @@ export abstract class Room<
     makeError: (code: ErrorCode, message: string) => BungohanError,
   ): Promise<Result<Record<string, unknown>, BungohanError>> {
     const hook: unknown = Reflect.get(ctor, "onAuth")
-    if (typeof hook !== "function") return ok({})
+    if (typeof hook !== "function") {
+      return authOutcome(true, client, makeError)
+    }
     try {
       const result: unknown = await hook.call(
         ctor,
@@ -956,7 +964,7 @@ export abstract class Room<
         asOptions(options),
         context,
       )
-      return authOutcome(result, makeError)
+      return authOutcome(result, client, makeError)
     } catch (error) {
       report(error)
       return err(makeError("JOIN_FAILED", "onAuth threw"))
@@ -1775,15 +1783,32 @@ function addHandler(
   }
 }
 
+/**
+ * @internal What an `AuthResult` admits with: the object, a copy of
+ * `inherited` for `true`, or `undefined` for a refusal (any falsy value,
+ * and anything else that isn't a plain object).
+ */
+export function admission(
+  result: unknown,
+  inherited: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  if (result === true) return { ...inherited }
+  if (typeof result === "object" && result !== null && !Array.isArray(result)) {
+    return result as Record<string, unknown>
+  }
+  return undefined
+}
+
+/** `true` inherits the seat's connection's `auth` (spec §10.1). */
 function authOutcome(
   result: unknown,
+  client: Client,
   makeError: (code: ErrorCode, message: string) => BungohanError,
 ): Result<Record<string, unknown>, BungohanError> {
-  if (result === true) return ok({})
-  if (typeof result === "object" && result !== null && !Array.isArray(result)) {
-    return ok(result as Record<string, unknown>)
-  }
-  return err(makeError("AUTH_FAILED", "authentication failed"))
+  const auth = admission(result, client.connection?.auth ?? {})
+  return auth === undefined
+    ? err(makeError("AUTH_FAILED", "authentication failed"))
+    : ok(auth)
 }
 
 /** Creates a seat for a new session (used by the server and by `Room.join`). */

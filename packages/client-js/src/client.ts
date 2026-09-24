@@ -68,12 +68,26 @@ export interface ClientLogger {
 }
 
 // #region client-options
+/** Fetches the `token` for the next connection (see `ClientOptions.token`). */
+export type TokenProvider = () =>
+  | string
+  | undefined
+  | Promise<string | undefined>
+
 /** `createBungohanClient`'s options. Only `url` is required. */
 export interface ClientOptions {
   /** Server URL, e.g. `wss://game.example.com`. */
   url: string
-  /** Sent as `?token=` (the server's `ConnectionContext.token`). */
-  token?: string
+  /**
+   * A credential, sent as `?token=` (the server's `context.token`). A
+   * function is called before every connection the client opens, the
+   * first and each automatic reconnection, so each can carry a fresh
+   * one-time ticket: a fixed string would already be spent when the
+   * client reconnects. If it throws, rejects or returns something other
+   * than a string or `undefined`, that attempt fails as if the server were
+   * unreachable. See docs/guides/client.md#one-time-tokens.
+   */
+  token?: string | TokenProvider
   /**
    * Open the connection as soon as the client is created. Either way, a
    * join on a disconnected client connects first. Default `true`.
@@ -423,6 +437,26 @@ function parseHandshake(value: unknown): JoinHandshake | undefined {
   return [roomId, roomType, sessionId, token, hash, codec, client, server]
 }
 
+/** Calls a token provider, turning a throw or a bad value into an error. */
+async function fetchToken(
+  provider: TokenProvider,
+): Promise<Result<string | undefined, ClientError>> {
+  try {
+    const token: unknown = await provider()
+    if (token === undefined || typeof token === "string") return ok(token)
+    return err(
+      new ClientError(
+        "CONNECTION_FAILED",
+        `the token provider returned a ${typeof token}, not a string`,
+      ),
+    )
+  } catch (error) {
+    return err(
+      new ClientError("CONNECTION_FAILED", "the token provider failed", error),
+    )
+  }
+}
+
 /** Appends `?token=` to the URL, keeping any query it already has. */
 function withToken(url: string, token: string | undefined): string {
   if (token === undefined) return url
@@ -446,6 +480,9 @@ function splitOnce(value: string, at: string): [string, string | undefined] {
  */
 export class BungohanClient implements IBungohanClient {
   private readonly _url: string
+  private readonly _token: string | TokenProvider | undefined
+  /** Bumped per token fetch; a fetch that isn't the latest is dropped. */
+  private _tokenFetch = 0
   private readonly _reconnection: ReconnectionOptions
   private readonly _serializer: ISerializer
   private readonly _codecs: ReadonlyMap<string, IStateCodec>
@@ -479,7 +516,8 @@ export class BungohanClient implements IBungohanClient {
   private readonly _onReconnect = new Set<() => void>()
 
   public constructor(options: ClientOptions) {
-    this._url = withToken(options.url, options.token)
+    this._url = options.url
+    this._token = options.token
     this._reconnection = { ...DEFAULT_RECONNECTION, ...options.reconnection }
     this._serializer = options.serializer ?? new MessagePackSerializer()
     const codecs = options.stateCodecs ?? [
@@ -989,10 +1027,29 @@ export class BungohanClient implements IBungohanClient {
   // --- internals: connection lifecycle -------------------------------------
 
   private _open(): void {
+    const token = this._token
+    if (typeof token !== "function") {
+      this._openSocket(withToken(this._url, token))
+      return
+    }
+    const attempt = ++this._tokenFetch
+    void fetchToken(token).then((fetched) => {
+      // disconnect() (and maybe a new connect()) won while it ran.
+      if (attempt !== this._tokenFetch || this._state === "disconnected") return
+      if (fetched.isErr()) {
+        this._logger.warn(fetched.error.message, fetched.error.context)
+        this._failedAttempt(fetched.error)
+        return
+      }
+      this._openSocket(withToken(this._url, fetched.value))
+    })
+  }
+
+  private _openSocket(url: string): void {
     // Declared before open(): a transport may report through the handlers
     // only after open() returns, and they must see the assignment below.
     let connection: Connection | undefined
-    const opened = this._transport.open(this._url, [PROTOCOL_VERSION], {
+    const opened = this._transport.open(url, [PROTOCOL_VERSION], {
       onOpen: () => {
         if (connection !== undefined) this._opened(connection)
       },

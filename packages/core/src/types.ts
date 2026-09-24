@@ -2,7 +2,7 @@ import type { IBackplane } from "@bungohan/backplane"
 import type { ISerializer, IStateCodec } from "@bungohan/serializer"
 import type { Schema } from "@bungohan/state"
 import type { IStore } from "@bungohan/store"
-import type { ITransport } from "@bungohan/transport"
+import type { ConnectionContext, ITransport } from "@bungohan/transport"
 import type {
   Clock,
   Contract,
@@ -14,7 +14,7 @@ import type {
 import type { Client, Connection } from "./client"
 import type { HttpFallback } from "./http"
 import type { LoggerOptions } from "./logger"
-import type { Room } from "./room"
+import type { AuthResult, Room } from "./room"
 
 // #region server-options
 /** `createBungohanServer`'s options. Every field is optional. */
@@ -132,6 +132,25 @@ export interface ServerOptions {
   simulation?: { tickRate?: number; maxCatchUpSteps?: number }
   /** Default 20 Hz. */
   sync?: { tickRate?: number }
+  /**
+   * Checks a connection's credentials once, when it opens: the place to
+   * redeem a one-time login ticket, which `onAuth` (run for every join)
+   * would spend on the first join and refuse on the next. Return an
+   * object to admit the connection with it as `connection.auth`, `true`
+   * to admit it with `{}`, or `false` to refuse it.
+   *
+   * Every join on the connection waits for it. A refused connection stays
+   * open, but each of its joins fails with `AUTH_FAILED` (`JOIN_FAILED` if
+   * this threw; the error goes to `server.onError`). A room's `onAuth`
+   * that returns `true`, as the default one does, gives the seat a copy
+   * of `connection.auth` as `client.auth`. In cluster mode it runs only on
+   * the process holding the socket, and the result travels with each join
+   * to the room's process, so keep it serializable.
+   * See docs/guides/rooms.md#authenticating-a-connection-once.
+   */
+  authenticate?: (
+    context: ConnectionContext,
+  ) => AuthResult | Promise<AuthResult>
   /**
    * What SIGTERM/SIGINT do: optionally `drain()`, then `stop()`, then
    * `onShutdown`, then exit the process.
@@ -509,6 +528,7 @@ export type ErrorSource =
   | "protocol"
   | "callback"
   | "http"
+  | "authenticate"
 
 /** Second argument of `server.onError` callbacks. */
 export interface ErrorContext {

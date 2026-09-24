@@ -57,7 +57,7 @@ import {
   type RoomMetrics,
   type ServerMetrics,
 } from "./metrics"
-import { Room, type RoomHost } from "./room"
+import { admission, Room, type RoomHost } from "./room"
 import { RoomManager } from "./room-manager"
 import {
   type RoomTypeDef,
@@ -873,7 +873,32 @@ export class BungohanServer {
       new ConnectionLimiter(this._limits, this._clock.now()),
     )
     if (this._metrics !== undefined) this._metrics.totalConnections++
+    const authenticate = this._options.authenticate
+    if (authenticate !== undefined) {
+      connection._auth = undefined
+      connection._admitting = this._admit(connection, authenticate)
+    }
     this._emit(this._onConnect, connection)
+  }
+
+  /**
+   * Runs `authenticate` once for a connection (spec §10.1). Its outcome
+   * stays on the connection: every JOIN reads it, none reruns it.
+   */
+  private async _admit(
+    connection: Connection,
+    authenticate: NonNullable<ServerOptions["authenticate"]>,
+  ): Promise<void> {
+    try {
+      const auth = admission(await authenticate(connection.context), {})
+      if (auth === undefined) connection._refused = "AUTH_FAILED"
+      else connection._auth = auth
+    } catch (error) {
+      this._report(error, { source: "authenticate", connection })
+      connection._refused = "JOIN_FAILED"
+    } finally {
+      connection._admitting = undefined
+    }
   }
 
   private _handleDisconnect(id: string): void {
@@ -1098,6 +1123,18 @@ export class BungohanServer {
         requestId,
         "INVALID_OPTIONS",
         "malformed JOIN",
+      )
+      return
+    }
+    if (connection._admitting !== undefined) await connection._admitting
+    if (connection._refused !== undefined) {
+      this._joinError(
+        connection,
+        requestId,
+        connection._refused,
+        connection._refused === "AUTH_FAILED"
+          ? "the connection was not authenticated"
+          : "authenticate threw",
       )
       return
     }
@@ -2034,6 +2071,8 @@ export class BungohanServer {
       unpackContext(request.context),
       this._clock.now(),
     )
+    // Authenticated where the socket is; never rerun here (spec §10.1).
+    connection._auth = request.auth ?? {}
     this._remoteConnections.set(key, connection)
     return connection
   }
@@ -2156,6 +2195,7 @@ export class BungohanServer {
       options,
       hash,
       context: packContext(connection.context),
+      auth: connection._auth ?? {},
     })
     if (reply.isErr()) {
       return err(this._error(reply.error.code, reply.error.message))

@@ -414,6 +414,7 @@ export class ClusterNode {
       options: unknown
       hash: string | null
       context: WireContext
+      auth?: Record<string, unknown>
     },
   ): Promise<Result<{ roomId: string; sessionId: string }, BungohanError>> {
     const { rid, answer } = this._pending.single<{

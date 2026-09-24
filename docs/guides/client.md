@@ -14,7 +14,7 @@ React.
 export function connect(url: string, token?: string): BungohanClient {
   return createBungohanClient({
     url, // ws:// or wss://
-    token, // sent as ?token=…, read by the server's onAuth
+    token, // sent as ?token=…, read by authenticate and onAuth
     reconnection: { maxAttempts: 5 }, // the rest keeps its defaults
   })
 }
@@ -28,6 +28,36 @@ disconnected client connects first either way. The options and their
 defaults are in the [reference](../reference.md#clientoptions).
 
 `client.disconnect()` leaves every room and closes the connection.
+
+### One-time tokens
+
+A `token` string is sent unchanged on every connection, reconnections
+included. If the server redeems it only once (see
+[authenticating a connection once](rooms.md#authenticating-a-connection-once)),
+pass a function instead. The client calls it before each connection:
+
+<!-- snippet: docs/examples/src/authenticate.client.ts#ticket -->
+[`docs/examples/src/authenticate.client.ts`](../examples/src/authenticate.client.ts)
+
+```ts
+/** Asks your web backend for a one-time game ticket. */
+export const fetchTicket: TokenProvider = async () => {
+  const response = await fetch("/api/game-ticket", { method: "POST" })
+  return response.ok ? await response.text() : undefined
+}
+
+export function connectWithTickets(url: string): BungohanClient {
+  // Called before every connection, reconnections included, so each one
+  // carries a ticket that hasn't been spent yet.
+  return createBungohanClient({ url, token: fetchTicket })
+}
+```
+<!-- /snippet -->
+
+If it throws, rejects or returns anything but a string or `undefined`,
+that attempt fails like an unreachable server: a first `connect()`
+resolves with `CONNECTION_FAILED`, and a reconnection counts it as one
+attempt and backs off.
 
 ### Leaving with the page
 

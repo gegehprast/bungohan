@@ -62,8 +62,10 @@ export class GuildRoom extends Room<GuildState> {
   `Authorization: Bearer` header).
   `context` also has `ip`, `headers` and `searchParams`. Its type,
   `ConnectionContext`, comes from `@bungohan/core`.
-- Return `false` to refuse (the client gets `AUTH_FAILED`), `true` to
-  admit, or an object to admit *and* attach it as `client.auth`.
+- Return `false` to refuse (the client gets `AUTH_FAILED`), an object to
+  admit *and* attach it as `client.auth`, or `true` to admit with a copy
+  of the connection's auth ([below](#authenticating-a-connection-once);
+  `{}` if the server doesn't set it).
 - **The static `onAuth`** runs only when the join would *create* the
   room, before `onCreate`, since there is no instance yet. **The
   instance `onAuth`** runs for joins into an existing room, where it can
@@ -73,6 +75,80 @@ export class GuildRoom extends Room<GuildState> {
 
 The framework verifies nothing itself: checking tokens, rate-limiting
 logins and serving over `wss://` in production are yours to do.
+
+### Authenticating a connection once
+
+`onAuth` runs for every join, so a credential that works only once (a
+login ticket your web backend issued, redeemed with a Redis `GETDEL`)
+would be spent by a player's first room and refused by the next. Check
+it once per connection instead, with the server's `authenticate` option:
+
+<!-- snippet: docs/examples/src/authenticate.ts#authenticate -->
+[`docs/examples/src/authenticate.ts`](../examples/src/authenticate.ts)
+
+```ts
+/** Admits a connection whose `?token=` is an unused ticket, once. */
+export function redeemTicket(tickets: Tickets) {
+  return async (context: ConnectionContext): Promise<AuthResult> => {
+    if (context.token === undefined) return false
+    const userId = await tickets.redeem(context.token)
+    return userId === undefined ? false : { userId }
+  }
+}
+
+export function createGameServer(tickets: Tickets) {
+  return createBungohanServer({ authenticate: redeemTicket(tickets) })
+}
+```
+<!-- /snippet -->
+
+- It runs once, when a connection opens, and gets the same `context` as
+  `onAuth`. It returns what `onAuth` returns: an object (kept as
+  `connection.auth`), `true` (`{}`) or `false`.
+- Every join on the connection waits for it. If it refused, each join
+  fails with `AUTH_FAILED`, and with `JOIN_FAILED` if it threw (reported
+  to `server.onError` with `source: "authenticate"`). The connection
+  stays open; the client reconnects to try other credentials.
+- A room's `onAuth` returning `true`, which is what the default one
+  does, gives the seat a copy of `connection.auth` as `client.auth`. A
+  room that needs more reads `client.connection?.auth`:
+
+<!-- snippet: docs/examples/src/authenticate.ts#rooms -->
+[`docs/examples/src/authenticate.ts`](../examples/src/authenticate.ts)
+
+```ts
+/** No `onAuth`: every admitted connection may sit down. */
+export class TableRoom extends Room {
+  protected override async onJoin(client: Client): Promise<void> {
+    // A copy of what authenticate returned.
+    console.log(`${String(client.auth["userId"])} sat down`)
+  }
+}
+
+/** Checks the connection's user without touching the ticket again. */
+export class VipRoom extends Room {
+  public static vips = new Set(["ada"])
+
+  protected static override async onAuth(client: Client) {
+    const userId = client.connection?.auth?.["userId"]
+    // true: client.auth becomes a copy of the connection's auth.
+    return typeof userId === "string" && VipRoom.vips.has(userId)
+  }
+
+  protected override async onAuth(client: Client) {
+    return VipRoom.onAuth(client)
+  }
+}
+```
+<!-- /snippet -->
+
+- In [cluster mode](scaling.md) it runs on the process that holds the
+  socket, and its result travels with each join to the room's process,
+  so a ticket is redeemed once wherever the rooms are. Return plain,
+  serializable data.
+- A reconnection is a new connection. Give the client a token *provider*
+  so it fetches a fresh ticket each time
+  ([client guide](client.md#one-time-tokens)).
 
 ## Creating, joining, leaving
 

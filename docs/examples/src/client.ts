@@ -15,7 +15,7 @@ import {
 export function connect(url: string, token?: string): BungohanClient {
   return createBungohanClient({
     url, // ws:// or wss://
-    token, // sent as ?token=…, read by the server's onAuth
+    token, // sent as ?token=…, read by authenticate and onAuth
     reconnection: { maxAttempts: 5 }, // the rest keeps its defaults
   })
 }

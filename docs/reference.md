@@ -129,6 +129,25 @@ export interface ServerOptions {
   /** Default 20 Hz. */
   sync?: { tickRate?: number }
   /**
+   * Checks a connection's credentials once, when it opens: the place to
+   * redeem a one-time login ticket, which `onAuth` (run for every join)
+   * would spend on the first join and refuse on the next. Return an
+   * object to admit the connection with it as `connection.auth`, `true`
+   * to admit it with `{}`, or `false` to refuse it.
+   *
+   * Every join on the connection waits for it. A refused connection stays
+   * open, but each of its joins fails with `AUTH_FAILED` (`JOIN_FAILED` if
+   * this threw; the error goes to `server.onError`). A room's `onAuth`
+   * that returns `true`, as the default one does, gives the seat a copy
+   * of `connection.auth` as `client.auth`. In cluster mode it runs only on
+   * the process holding the socket, and the result travels with each join
+   * to the room's process, so keep it serializable.
+   * See docs/guides/rooms.md#authenticating-a-connection-once.
+   */
+  authenticate?: (
+    context: ConnectionContext,
+  ) => AuthResult | Promise<AuthResult>
+  /**
    * What SIGTERM/SIGINT do: optionally `drain()`, then `stop()`, then
    * `onShutdown`, then exit the process.
    */
@@ -279,12 +298,26 @@ export interface DefineRoomOptions {
 [`packages/client-js/src/client.ts`](../packages/client-js/src/client.ts)
 
 ```ts
+/** Fetches the `token` for the next connection (see `ClientOptions.token`). */
+export type TokenProvider = () =>
+  | string
+  | undefined
+  | Promise<string | undefined>
+
 /** `createBungohanClient`'s options. Only `url` is required. */
 export interface ClientOptions {
   /** Server URL, e.g. `wss://game.example.com`. */
   url: string
-  /** Sent as `?token=` (the server's `ConnectionContext.token`). */
-  token?: string
+  /**
+   * A credential, sent as `?token=` (the server's `context.token`). A
+   * function is called before every connection the client opens, the
+   * first and each automatic reconnection, so each can carry a fresh
+   * one-time ticket: a fixed string would already be spent when the
+   * client reconnects. If it throws, rejects or returns something other
+   * than a string or `undefined`, that attempt fails as if the server were
+   * unreachable. See docs/guides/client.md#one-time-tokens.
+   */
+  token?: string | TokenProvider
   /**
    * Open the connection as soon as the client is created. Either way, a
    * join on a disconnected client connects first. Default `true`.

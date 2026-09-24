@@ -280,7 +280,7 @@ reconnecting client finds nothing to resume and is told it left
 
 - Serve over `wss://`, with TLS terminated by your proxy or load
   balancer. The server speaks plain WebSocket on `transport.config.port`.
-- Verify tokens in `onAuth`: the framework doesn't.
+- Verify tokens in `authenticate` or `onAuth`: the framework doesn't.
 - Validate game rules in every message handler: the types are
   guaranteed, the values aren't.
 - Deploy client and server together. A stale client gets
