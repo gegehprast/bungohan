@@ -1,6 +1,6 @@
 {
   "name": "@bungohan/result",
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0-alpha.4",
   "description": "Result<T, E> for Bungohan: operations that can fail return a value, not a thrown exception",
   "keywords": [
     "bungohan",

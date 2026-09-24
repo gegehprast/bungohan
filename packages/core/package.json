@@ -1,6 +1,6 @@
 {
   "name": "@bungohan/core",
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0-alpha.4",
   "description": "Authoritative multiplayer game server for Bun: rooms, matchmaking, state sync and clustering",
   "keywords": [
     "bungohan",
@@ -64,7 +64,7 @@
     "nanoid": "catalog:"
   },
   "peerDependencies": {
-    "@bungohan/state": "0.1.0-alpha.3"
+    "@bungohan/state": "0.1.0-alpha.4"
   },
   "devDependencies": {
     "@bungohan/state": "workspace:*"

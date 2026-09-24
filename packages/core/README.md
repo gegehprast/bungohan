@@ -9,7 +9,7 @@ receive the state as compact binary patches.
 bun add @bungohan/core@alpha @bungohan/schema@alpha
 ```
 
-Requires Bun 1.3.3 or newer. Published at `0.1.0-alpha.3` on the
+Requires Bun 1.3.3 or newer. Published at `0.1.0-alpha.4` on the
 `alpha` tag; the API can still change between alpha releases.
 
 <!-- snippet: docs/examples/src/getting-started/server.ts#server -->

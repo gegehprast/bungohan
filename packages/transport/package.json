@@ -1,6 +1,6 @@
 {
   "name": "@bungohan/transport",
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0-alpha.4",
   "description": "WebSocket transport for Bungohan servers, built on Bun.serve()",
   "keywords": [
     "bungohan",
