@@ -134,6 +134,14 @@ bun run publish:alpha             # bun publish <tarball> --tag alpha --access p
                                   # then points latest at the same version
 ```
 
+**Re-running is safe and resumes.** Before each upload the script asks npm
+whether that version is already published, and skips it if so. After a
+failure (an expired one-time password, a network error), run the same
+command again and it carries on from the first package that isn't out yet.
+If a skipped package's published tarball differs from the local one (it
+was rebuilt after publishing), the script warns: npm can't replace a
+version, so bump it to ship the change.
+
 Publish **in dependency order** — the order `scripts/packages.ts` lists.
 npm rejects a package whose dependencies don't exist yet only at install
 time, not at publish time, so a wrong order leaves a window in which
@@ -151,8 +159,9 @@ step.
 
 **Two-factor auth.** `bun publish` signs in through the browser, but each
 `npm dist-tag` needs a one-time password. Pass the current code from your
-authenticator, and run the command as soon as you've read it (a code lasts
-about 30 seconds, which covers all eleven packages):
+authenticator, and run the command as soon as you've read it. A code lasts
+about 30 seconds and is used for both the uploads and the tag moves. If it
+expires partway, rerun with a fresh one: the finished steps are skipped.
 
 ```sh
 bun run --silent publish:alpha --otp=123456   # --silent: bun run doesn't echo the code

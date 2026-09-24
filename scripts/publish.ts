@@ -98,6 +98,22 @@ if (!latestOnly) {
 }
 
 for (const { name, path } of latestOnly ? [] : tarballs) {
+  // A re-run (after an expired one-time password, say) resumes: what an
+  // earlier run published is skipped, since npm refuses it anyway.
+  const published = await publishedIntegrity(name)
+  if (published !== undefined) {
+    const local = await integrityOf(path)
+    console.log(`@bungohan/${name}@${released} is already published; skipped`)
+    if (published !== local) {
+      console.warn(
+        "  warning: the local tarball differs from the published one " +
+          "(rebuilt since?). npm can't replace a version: bump it to ship " +
+          "the change.",
+      )
+    }
+    console.log("")
+    continue
+  }
   const cmd = [
     "bun",
     "publish",
@@ -131,12 +147,37 @@ for (const { name, path } of latestOnly ? [] : tarballs) {
     }
     console.error(
       `\n@bungohan/${name} failed (exit ${code}). The packages before it are ` +
-        "published; fix and re-run — publish:alpha is safe to repeat, npm " +
-        "refuses a version that already exists.",
+        "published. Fix it (with two-factor auth: get a fresh code) and " +
+        "run publish:alpha again: it skips what is already published.",
     )
     process.exit(1)
   }
   console.log("")
+}
+
+/**
+ * The published tarball's integrity if this version of the package is on
+ * npm, `undefined` if it isn't or the registry can't say (then the publish
+ * is attempted, and npm itself refuses a duplicate).
+ */
+async function publishedIntegrity(name: string): Promise<string | undefined> {
+  const proc = Bun.spawn(
+    ["bunx", "npm", "view", `@bungohan/${name}@${released}`, "dist.integrity"],
+    { cwd: ROOT, stdout: "pipe", stderr: "ignore" },
+  )
+  const [out, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    proc.exited,
+  ])
+  const integrity = out.trim()
+  return code === 0 && integrity !== "" ? integrity : undefined
+}
+
+/** A tarball's integrity, in the form npm reports it. */
+async function integrityOf(path: string): Promise<string> {
+  const bytes = await Bun.file(path).arrayBuffer()
+  const digest = new Bun.CryptoHasher("sha512").update(bytes).digest("base64")
+  return `sha512-${digest}`
 }
 
 /** The version a package's `latest` points at, if it can be read. */
