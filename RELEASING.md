@@ -68,16 +68,22 @@ Every published package moves to the same version, and the exact
 bun run version 0.1.0-alpha.2     # writes the manifests; --dry-run to preview
 ```
 
-### 2. Verify
+### 2. Verify and commit
 
 ```sh
 bun run verify
+git commit -am "chore: release v0.1.0-alpha.2"
 ```
 
 All eight checks, including `check:pack`. Don't substitute a subset. If
 Valkey/Redis, Chromium or Firefox genuinely isn't available, pass
 `--no-redis` / `--no-browser` / `--no-firefox`; they show as SKIPPED and the
 release notes should say so.
+
+Commit the bump on its own, before publishing: it's the commit step 6 tags,
+so the tag points at manifests that carry the version that went to npm.
+Feature work belongs in earlier commits, and `-a` is only safe when the bumped
+manifests are the sole changes in the tree.
 
 ### 3. Build, pack and smoke-test
 
@@ -136,12 +142,19 @@ Check one:
 bunx npm view @bungohan/core@0.1.0-alpha.1
 ```
 
-### 6. Tag the commit
+### 6. Tag the release commit
+
+Tag the bump commit from step 2, never an earlier one: a tag on a commit
+whose manifests still hold the previous version doesn't match what was
+published.
 
 ```sh
-git tag -a v0.1.0-alpha.1 -m "v0.1.0-alpha.1"
+git tag -a v0.1.0-alpha.2 -m "v0.1.0-alpha.2"
 git push origin main --tags
 ```
+
+If a tag was created too early and hasn't been pushed, delete it with
+`git tag -d v0.1.0-alpha.2` and create it again on the bump commit.
 
 ### 7. After publishing
 
