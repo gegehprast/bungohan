@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test"
-import { encodeSnapshot } from "@bungohan/state"
+import { encodeSnapshot, fromPlain, toPlain } from "@bungohan/state"
 import { createTestHarness, type TestHarness } from "@bungohan/testing"
 import {
   Card,
@@ -72,4 +72,20 @@ test("a filtered field reaches only the clients its filter admits", async () => 
   expect(alice.state.cards.get(alice.sessionId)?.secret.get()).toBe(
     `secret of ${alice.sessionId}`,
   )
+})
+
+test("a server-only field is saved, never sent", async () => {
+  const saved = new TableState()
+  saved.seed.set(1234)
+  expect(fromPlain(TableState, toPlain(saved)).unwrap().seed.get()).toBe(1234)
+
+  h = await createTestHarness({ rooms: { table: TableRoom } })
+  const joined = (
+    await (await h.connect()).joinOrCreate("table", {}, { state: TableState })
+  ).unwrap()
+  const room = h.server.getMatchMaker().getRoom(joined.id)
+  if (!(room instanceof TableRoom)) throw new Error("no room")
+  room.reseed(99)
+  await h.tick(50)
+  expect(joined.state.seed.get()).toBe(0)
 })

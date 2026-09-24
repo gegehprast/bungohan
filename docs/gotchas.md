@@ -96,7 +96,8 @@ Collections, on the other hand, may share an instance.
 Each handler is called as its message arrives, and the next message
 doesn't wait for it. An `async` handler that awaits can therefore finish
 **after** a later message's handler, even for the same client. **Fix:**
-if order matters across an `await`, chain each client's work:
+if order matters across an `await`, put the handler on the room's serial
+queue:
 
 <!-- snippet: docs/examples/src/messages.ts#ordered -->
 [`docs/examples/src/messages.ts`](examples/src/messages.ts)
@@ -104,34 +105,33 @@ if order matters across an `await`, chain each client's work:
 ```ts
 /**
  * Handlers aren't awaited: if one awaits, a later message's handler can
- * run (and finish) first, even from the same client. Chain per client
- * when order matters.
+ * run (and finish) first, even from the same client. `serial: true`
+ * puts a handler on the room's queue, so each starts after the last one
+ * has finished.
  */
 export class OrderedRoom extends Room<ChatState, typeof chatContract> {
   public static override contract = chatContract
   protected override state = new ChatState()
-  private readonly queues = new Map<string, Promise<void>>()
+  private timer: TimerId | undefined
 
   protected override async onCreate(): Promise<void> {
-    this.onMessage("say", (client, message) =>
-      this.inOrder(client, async () => {
+    this.onMessage(
+      "say",
+      async (client, message) => {
         const clean = await moderate(this.clock, message.text) // slow, async
         const said = { from: client.sessionId, text: clean, at: 0 }
         this.broadcast("said", said)
-      }),
+      },
+      { serial: true },
     )
+    // A timer joins the same queue, so it never lands mid-handler.
+    this.timer = this.clock.setInterval(() => {
+      void this.serial(() => this.broadcast("said", announcement))
+    }, 60_000)
   }
 
-  protected override async onLeave(client: Client): Promise<void> {
-    this.queues.delete(client.sessionId)
-  }
-
-  /** Runs `work` after this client's previous work has finished. */
-  private inOrder(client: Client, work: () => Promise<void>): Promise<void> {
-    const previous = this.queues.get(client.sessionId) ?? Promise.resolve()
-    const next = previous.then(work, work)
-    this.queues.set(client.sessionId, next)
-    return next
+  protected override async onDispose(): Promise<void> {
+    if (this.timer !== undefined) this.clock.clearInterval(this.timer)
   }
 }
 ```

@@ -95,3 +95,46 @@ export class LobbyRoom extends Room<Schema, typeof lobbyContract> {
   }
 }
 // #endregion reserve
+
+// #region reserve-by-id
+/** Holds a seat in the fullest open match on a map, not just any match. */
+export async function reserveInFullest(map: "dunes" | "docks", rating: number) {
+  const open = await openMatches(map)
+  if (open.isErr()) return open
+  const [fullest] = open.value.sort((a, b) => b.clients - a.clients)
+  if (fullest === undefined) {
+    return getMatchMaker().reserve(MatchRoom, { rating }, undefined, { map })
+  }
+  // ROOM_FULL if it filled up since the query: pick again.
+  return getMatchMaker().reserveById(fullest.id, { rating })
+}
+// #endregion reserve-by-id
+
+// #region pools
+/** A seat in an open match of the player's band; one room type serves all. */
+export function reserveInBand(band: "bronze" | "silver", rating: number) {
+  return getMatchMaker().reserve(
+    MatchRoom,
+    { rating },
+    // Only rooms whose metadata has band === `band`. One created for it
+    // starts with { band } in its metadata, so the next call finds it.
+    { where: { band } },
+    { map: "dunes" },
+  )
+}
+// #endregion pools
+
+// #region keys
+/**
+ * The room for a scheduled match your database knows as `matchId`: found
+ * wherever it runs, created the first time it's needed, never twice.
+ */
+export async function reserveInScheduled(matchId: string, rating: number) {
+  return getMatchMaker().reserve(
+    MatchRoom,
+    { rating },
+    { key: matchId }, // ROOM_FULL when that match is full, not a new room
+    { map: "docks" },
+  )
+}
+// #endregion keys

@@ -13,7 +13,9 @@ import type { ISerializer } from "@bungohan/serializer"
 import type { Clock, Reservation } from "@bungohan/types"
 import { BungohanError, type ErrorCode } from "../errors"
 import type { Logger } from "../logger"
+import type { RoomPlacement } from "../room"
 import type { ProcessInfo, RoomListingInfo } from "../types"
+import { coordinatorOf, LockTable } from "./locks"
 import {
   allChannel,
   asClusterMessage,
@@ -58,6 +60,8 @@ export const DEFAULT_CLUSTER_TIMINGS: ClusterTimings = {
 
 /** What the owning or edge process does with what arrives. */
 export interface ClusterHandlers {
+  /** A peer's `server.publish` on `channel`. */
+  appMessage(channel: string, message: unknown, from: string): void
   /** This process's own `ProcessInfo`, with no round trip. */
   localProcessInfo(): ProcessInfo
   /** True if this process owns that room (and it isn't being disposed). */
@@ -68,6 +72,7 @@ export interface ClusterHandlers {
   findAvailable(
     roomType: string,
     exclude: readonly string[],
+    match: PoolMatch,
   ): string | undefined
   /** This process's listings for a `query`. */
   listRooms(
@@ -80,11 +85,16 @@ export interface ClusterHandlers {
   createRoom(
     roomType: string,
     options: unknown,
+    placement: RoomPlacement,
   ): Promise<Result<RoomInfo, BungohanError>>
-  /** Reserves a seat in a room here, for a peer's `reserve`. */
+  /**
+   * Reserves a seat in a room here, for a peer's `reserve` (or, with
+   * `byId`, its `reserveById`).
+   */
   reserve(
     roomId: string,
     options: unknown,
+    byId: boolean,
   ): Promise<Result<Reservation, BungohanError>>
   /** Runs one `RoomProxy` operation against a room here. */
   roomOp(roomId: string, call: RoomOp): Result<unknown, BungohanError>
@@ -112,6 +122,15 @@ export interface ClusterHandlers {
   relayViolation(connectionId: string, why: string): void
   /** Edge side: the process owning some of our seats is gone. */
   ownerProcessLost(processId: string): void
+}
+
+/**
+ * What a cluster-wide room lookup matches beyond the type: `where` entries
+ * of the room's metadata, or the room's key (see `Placement`).
+ */
+export interface PoolMatch {
+  readonly where?: Record<string, unknown>
+  readonly key?: string
 }
 
 export interface ClusterNodeOptions {
@@ -147,12 +166,17 @@ export class ClusterNode {
   private readonly _pending: PendingRequests
   private readonly _registry: PeerRegistry
   private _running = false
+  /** The creation locks this process coordinates (spec §6.4.4). */
+  private readonly _locks: LockTable
 
   public constructor(options: ClusterNodeOptions) {
     this._options = options
     this._all = allChannel(options.namespace)
     this._own = processChannel(options.namespace, options.processId)
     this._pending = new PendingRequests(options.clock, options.createId)
+    // A lease outlives any creation that is going well, and bounds one
+    // whose holder hangs.
+    this._locks = new LockTable(options.clock, lockWaitMs(options.timings))
     this._registry = new PeerRegistry({
       clock: options.clock,
       heartbeatInterval: options.timings.heartbeatInterval,
@@ -266,6 +290,7 @@ export class ClusterNode {
     this._publish(this._all, { t: "bye" })
     this._registry.stop()
     this._pending.stop()
+    this._locks.stop()
     const { backplane } = this._options
     await backplane.unsubscribe(this._all)
     await backplane.unsubscribe(this._own)
@@ -315,13 +340,21 @@ export class ClusterNode {
   public async findAvailable(
     roomType: string,
     exclude: string[] = [],
+    match: PoolMatch = {},
   ): Promise<{ processId: string; roomId: string } | undefined> {
     if (!this._running) return undefined
     const { rid, answer } = this._pending.first<{
       processId: string
       roomId: string
     }>(this._options.timings.gatherTimeout)
-    this._publish(this._all, { t: "find?", rid, roomType, exclude })
+    this._publish(this._all, {
+      t: "find?",
+      rid,
+      roomType,
+      exclude,
+      ...(match.where === undefined ? {} : { where: match.where }),
+      ...(match.key === undefined ? {} : { key: match.key }),
+    })
     const found = await answer
     return found.ok ? found.value : undefined
   }
@@ -357,13 +390,75 @@ export class ClusterNode {
     processId: string,
     roomType: string,
     options: unknown,
+    placement: RoomPlacement = {},
   ): Promise<Result<RoomInfo, BungohanError>> {
     return this._call<RoomInfo>(processId, (rid) => ({
       t: "create?",
       rid,
       roomType,
       options,
+      ...(placement.key === undefined ? {} : { key: placement.key }),
+      ...(placement.where === undefined ? {} : { where: placement.where }),
     }))
+  }
+
+  /** @internal The process that coordinates `pool`'s lock, as seen here. */
+  public _coordinatorOf(pool: string): string {
+    const self = this._options.processId
+    return coordinatorOf(pool, [self, ...this.peers()]) ?? self
+  }
+
+  /**
+   * Takes `pool`'s creation lock from its coordinator, waiting behind
+   * earlier holders; resolves with the function that gives it back
+   * (see docs/guides/scaling.md#one-room-per-pool). Never fails: when the coordinator doesn't answer in
+   * time, or cluster mode isn't running, it resolves unlocked, which is
+   * how creation worked before locks, and logs why.
+   */
+  public async lock(pool: string): Promise<() => void> {
+    const self = this._options.processId
+    // A coordinator that dies while we wait: ask its successor.
+    for (let attempt = 0; attempt < 3 && this._running; attempt++) {
+      const coordinator = this._coordinatorOf(pool)
+      if (coordinator === self) {
+        const lease = this._options.createId()
+        await this._locks.acquire(pool, self, lease)
+        return () => this._locks.release(pool, lease)
+      }
+      const channel = processChannel(this._options.namespace, coordinator)
+      const { rid, answer } = this._pending.single<unknown>(
+        coordinator,
+        lockWaitMs(this._options.timings),
+      )
+      this._publish(channel, { t: "lock?", rid, pool })
+      const granted = await answer
+      if (granted.ok) {
+        return () => this._publish(channel, { t: "unlock", pool, lease: rid })
+      }
+      if (granted.reason !== "peer-lost") {
+        // Tell it we left, in case the grant is merely late.
+        this._publish(channel, { t: "unlock", pool, lease: rid })
+        this._options.logger.warn(
+          `[cluster] no creation lock for "${pool}" from ${coordinator} ` +
+            `(${granted.reason}); creating without it`,
+        )
+        break
+      }
+    }
+    return () => {}
+  }
+
+  /**
+   * @internal Broadcasts in flight. Each waits out a collection window on
+   * the clock, which only moving the clock ends (the test harness asks).
+   */
+  public _openWindows(): number {
+    return this._pending.windows()
+  }
+
+  /** Sends an application message to every other process. */
+  public publishApp(channel: string, message: unknown): void {
+    this._publish(this._all, { t: "app", ch: channel, m: message })
   }
 
   /** Asks `processId` to reserve a seat in its room (see `createRoom`). */
@@ -371,12 +466,14 @@ export class ClusterNode {
     processId: string,
     roomId: string,
     options: unknown,
+    byId = false,
   ): Promise<Result<Reservation, BungohanError>> {
     return this._call<Reservation>(processId, (rid) => ({
       t: "reserve?",
       rid,
       roomId,
       options,
+      ...(byId ? { byId } : {}),
     }))
   }
 
@@ -568,6 +665,12 @@ export class ClusterNode {
         this._registry.gone(message.from)
         return
 
+      case "app":
+        if (typeof message.ch === "string") {
+          handlers.appMessage(message.ch, message.m, message.from)
+        }
+        return
+
       case "pi?":
         this._publish(back, {
           t: "pi!",
@@ -584,7 +687,14 @@ export class ClusterNode {
         return
       }
       case "find?": {
-        const roomId = handlers.findAvailable(message.roomType, message.exclude)
+        const roomId = handlers.findAvailable(
+          message.roomType,
+          message.exclude,
+          {
+            ...(message.where === undefined ? {} : { where: message.where }),
+            ...(message.key === undefined ? {} : { key: message.key }),
+          },
+        )
         if (roomId !== undefined) {
           this._publish(back, { t: "find!", rid: message.rid, roomId })
         }
@@ -602,9 +712,38 @@ export class ClusterNode {
           ),
         })
         return
+      case "lock?":
+        void this._locks
+          .acquire(message.pool, message.from, message.rid)
+          .then(() =>
+            this._publish(back, {
+              t: "lock!",
+              rid: message.rid,
+              pool: message.pool,
+            }),
+          )
+        return
+      case "lock!":
+        // A grant for a request that already gave up: hand it straight back.
+        if (!this._pending.has(message.rid)) {
+          this._publish(back, {
+            t: "unlock",
+            pool: message.pool,
+            lease: message.rid,
+          })
+          return
+        }
+        this._pending.deliver(message.rid, true)
+        return
+      case "unlock":
+        this._locks.release(message.pool, message.lease)
+        return
       case "create?":
         void handlers
-          .createRoom(message.roomType, message.options)
+          .createRoom(message.roomType, message.options, {
+            ...(message.key === undefined ? {} : { key: message.key }),
+            ...(message.where === undefined ? {} : { where: message.where }),
+          })
           .then((created) =>
             this._publish(back, {
               t: "create!",
@@ -615,7 +754,7 @@ export class ClusterNode {
         return
       case "reserve?":
         void handlers
-          .reserve(message.roomId, message.options)
+          .reserve(message.roomId, message.options, message.byId === true)
           .then((reserved) =>
             this._publish(back, {
               t: "reserve!",
@@ -688,6 +827,7 @@ export class ClusterNode {
 
   private _peerLost(processId: string): void {
     this._pending.failPeer(processId)
+    this._locks.processLost(processId)
     const handlers = this._options.handlers
     handlers.edgeProcessLost(processId)
     handlers.ownerProcessLost(processId)
@@ -836,4 +976,12 @@ export class ClusterNode {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+/**
+ * How long a creation lock may be waited for, and held: long enough for
+ * `onCreate`s that do real I/O, and bounded so nothing waits forever.
+ */
+function lockWaitMs(timings: ClusterTimings): number {
+  return timings.requestTimeout * 6
 }

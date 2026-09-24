@@ -179,7 +179,7 @@ The server calls each handler as its message arrives and doesn't wait for
 it to finish. A slow async handler doesn't hold up the next message, but
 **async handlers can finish out of order, even for one client**. If a
 handler awaits something (a database, an HTTP call) and ordering matters,
-chain each client's work yourself:
+put it on the room's serial queue:
 
 <!-- snippet: docs/examples/src/messages.ts#ordered -->
 [`docs/examples/src/messages.ts`](../examples/src/messages.ts)
@@ -187,38 +187,53 @@ chain each client's work yourself:
 ```ts
 /**
  * Handlers aren't awaited: if one awaits, a later message's handler can
- * run (and finish) first, even from the same client. Chain per client
- * when order matters.
+ * run (and finish) first, even from the same client. `serial: true`
+ * puts a handler on the room's queue, so each starts after the last one
+ * has finished.
  */
 export class OrderedRoom extends Room<ChatState, typeof chatContract> {
   public static override contract = chatContract
   protected override state = new ChatState()
-  private readonly queues = new Map<string, Promise<void>>()
+  private timer: TimerId | undefined
 
   protected override async onCreate(): Promise<void> {
-    this.onMessage("say", (client, message) =>
-      this.inOrder(client, async () => {
+    this.onMessage(
+      "say",
+      async (client, message) => {
         const clean = await moderate(this.clock, message.text) // slow, async
         const said = { from: client.sessionId, text: clean, at: 0 }
         this.broadcast("said", said)
-      }),
+      },
+      { serial: true },
     )
+    // A timer joins the same queue, so it never lands mid-handler.
+    this.timer = this.clock.setInterval(() => {
+      void this.serial(() => this.broadcast("said", announcement))
+    }, 60_000)
   }
 
-  protected override async onLeave(client: Client): Promise<void> {
-    this.queues.delete(client.sessionId)
-  }
-
-  /** Runs `work` after this client's previous work has finished. */
-  private inOrder(client: Client, work: () => Promise<void>): Promise<void> {
-    const previous = this.queues.get(client.sessionId) ?? Promise.resolve()
-    const next = previous.then(work, work)
-    this.queues.set(client.sessionId, next)
-    return next
+  protected override async onDispose(): Promise<void> {
+    if (this.timer !== undefined) this.clock.clearInterval(this.timer)
   }
 }
 ```
 <!-- /snippet -->
+
+- The queue is per room: a serial handler starts only after every
+  earlier serial task has finished, whichever client or timer queued it.
+  Two players acting on the same shared value are applied one after the
+  other, each after its `await`.
+- `this.serial(task)` queues anything else, a timer callback for
+  instance, so it can't run in the middle of a queued handler.
+- A task that throws or rejects is reported to `server.onError`, and the
+  queue carries on with the next one.
+- Once the room starts disposing, tasks that haven't started are
+  dropped. One already running isn't interrupted: after its `await`, the
+  room may be disposed or the client gone (`client.status`).
+- Don't `await this.dispose()` inside a task: every task behind it waits
+  too.
+- A serial handler still returns at once to the server: the next message
+  is read while it waits its turn. Only the handlers run in order.
 
 A handler that throws, or whose promise rejects, is reported to
 `server.onError` and doesn't affect the room.

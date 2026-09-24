@@ -146,7 +146,9 @@ export function createSchemaArray<T extends Schema>(
 
 /** Default client shape seen by filter functions (core's Client satisfies it). */
 export interface FilterClient {
-  /** The client's `sessionId`. */
+  /** The seat's `sessionId`, as everywhere else on the server. */
+  readonly sessionId: string
+  /** The same value as `sessionId`. */
   readonly id: string
 }
 
@@ -161,10 +163,10 @@ export interface FilterClient {
  *
  * ```ts
  * public secret = createFiltered(createString(""), function (this: RoomState, client) {
- *   return this.ownerId.get() === client.id
+ *   return this.ownerId.get() === client.sessionId
  * })
  * // or, capturing the instance lexically:
- * public secret = createFiltered(createString(""), (client) => this.ownerId.get() === client.id)
+ * public secret = createFiltered(createString(""), (client) => this.ownerId.get() === client.sessionId)
  * ```
  */
 export function createFiltered<
@@ -176,4 +178,22 @@ export function createFiltered<
   // and a client from the same `clients` iterable the room passes in.
   wrapped._filter = filterFn as unknown as FilterFn
   return wrapped
+}
+
+/** The filter of `createServerOnly`: no client ever sees the field. */
+function serverOnly(): boolean {
+  return false
+}
+
+/**
+ * A field that stays on the server: never sent to any client, but part of
+ * the state everywhere else, so `saveState` stores it and `loadState`
+ * restores it (a generated layout, an RNG seed, a hidden goal). Use it rather
+ * than a plain class field when the value must survive a save.
+ * Clients see its zero value (`""`, `0`, `false`, an empty collection),
+ * and its name, not its value, is in the class table they receive.
+ * Returns the same wrapper. See docs/guides/state.md#server-only-fields.
+ */
+export function createServerOnly<S extends State>(wrapped: S): S {
+  return createFiltered(wrapped, serverOnly)
 }

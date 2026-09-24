@@ -222,6 +222,37 @@ data on a class both sides import: velocities, cooldowns, timestamps (see
 keeps its initial value. Names starting with `_` are reserved for the
 framework: don't use them for either kind.
 
+### Server-only fields
+
+A plain field isn't saved by `saveState` either. For a value that must
+survive a save but that no client may see (a generated layout, an RNG seed,
+a hidden goal), wrap the field with `createServerOnly`:
+
+<!-- snippet: docs/examples/src/state.ts#server-only -->
+[`docs/examples/src/state.ts`](../examples/src/state.ts)
+
+```ts
+export class TableState extends Schema {
+  public static override readonly schemaName = "TableState"
+  public cards = createSchemaMap(f.string, Card)
+  // Saved by saveState and restored by loadState, never sent to a client.
+  public seed = createServerOnly(createInt(f.uint32))
+  // A plain field would never be sent either, but it isn't saved.
+  public lastSaveAt = 0
+}
+```
+<!-- /snippet -->
+
+- It's part of the state on the server: `saveState` stores it,
+  `loadState` restores it, and changing it is tracked as usual.
+- No client ever receives its value. Clients see the zero value (`0`,
+  `""`, `false`, an empty collection).
+- Its *name* is in the class table clients receive, like every field's.
+  Don't put secrets in field names.
+- It is a filter that hides the field from everyone (see
+  [per-client visibility](#per-client-visibility)), so the same rules
+  apply to what's nested inside it.
+
 ## Per-client visibility
 
 `createFiltered` wraps a field so that each client only receives it when
@@ -240,15 +271,15 @@ export class Card extends Schema {
   public secret = createFiltered(
     createString(""),
     function (this: Card, client) {
-      return this.owner.get() === client.id
+      return this.owner.get() === client.sessionId
     },
   )
 }
 ```
 <!-- /snippet -->
 
-- The filter gets the client (its `id` is the `sessionId`) and runs
-  with `this` as the instance. It must be pure and cheap: it runs on
+- The filter gets the client (`client.sessionId`, as in the room's
+  hooks) and runs with `this` as the instance. It must be pure and cheap: it runs on
   every sync tick, for every client, for every filtered field.
 - The filter runs later, at each sync, not when the field is declared.
   A `function` gets `this` bound to the instance then, so it works

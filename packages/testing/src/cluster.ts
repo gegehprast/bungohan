@@ -174,6 +174,9 @@ export class ClusterHarness {
       await this._flushAll()
       await settle()
       if (settled) break
+      // A join's hooks awaiting real I/O: give them `joinRealWait` of real
+      // time before the clock races past (to the client's joinTimeout).
+      if (await this._realJoinProgress()) continue
       const due = this.clock.nextDue()
       if (due === undefined || due > limit) break
       await this.clock.advanceTo(due)
@@ -243,6 +246,14 @@ export class ClusterHarness {
    * is queued anywhere: a frame relayed through the backplane lands on
    * another node's transport after that node was already flushed.
    */
+  /** True once a join some process was running finished in real time. */
+  private async _realJoinProgress(): Promise<boolean> {
+    for (const node of this.nodes) {
+      if (await node._serverJoinFinished()) return true
+    }
+    return false
+  }
+
   private async _flushAll(): Promise<void> {
     let quiet = 0
     for (let pass = 0; pass < MAX_FLUSH_PASSES; pass++) {

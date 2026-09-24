@@ -53,7 +53,7 @@ export { IntervalLoop, SimulationLoop } from "./loop"
 export { getMatchMaker, MatchMaker } from "./matchmaker"
 export type { ClientMetrics, RoomMetrics, ServerMetrics } from "./metrics"
 export { MetricsCollector } from "./metrics"
-export { type AuthResult, Room } from "./room"
+export { type AuthResult, type MessageHandlerOptions, Room } from "./room"
 export { RoomManager } from "./room-manager"
 export {
   BungohanServer,
@@ -68,6 +68,8 @@ export type {
   ErrorSource,
   LimitOptions,
   MatchMakerQueryOptions,
+  MetadataValue,
+  Placement,
   ProcessInfo,
   ProcessSelector,
   RoomClass,

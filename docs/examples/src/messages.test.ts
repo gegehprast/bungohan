@@ -25,14 +25,14 @@ test("typed and raw messages both ways", async () => {
   log.mockRestore()
 })
 
-test("a per-client chain keeps async handlers in order", async () => {
+test("serial handlers stay in order across an await", async () => {
   h = await createTestHarness({ rooms: { chat: OrderedRoom } })
   const room = (
     await (await h.connect()).joinOrCreate("chat", undefined, join)
   ).unwrap()
   const texts: string[] = []
   room.onMessage("said", ({ text }) => texts.push(text))
-  // The first takes longest to moderate; without the chain it would finish last.
+  // The first takes longest to moderate; without serial it would finish last.
   room.send("say", { text: "first, and the longest", channel: "all" })
   room.send("say", { text: "second", channel: "all" })
   await h.tick(100)

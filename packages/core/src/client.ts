@@ -137,7 +137,7 @@ export class Client {
     this._connection = connection
   }
 
-  /** Same as `sessionId`; what `createFiltered` filters receive (`client.id`). */
+  /** Same as `sessionId`, which is the name to prefer. */
   public get id(): string {
     return this.sessionId
   }

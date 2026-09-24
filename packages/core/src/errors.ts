@@ -28,6 +28,11 @@ export type ErrorCode =
   | "CLUSTER_NOT_IMPLEMENTED"
   /** A lifecycle call made in the wrong state (e.g. `start()` twice). */
   | "INVALID_STATE"
+  /**
+   * `matchMaker.createRoom` with a `key` that a room of the type already
+   * has, on any process.
+   */
+  | "ROOM_EXISTS"
 
 /**
  * Core's error type: the `error` of every failed server-side `Result`,

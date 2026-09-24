@@ -37,7 +37,7 @@ export interface ProxyHost {
  *   `makePrivate`/`makePublic`, `dispose`, `broadcastMessage`,
  *   `disconnectClient` (a kick), `setPresence`/`removePresence`;
  * - **cached** from the owning process, as of creation or the last
- *   `refresh()`: `id`, `roomType`, `metadata`, the option fields,
+ *   `refresh()`: `id`, `roomType`, `key`, `metadata`, the option fields,
  *   `getClientCount()`, `getSeatCount()`, `locked`, `visibility`,
  *   `isDisposed`;
  * - refused with a clear error: `join`/`leave` (a `Client` belongs to the
@@ -75,6 +75,10 @@ export class RoomProxy extends Room {
 
   public override get roomType(): string {
     return this._info.roomType
+  }
+
+  public override get key(): string | undefined {
+    return this._info.key
   }
 
   public override get visibility(): "public" | "private" {

@@ -11,6 +11,7 @@ import {
   createSchemaArray,
   createSchemaMap,
   createSchemaSet,
+  createServerOnly,
   createSet,
   createString,
   f,
@@ -109,16 +110,22 @@ export class Card extends Schema {
   public secret = createFiltered(
     createString(""),
     function (this: Card, client) {
-      return this.owner.get() === client.id
+      return this.owner.get() === client.sessionId
     },
   )
 }
 // #endregion filtered
 
+// #region server-only
 export class TableState extends Schema {
   public static override readonly schemaName = "TableState"
   public cards = createSchemaMap(f.string, Card)
+  // Saved by saveState and restored by loadState, never sent to a client.
+  public seed = createServerOnly(createInt(f.uint32))
+  // A plain field would never be sent either, but it isn't saved.
+  public lastSaveAt = 0
 }
+// #endregion server-only
 
 /** Deals each joiner a card with a secret only they can see. */
 export class TableRoom extends Room<TableState> {
@@ -130,5 +137,10 @@ export class TableRoom extends Room<TableState> {
     card.face.set("face down")
     card.secret.set(`secret of ${client.sessionId}`)
     this.state.cards.set(client.sessionId, card)
+  }
+
+  /** Changes the server-only seed (clients never see it). */
+  public reseed(seed: number): void {
+    this.state.seed.set(seed)
   }
 }

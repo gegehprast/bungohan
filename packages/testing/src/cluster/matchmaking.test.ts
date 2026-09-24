@@ -222,6 +222,21 @@ describe("query", () => {
     await c.stop()
   })
 
+  test("a metadata change is visible to the next query, on any process", async () => {
+    const c = await cluster()
+    const room = (await c.run(mm(c, 1).createRoom("game"))).unwrap()
+    const seats = async (index: number) =>
+      (await c.run(mm(c, index).query({ type: "game" })))
+        .unwrap()
+        .map((listing) => listing.metadata["seats"])
+    room.metadata["seats"] = 3
+    expect(await seats(0)).toEqual([3])
+    expect(await seats(1)).toEqual([3])
+    room.metadata["seats"] = 4
+    expect(await seats(0)).toEqual([4])
+    await c.stop()
+  })
+
   test("private rooms need includePrivate, wherever they are", async () => {
     const c = await cluster()
     const hidden = (await c.run(mm(c, 1).createRoom("game"))).unwrap()

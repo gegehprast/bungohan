@@ -119,6 +119,20 @@ export class PendingRequests {
     return this._entries.size
   }
 
+  /** True while request `rid` is waiting for its answer. */
+  public has(rid: string): boolean {
+    return this._entries.has(rid)
+  }
+
+  /** Broadcasts in flight: each waits out a window on the clock. */
+  public windows(): number {
+    let open = 0
+    for (const entry of this._entries.values()) {
+      if (entry.peer === undefined) open++
+    }
+    return open
+  }
+
   private _open(
     rid: string,
     peer: string | undefined,

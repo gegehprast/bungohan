@@ -107,6 +107,23 @@ describe("concurrent find-or-create on one process", () => {
   })
 })
 
+describe("reserveById", () => {
+  test("reserves in a room on another process, even while it drains", async () => {
+    const c = await cluster()
+    const there = (await c.run(mm(c, 1).createRoom("game"))).unwrap()
+    there.makePrivate()
+    void c.node(1).server.drain() // settles once its rooms are gone
+    await c.flush()
+    const reservation = (await c.run(mm(c, 0).reserveById(there.id))).unwrap()
+    expect(reservation.roomId).toBe(there.id)
+    expect(there.getSeatCount()).toBe(1)
+    const client = await c.connect(0)
+    const room = (await client.consumeReservation(reservation, game)).unwrap()
+    expect(room.id).toBe(there.id)
+    await c.stop()
+  })
+})
+
 describe("mode JOIN", () => {
   test("takes a room on another process", async () => {
     const c = await cluster()

@@ -382,9 +382,9 @@ export type CreateRoomArgs<R> =
   HasTypedOptions<ContractOf<R>> extends true
     ? [
         options: InferCreateOptions<ContractOf<R>>,
-        processSelector?: ProcessSelector,
+        placement?: ProcessSelector | Placement,
       ]
-    : [options?: unknown, processSelector?: ProcessSelector]
+    : [options?: unknown, placement?: ProcessSelector | Placement]
 
 /**
  * The arguments after the room class of `matchMaker.reserve`: the seat's
@@ -395,10 +395,10 @@ export type ReserveArgs<R> =
   HasTypedOptions<ContractOf<R>> extends true
     ? [
         options: InferJoinOptions<ContractOf<R>>,
-        processSelector?: ProcessSelector,
+        placement?: ProcessSelector | Placement,
         createOptions?: InferCreateOptions<ContractOf<R>>,
       ]
-    : [options?: unknown, processSelector?: ProcessSelector]
+    : [options?: unknown, placement?: ProcessSelector | Placement]
 
 /**
  * One room as `matchMaker.query()` lists it: a plain snapshot, the same
@@ -419,6 +419,8 @@ export interface RoomListingInfo {
   locked: boolean
   /** The room's `metadata`. */
   metadata: Record<string, unknown>
+  /** The room's `key`, if matchmaking created it under one. */
+  key?: string
   /** The process the room runs on (this one, outside cluster mode). */
   processId: string
   /**
@@ -464,6 +466,35 @@ export interface ProcessInfo {
  * process, and choosing another fails with `CLUSTER_NOT_IMPLEMENTED`.
  */
 export type ProcessSelector = (processes: ProcessInfo[]) => ProcessInfo
+
+/** A metadata value `where` can match: compared with `===`. */
+export type MetadataValue = string | number | boolean | null
+
+/**
+ * Which rooms server-side matchmaking may pick, and where it creates one
+ * (see docs/guides/matchmaking.md#pools-and-keys). Passed where a
+ * `ProcessSelector` goes; a bare selector means `{ process: selector }`.
+ */
+export interface Placement {
+  /**
+   * Only rooms whose `metadata` has each of these entries (the same
+   * `===` match as `query`'s `metadata`). A room created for the call
+   * starts with them in its `metadata`, so the next call finds it: one
+   * room type serves many pools. Two calls with equal `where` values
+   * never create two rooms at once, on any process.
+   */
+  where?: Record<string, MetadataValue>
+  /**
+   * The one room of this type with this key, across the cluster: found
+   * whether or not it's available, and created only if no room of the
+   * type has the key. For a room that stands for something outside the
+   * server (a record in your database, say). `where` then only sets the
+   * new room's metadata. The key is the room's `key` for its whole life.
+   */
+  key?: string
+  /** Which process creates a room when one is needed (cluster mode). */
+  process?: ProcessSelector
+}
 
 /** How a `server.drain()` ended. */
 export interface DrainResult {
@@ -520,6 +551,7 @@ export type ErrorSource =
   | "onPause"
   | "onResume"
   | "onMessage"
+  | "serial"
   | "send"
   | "sync"
   | "saveState"

@@ -226,6 +226,71 @@ Races are handled: a process that starts draining just as another one
 forwards it a new room refuses it, and the room is created on the next
 process instead.
 
+## One room per pool
+
+When no room is available anywhere, a `joinOrCreate` (from a client or
+the server) or a `reserve` creates one. Calls that start on several
+processes at once still create one room between them: before creating,
+a process takes the pool's creation lock, and a call that has to wait
+for it then finds the room the holder made.
+
+- A pool is a room type, or a type plus a `where` or a
+  [key](matchmaking.md#pools-and-keys).
+- Each pool's lock is kept by one process, picked from the live
+  processes by hashing the pool's name, so no extra service is needed.
+  It costs one backplane round trip, and only when a room has to be
+  created.
+- A holder whose process dies loses the lock at once. If the process
+  keeping the lock dies, its locks go with it, and waiters ask the
+  process that keeps the pool now. A lock held for longer than six
+  `requestTimeout`s (30 s by default) is taken back.
+- A process that can't get the lock in that time creates the room
+  anyway, and logs why.
+
+## Events for every process
+
+An event from outside (a webhook, an admin action) reaches one process.
+To tell all of them, publish it over the backplane the cluster already
+uses:
+
+<!-- snippet: docs/examples/src/scaling.ts#events -->
+[`docs/examples/src/scaling.ts`](../examples/src/scaling.ts)
+
+```ts
+/** Every process keeps the list of open events up to date. */
+export function trackEvents(server: BungohanServer): Set<string> {
+  const open = new Set<string>()
+  server.subscribe("events", (message) => {
+    // Untyped, like anything off the wire: check it.
+    if (typeof message === "object" && message !== null && "open" in message) {
+      if (typeof message.open === "string") open.add(message.open)
+    }
+  })
+  return open
+}
+
+/** A webhook reached one process: tell all of them, this one included. */
+export function onEventOpened(server: BungohanServer, eventId: string) {
+  return server.publish("events", { open: eventId })
+}
+```
+<!-- /snippet -->
+
+- `server.publish(channel, message)` reaches every process's
+  `server.subscribe(channel, handler)`, the publisher's own included.
+  The handler also gets the publishing process's id. Without cluster
+  mode it reaches this process only, so the same code runs on one
+  process.
+- Messages are encoded with the server's serializer (MessagePack): send
+  plain data, and check what you receive.
+- Delivery is best effort, as with any pub/sub: a process that is down
+  misses the message, and nothing is stored or retried. Messages from
+  one process arrive in the order it sent them. For data that must not
+  be lost, use your database and send the event as a hint to re-read it.
+- Channels are yours: they can't collide with the framework's own
+  traffic, and the cluster's `namespace` keeps clusters that share one
+  Redis apart.
+
 ## Testing a cluster
 
 `createClusterHarness` runs several servers in one test process on one
@@ -285,10 +350,9 @@ clock). `cluster.kill(index)` makes a process vanish, to test failures.
   `createRoom`/`reserve` for another process cross the backplane as
   MessagePack. A `Map` or `Set` arrives as a plain object, and `-0` as `0`.
   Typed options (declared in the contract) don't have this problem.
-- Concurrent `joinOrCreate` (or `reserve`) calls share one room only
-  when they run on the same process. Two that start on different
-  processes at the same moment, with no room available anywhere, can
-  each create one, since preventing it would take a cluster-wide lock.
-  If that matters, route a room type's matchmaking through one process.
+- The [creation lock](#one-room-per-pool) is exact while every process
+  agrees on who is alive. In the moments when they don't (a process
+  just joined, or was just dropped), two processes can still each
+  create a room for one pool.
 - A custom `ServerOptions.serializer` must carry binary data unchanged.
   `start()` checks it and refuses to start a cluster otherwise.

@@ -92,6 +92,22 @@ export interface RoomHost {
 
 type Handler = (client: Client, message: unknown) => unknown
 
+/** @internal What matchmaking created a room for (see `Placement`). */
+export interface RoomPlacement {
+  readonly key?: string
+  readonly where?: Record<string, unknown>
+}
+
+/** Options of `onMessage` and `onMessageRaw`. */
+export interface MessageHandlerOptions {
+  /**
+   * Run on the room's serial queue: this handler starts only once every
+   * earlier serial task of the room has finished (see `Room.serial`).
+   * Default false: called as the message arrives, not awaited.
+   */
+  serial?: boolean
+}
+
 /**
  * What `onAuth` (static or instance) and the server's `authenticate`
  * return: `false` refuses (`AUTH_FAILED`), `true` admits, and an object
@@ -196,6 +212,8 @@ export abstract class Room<
    * it plain JSON; in cluster mode it crosses processes.
    */
   public metadata: Record<string, unknown> = {}
+  /** See `key`. */
+  private _key: string | undefined
 
   private _host: RoomHost | undefined
   private _type: RoomTypeDef | undefined
@@ -218,6 +236,8 @@ export abstract class Room<
   private readonly _handlers = new Map<string, Set<Handler>>()
   private readonly _rawHandlers = new Map<string, Set<Handler>>()
   private readonly _unhandled = new Set<string>()
+  /** The last task on the room's serial queue (see `serial`). */
+  private _serialTail: Promise<void> = Promise.resolve()
   private readonly _presence = new Map<string, unknown>()
   private readonly _reservations = new Map<string, HeldReservation>()
   private readonly _tokens = new Map<string, Client>()
@@ -391,10 +411,12 @@ export abstract class Room<
    * guaranteed (its *values* are still the client's: validate game rules).
    * Returns an unsubscribe function.
    *
-   * Handlers are **not awaited**. Each message's handlers are called as it
-   * arrives, so an async handler that awaits can finish after handlers of
-   * later messages, even from the same client. If order matters across an
-   * `await`, serialize it yourself (e.g. a per-client promise chain). A
+   * Handlers are **not awaited** by default. Each message's handlers are
+   * called as it arrives, so an async handler that awaits can finish after
+   * handlers of later messages, even from the same client. Pass
+   * `{ serial: true }` to put this handler on the room's serial queue
+   * instead (see `serial`): it then starts only after every earlier
+   * serial task of the room, from any client or timer, has finished. A
    * rejection goes to `server.onError`, like a throw.
    */
   public onMessage<K extends keyof RecvMap<TContract>>(
@@ -403,6 +425,7 @@ export abstract class Room<
       client: Client,
       message: Infer<RecvMap<TContract>[K]>,
     ) => void | Promise<void>,
+    options?: MessageHandlerOptions,
   ): () => void {
     const name = String(type)
     if (this._type !== undefined && !this._type.clientIds.has(name)) {
@@ -412,20 +435,84 @@ export abstract class Room<
       )
     }
     // Decoding against the contract produced exactly this payload type.
-    const wrapped: Handler = (client, message) =>
+    const typed: Handler = (client, message) =>
       handler(client, message as Infer<RecvMap<TContract>[K]>)
-    return addHandler(this._handlers, name, wrapped)
+    return addHandler(
+      this._handlers,
+      name,
+      this._serialized(name, typed, options),
+    )
   }
 
   /**
    * Handles an untyped message sent with `sendRaw` (MessagePack, no
-   * contract). Like `onMessage`, handlers are not awaited.
+   * contract). Like `onMessage`, handlers are not awaited unless
+   * `{ serial: true }` puts them on the room's serial queue.
    */
   public onMessageRaw(
     type: string,
     handler: (client: Client, message: unknown) => void | Promise<void>,
+    options?: MessageHandlerOptions,
   ): () => void {
-    return addHandler(this._rawHandlers, type, handler)
+    return addHandler(
+      this._rawHandlers,
+      type,
+      this._serialized(type, handler, options),
+    )
+  }
+
+  /**
+   * Runs `task` after every task queued before it on this room has
+   * finished, awaiting it: one queue per room, shared by serial message
+   * handlers (`onMessage(type, handler, { serial: true })`) and anything
+   * else you pass here. Use it where a change must see the result of the
+   * one before it across an `await`, such as two players acting on the
+   * same shared value through a remote service. Call it from a timer
+   * callback so the timer's change waits its turn too.
+   *
+   * A task that throws or rejects is reported to `server.onError` and
+   * doesn't stop the queue. The returned promise settles when `task` has
+   * run, and never rejects. Once the room starts disposing, tasks that
+   * haven't started are dropped; one already running isn't interrupted,
+   * so after an `await` it may find the room disposed (`isDisposed`) or
+   * its client gone (`client.status`). Don't await `dispose()` inside a
+   * task: disposal doesn't wait for the queue, but a task awaiting it
+   * holds up every task behind it until it finishes.
+   * See docs/guides/messages.md#handlers-arent-awaited.
+   */
+  protected serial(task: () => unknown): Promise<void> {
+    return this._enqueue(task, { source: "serial", room: this })
+  }
+
+  private _enqueue(task: () => unknown, context: ErrorContext): Promise<void> {
+    const run = async (): Promise<void> => {
+      if (this._disposing !== undefined) return
+      try {
+        await task()
+      } catch (error) {
+        this._requireHost().reportError(error, context)
+      }
+    }
+    const next = this._serialTail.then(run)
+    this._serialTail = next
+    return next
+  }
+
+  /** A handler as registered: on the serial queue if asked. */
+  private _serialized(
+    name: string,
+    handler: Handler,
+    options: MessageHandlerOptions | undefined,
+  ): Handler {
+    if (options?.serial !== true) return handler
+    return (client, message) => {
+      void this._enqueue(() => handler(client, message), {
+        source: "onMessage",
+        room: this,
+        client,
+        messageType: name,
+      })
+    }
   }
 
   /** Sends a contract message to one client. */
@@ -808,10 +895,28 @@ export abstract class Room<
       this._stats = new RoomStats(host.clock.now())
   }
 
-  /** @internal Runs `onCreate`, checks the state, starts the loops. */
-  public async _create(options: unknown): Promise<Result<void, BungohanError>> {
+  /**
+   * The key server-side matchmaking created this room under
+   * (`Placement.key`): at most one room of the type has it, across the
+   * cluster. `undefined` for a room created without one. Fixed for the
+   * room's life.
+   */
+  public get key(): string | undefined {
+    return this._key
+  }
+
+  /**
+   * @internal Runs `onCreate`, checks the state, starts the loops.
+   * `placement` is what matchmaking created the room for: its key, and
+   * `where` entries that go into `metadata` last, so the room matches.
+   */
+  public async _create(
+    options: unknown,
+    placement: RoomPlacement = {},
+  ): Promise<Result<void, BungohanError>> {
     const host = this._requireHost()
     const user = asOptions(options)
+    this._key = placement.key
     const full: RoomOnCreateOptions & Record<string, unknown> = {
       ...user,
       roomId: this.id,
@@ -822,7 +927,11 @@ export abstract class Room<
       reconnectionTimeout: this.reconnectionTimeout,
       visibility: this._visibility,
       locked: this._locked,
-      metadata: { ...this.metadata, ...asOptions(user["metadata"]) },
+      metadata: {
+        ...this.metadata,
+        ...asOptions(user["metadata"]),
+        ...placement.where,
+      },
     }
     this.metadata = full.metadata
     // `options` were decoded against the contract's create options (or are
@@ -881,6 +990,29 @@ export abstract class Room<
   // ==========================================================================
 
   /**
+   * @internal Whether a new seat may be taken by id: what `joinById` and
+   * `reserveById` check. Private rooms are fine; locked, full and
+   * disposing ones aren't.
+   */
+  public _acceptsNewSeat(): Result<void, BungohanError> {
+    const undisposed = this._undisposed()
+    if (undisposed.isErr()) return undisposed
+    if (this._locked) {
+      return err(this._error("ROOM_LOCKED", "the room is locked"))
+    }
+    if (this.getSeatCount() >= this.maxClients) {
+      return err(this._error("ROOM_FULL", "the room is full"))
+    }
+    return ok(undefined)
+  }
+
+  private _undisposed(): Result<void, BungohanError> {
+    return this._disposing === undefined
+      ? ok(undefined)
+      : err(this._error("ROOM_NOT_FOUND", "the room is being disposed"))
+  }
+
+  /**
    * @internal Takes a seat synchronously (before any await), so concurrent
    * joins can't overfill the room.
    */
@@ -890,15 +1022,8 @@ export abstract class Room<
     reserved: boolean,
     ref?: number,
   ): Result<void, BungohanError> {
-    if (this._disposing !== undefined) {
-      return err(this._error("ROOM_NOT_FOUND", "the room is being disposed"))
-    }
-    if (!reserved && this._locked) {
-      return err(this._error("ROOM_LOCKED", "the room is locked"))
-    }
-    if (!reserved && this.getSeatCount() >= this.maxClients) {
-      return err(this._error("ROOM_FULL", "the room is full"))
-    }
+    const open = reserved ? this._undisposed() : this._acceptsNewSeat()
+    if (open.isErr()) return open
     if (this.clients.has(client.sessionId)) {
       return err(this._error("ALREADY_JOINED", "session already seated"))
     }
@@ -1413,6 +1538,11 @@ export abstract class Room<
     this._presence.clear()
     this._disposed = true
     host.roomDisposed(this)
+  }
+
+  /** @internal True from the moment disposal starts. */
+  public get _closing(): boolean {
+    return this._disposing !== undefined
   }
 
   /** @internal True once disposal finished. */

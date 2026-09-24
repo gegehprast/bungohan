@@ -21,7 +21,7 @@ export class Hero extends Schema {
   public quest = createFiltered(
     createString(""),
     function (this: Hero, client) {
-      return this.owner.get() === client.id
+      return this.owner.get() === client.sessionId
     },
   )
 }

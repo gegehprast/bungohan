@@ -84,3 +84,22 @@ export async function retire(server: BungohanServer): Promise<string> {
   return summary
 }
 // #endregion rolling-deploy
+
+// #region events
+/** Every process keeps the list of open events up to date. */
+export function trackEvents(server: BungohanServer): Set<string> {
+  const open = new Set<string>()
+  server.subscribe("events", (message) => {
+    // Untyped, like anything off the wire: check it.
+    if (typeof message === "object" && message !== null && "open" in message) {
+      if (typeof message.open === "string") open.add(message.open)
+    }
+  })
+  return open
+}
+
+/** A webhook reached one process: tell all of them, this one included. */
+export function onEventOpened(server: BungohanServer, eventId: string) {
+  return server.publish("events", { open: eventId })
+}
+// #endregion events

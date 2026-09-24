@@ -8,7 +8,9 @@ import {
   type AuthResult,
   type Client,
   type ConnectionContext,
+  createBungohanServer,
   Room,
+  type RoomClass,
 } from "@bungohan/core"
 import { ClientFrameType, JoinMode, ServerFrameType } from "@bungohan/types"
 import { createServerHarness } from "../harness"
@@ -175,5 +177,41 @@ describe("authenticate", () => {
     expect(room?.getClient(vip.sessionId)?.auth).toEqual({ tier: "gold" })
     expect(seen).toEqual([{ vip: false }, { vip: true }])
     await h.stop()
+  })
+})
+
+describe("onAuth written once", () => {
+  function warningsFor(RoomClass: RoomClass<Room>): string[] {
+    const warnings: string[] = []
+    const sink = { ...console, warn: (line: string) => warnings.push(line) }
+    const server = createBungohanServer({ logger: { sink } })
+    server.defineRoomType("checked", RoomClass)
+    return warnings
+  }
+
+  test("an instance onAuth without the static one warns at definition", () => {
+    class Guarded extends Room {
+      protected override async onAuth() {
+        return false
+      }
+    }
+    const [warning, ...rest] = warningsFor(Guarded)
+    expect(rest).toEqual([])
+    expect(warning).toContain('room type "checked": Guarded overrides')
+  })
+
+  test("both hooks, or neither, don't", () => {
+    class Both extends Room {
+      protected static override async onAuth() {
+        return true
+      }
+      protected override async onAuth() {
+        return false
+      }
+    }
+    class StaticFromBase extends Both {}
+    expect(warningsFor(Both)).toEqual([])
+    expect(warningsFor(StaticFromBase)).toEqual([])
+    expect(warningsFor(class Open extends Room {})).toEqual([])
   })
 })

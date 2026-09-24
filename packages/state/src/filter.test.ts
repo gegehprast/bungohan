@@ -6,8 +6,10 @@ import {
   createFiltered,
   createNumber,
   createSchemaMap,
+  createServerOnly,
   createString,
 } from "./factories"
+import { fromPlain, toPlain } from "./plain"
 import { Schema } from "./schema"
 import { Item, item, plain } from "./test-fixtures"
 
@@ -209,5 +211,45 @@ describe("createFiltered (spec §5.6)", () => {
     } finally {
       console.error = original
     }
+  })
+})
+
+class Level extends Schema {
+  public static override schemaName = "T.Level"
+  public round = createNumber()
+  public seed = createServerOnly(createNumber())
+  public order = createServerOnly(createSchemaMap(f.string, Item))
+}
+
+describe("createServerOnly", () => {
+  test("no client ever receives it, in a snapshot or a patch", () => {
+    const level = new Level()
+    level.seed.set(42)
+    level.order.set("1", item("top"))
+    const client = { id: "a" }
+    const replica = new Level()
+    applyDelta(replica, encodeSnapshot(level, client).unwrap()).unwrap()
+    expect(replica.seed.get()).toBe(0)
+    expect(replica.order.size).toBe(0)
+
+    clearChangeTrees(level)
+    level.seed.set(7)
+    level.order.set("2", item("next"))
+    level.round.set(1)
+    const ops = generateDeltas(level, [client]).get(client) ?? []
+    applyDelta(replica, ops).unwrap()
+    expect(replica.round.get()).toBe(1)
+    expect(replica.seed.get()).toBe(0)
+    expect(replica.order.size).toBe(0)
+    expect(JSON.stringify(ops)).not.toContain("next")
+  })
+
+  test("it is saved and restored like any other field", () => {
+    const level = new Level()
+    level.seed.set(42)
+    level.order.set("1", item("top"))
+    const restored = fromPlain(Level, toPlain(level)).unwrap()
+    expect(restored.seed.get()).toBe(42)
+    expect(restored.order.get("1")?.name.get()).toBe("top")
   })
 })

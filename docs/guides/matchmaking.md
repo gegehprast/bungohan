@@ -90,13 +90,22 @@ Each listing (`RoomListingInfo`) has `id`, `type`, `clients`,
 `includeDraining: true`. Clients can't
 query directly: a lobby room that sends them the list is the usual way.
 
+Metadata is read when a query runs: change `this.metadata` any time
+(a seat count, a phase) and the next `query` sees it, on this process
+and on the others, which answer from their rooms as they are then. Two
+limits: a process that doesn't answer within the collection window
+(`cluster.gatherTimeout`, 200 ms by default) is missing from that
+result, and a `RoomProxy` you hold keeps the metadata it was created
+with until `refresh()`.
+
 Get the matchmaker from `server.getMatchMaker()`, or `getMatchMaker()`
 anywhere once the server exists.
 
-**Metadata doesn't steer `joinOrCreate` or `reserve`.** They take the
-first available room of the *type*. To keep players apart by mode,
-region or skill band, register a room type per pool (`"duel"`, `"squad"`),
-or pick a room with `query` and send the client its id.
+On their own, `joinOrCreate` and `reserve` take the first available
+room of the *type*. To keep players apart by mode, region or skill band
+within one type, give them a `where` ([below](#pools-and-keys)), or pick
+a room with `query` and hold a seat in it with
+[`reserveById`](#reservations).
 
 ## Reservations
 
@@ -171,6 +180,109 @@ export async function findMatch(client: IBungohanClient) {
 Concurrent `reserve` calls need no queue: like `joinOrCreate`, one that
 arrives while another is creating a room waits for that room, and takes a
 seat in it if one is left.
+
+To hold a seat in a room your code chose (with `query`, say), use
+`reserveById`:
+
+<!-- snippet: docs/examples/src/matchmaking.ts#reserve-by-id -->
+[`docs/examples/src/matchmaking.ts`](../examples/src/matchmaking.ts)
+
+```ts
+/** Holds a seat in the fullest open match on a map, not just any match. */
+export async function reserveInFullest(map: "dunes" | "docks", rating: number) {
+  const open = await openMatches(map)
+  if (open.isErr()) return open
+  const [fullest] = open.value.sort((a, b) => b.clients - a.clients)
+  if (fullest === undefined) {
+    return getMatchMaker().reserve(MatchRoom, { rating }, undefined, { map })
+  }
+  // ROOM_FULL if it filled up since the query: pick again.
+  return getMatchMaker().reserveById(fullest.id, { rating })
+}
+```
+<!-- /snippet -->
+
+- `reserveById(roomId, joinOptions)` finds the room as `joinById`
+  does, on any process: private rooms are fine, and so is a room on a
+  draining process. A locked room is `ROOM_LOCKED`, a full one
+  `ROOM_FULL`, a missing one `ROOM_NOT_FOUND`.
+- The seat is then like any other reservation. Sending the client the
+  room id instead would race other players to the last seat.
+
+## Pools and keys
+
+The server-side `joinOrCreate`, `reserve`, `createRoom` and `joinRoom`
+take a `Placement` where they take a process selector. It narrows which
+rooms they may pick.
+
+**`where`** splits one room type into pools by metadata:
+
+<!-- snippet: docs/examples/src/matchmaking.ts#pools -->
+[`docs/examples/src/matchmaking.ts`](../examples/src/matchmaking.ts)
+
+```ts
+/** A seat in an open match of the player's band; one room type serves all. */
+export function reserveInBand(band: "bronze" | "silver", rating: number) {
+  return getMatchMaker().reserve(
+    MatchRoom,
+    { rating },
+    // Only rooms whose metadata has band === `band`. One created for it
+    // starts with { band } in its metadata, so the next call finds it.
+    { where: { band } },
+    { map: "dunes" },
+  )
+}
+```
+<!-- /snippet -->
+
+- A room matches when its `metadata` has each `where` entry (`===`, as in
+  `query`). Values are strings, numbers, booleans or `null`.
+- A room created for the call starts with the `where` entries in its
+  metadata, over the create options' own `metadata`. So pools can come
+  from your database at run time, with no room type per pool. If
+  `onCreate` or later code changes those entries, the room leaves the
+  pool.
+- Concurrent calls for the same pool create one room between them, on
+  any process (see [scaling](scaling.md#one-room-per-pool)).
+
+**`key`** names one room of the type, for rooms that stand for
+something outside the server (a record in your database, a scheduled
+match):
+
+<!-- snippet: docs/examples/src/matchmaking.ts#keys -->
+[`docs/examples/src/matchmaking.ts`](../examples/src/matchmaking.ts)
+
+```ts
+/**
+ * The room for a scheduled match your database knows as `matchId`: found
+ * wherever it runs, created the first time it's needed, never twice.
+ */
+export async function reserveInScheduled(matchId: string, rating: number) {
+  return getMatchMaker().reserve(
+    MatchRoom,
+    { rating },
+    { key: matchId }, // ROOM_FULL when that match is full, not a new room
+    { map: "docks" },
+  )
+}
+```
+<!-- /snippet -->
+
+- At most one room of the type has a given key, across the cluster.
+  `joinOrCreate` and `reserve` return or reserve in that room whether
+  or not it's available: a full or locked one is `ROOM_FULL` or
+  `ROOM_LOCKED`, never a second room. A private keyed room is fine.
+- `createRoom` with a key that's taken fails with `ROOM_EXISTS`.
+  `joinRoom` finds it without creating it.
+- The room's `key` is set for its whole life and shows in `query`
+  listings. Once the room is disposed, the key is free again.
+- A key can't contain NUL or a lone surrogate (`INVALID_OPTIONS`).
+- `process` in a `Placement` is the process selector, for where a room
+  is created in [cluster mode](scaling.md).
+
+Clients can't pass a `where` or a key: their joins carry join options,
+and what a player may join is the server's call. Have a lobby reserve
+the seat and hand the client the reservation.
 
 ## Server-side rooms
 

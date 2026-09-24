@@ -37,6 +37,7 @@ export {
   createSchemaArray,
   createSchemaMap,
   createSchemaSet,
+  createServerOnly,
   createSet,
   createString,
   type FilterClient,

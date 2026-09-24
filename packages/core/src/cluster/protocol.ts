@@ -113,6 +113,8 @@ export interface RoomInfo {
   locked: boolean
   /** Its `metadata`. */
   metadata: Record<string, unknown>
+  /** Its `key`, if it has one. */
+  key?: string
   /** Its `getClientCount()`: seats taken. */
   clientCount: number
   /** Its `getSeatCount()`: seats taken plus open reservations. */
@@ -216,6 +218,10 @@ export interface FindRequest extends Envelope {
    * instead of getting a second room.
    */
   exclude: string[]
+  /** Only rooms whose metadata has these entries (`Placement.where`). */
+  where?: Record<string, unknown>
+  /** The room with this key, available or not (`Placement.key`). */
+  key?: string
 }
 
 export interface FindReply extends Envelope {
@@ -245,6 +251,34 @@ export interface CreateRoomRequest extends Envelope {
   rid: string
   roomType: string
   options: unknown
+  /** The new room's key (`Placement.key`). */
+  key?: string
+  /** Metadata the new room must match (`Placement.where`). */
+  where?: Record<string, unknown>
+}
+
+/**
+ * Asks the coordinator of `pool` for its creation lock (spec §6.4.4). The
+ * `lock!` reply comes when it's granted, which may be much later.
+ */
+export interface LockRequest extends Envelope {
+  t: "lock?"
+  rid: string
+  pool: string
+}
+
+/** The lock is the requester's until it sends `unlock` with this `rid`. */
+export interface LockGrant extends Envelope {
+  t: "lock!"
+  rid: string
+  pool: string
+}
+
+/** Ends a lease (or gives up a request still queued). */
+export interface Unlock extends Envelope {
+  t: "unlock"
+  pool: string
+  lease: string
 }
 
 export interface CreateRoomReply extends Envelope {
@@ -260,6 +294,8 @@ export interface ReserveRequest extends Envelope {
   rid: string
   roomId: string
   options: unknown
+  /** `reserveById`: the room was chosen, not found by matchmaking. */
+  byId?: boolean
 }
 
 export interface ReserveReply extends Envelope {
@@ -441,6 +477,21 @@ export type ClusterMessage =
   | ConnectionClosed
   | FrameRelay
   | ViolationRelay
+  | AppMessage
+  | LockRequest
+  | LockGrant
+  | Unlock
+
+/**
+ * Application pub/sub (`server.publish`), on the all-process channel: every
+ * peer hands it to its subscribers of `ch`. A process that predates it
+ * ignores the unknown type.
+ */
+export interface AppMessage extends Envelope {
+  t: "app"
+  ch: string
+  m: unknown
+}
 
 /**
  * A received JSON value as a cluster message, or undefined if it isn't one

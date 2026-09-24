@@ -4,7 +4,13 @@ import type { BungohanServer } from "@bungohan/core"
 import { createClusterHarness } from "@bungohan/testing"
 import { ArenaRoom } from "@bungohan/tutorial-server/ArenaRoom"
 import { ArenaState, arenaContract } from "@bungohan/tutorial-shared"
-import { createClusterServer, createMatch, retire } from "./scaling"
+import {
+  createClusterServer,
+  createMatch,
+  onEventOpened,
+  retire,
+  trackEvents,
+} from "./scaling"
 
 const arena = { state: ArenaState, contract: arenaContract }
 const options = (name: string) => ({ create: { gems: 3 }, join: { name } })
@@ -126,3 +132,15 @@ test.skipIf(redisUrl === undefined)(
   },
   20_000,
 )
+
+test("an event published on one process reaches every process", async () => {
+  const cluster = await createClusterHarness({ size: 2 })
+  const lists = cluster.nodes.map((node) => trackEvents(node.server))
+  onEventOpened(cluster.node(1).server, "spring-cup").unwrap()
+  await cluster.flush()
+  expect(lists.map((open) => [...open])).toEqual([
+    ["spring-cup"],
+    ["spring-cup"],
+  ])
+  await cluster.stop()
+})

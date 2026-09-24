@@ -3,6 +3,7 @@ import {
   applyDelta,
   clearChangeTrees,
   encodeSnapshot,
+  type FilterClient,
   generateDeltas,
   type Schema,
 } from "@bungohan/state"
@@ -21,8 +22,8 @@ import {
  * expect(snapshotFor(party, "bob").heroes.get("alice")?.quest.get()).toBe("")
  * ```
  *
- * `client` is the `sessionId` your filters compare `client.id` against,
- * or the object they receive when they read more than the id.
+ * `client` is the `sessionId` your filters compare `client.sessionId`
+ * against, or the object they receive when they read more than the id.
  *
  * Pass a state the test built. The call counts its pending changes as
  * synced, which is harmless there but would cost a running room's real
@@ -32,12 +33,13 @@ import {
  */
 export function snapshotFor<S extends Schema>(
   state: S,
-  client: string | { readonly id: string },
+  client: string | FilterClient,
 ): S {
   // A snapshot is taken at a sync boundary: settle what's pending first.
   generateDeltas(state)
   clearChangeTrees(state)
-  const viewer = typeof client === "string" ? { id: client } : client
+  const viewer =
+    typeof client === "string" ? { sessionId: client, id: client } : client
   const ops = encodeSnapshot(state, viewer).unwrap()
   const codec = new SchemaCodec()
   const bytes = codec.createSession().encodeOps(ops).unwrap()

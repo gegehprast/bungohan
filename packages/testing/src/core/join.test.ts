@@ -224,6 +224,42 @@ describe("reservations", () => {
     expect(mm.getRoom(reservation.roomId)).toBeUndefined()
     await h.stop()
   })
+
+  test("reserveById holds a seat in the chosen room, private ones included", async () => {
+    const { h } = await setup({ maxClients: 2 })
+    const mm = h.server.getMatchMaker()
+    const first = (await mm.createRoom("game")).unwrap()
+    const chosen = (await mm.createRoom("game")).unwrap()
+    chosen.makePrivate()
+    const reservation = (await mm.reserveById(chosen.id)).unwrap()
+    expect(reservation.roomId).toBe(chosen.id)
+    expect(chosen.getSeatCount()).toBe(1)
+    expect(first.getSeatCount()).toBe(0)
+    const view = (
+      await h.connect().consumeReservation(reservation.id, {
+        contract: gameContract,
+      })
+    ).unwrap()
+    expect(view.roomId).toBe(chosen.id)
+    await h.stop()
+  })
+
+  test("reserveById refuses as joinById does", async () => {
+    const { h } = await setup({ maxClients: 1 })
+    const mm = h.server.getMatchMaker()
+    const code = async (id: string) => {
+      const reserved = await mm.reserveById(id)
+      return reserved.isErr() ? reserved.error.code : "ok"
+    }
+    expect(await code("missing")).toBe("ROOM_NOT_FOUND")
+    const room = (await mm.createRoom("game")).unwrap()
+    room.lock()
+    expect(await code(room.id)).toBe("ROOM_LOCKED")
+    room.unlock()
+    expect(await code(room.id)).toBe("ok")
+    expect(await code(room.id)).toBe("ROOM_FULL")
+    await h.stop()
+  })
 })
 
 describe("server-side joins", () => {

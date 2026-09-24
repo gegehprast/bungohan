@@ -69,7 +69,18 @@ export class GuildRoom extends Room<GuildState> {
 - **The static `onAuth`** runs only when the join would *create* the
   room, before `onCreate`, since there is no instance yet. **The
   instance `onAuth`** runs for joins into an existing room, where it can
-  look at the room's state. Implement both if every join must be checked.
+  look at the room's state.
+- **Implement both if every join must be checked.** The default static
+  `onAuth` admits everyone, so a room that overrides only the instance
+  one lets the creating join in unchecked. `defineRoomType` logs a
+  warning when it sees that. If what you check is who the player is,
+  check it once in the server's
+  [`authenticate`](#authenticating-a-connection-once) instead: it runs
+  once per connection, and every join waits for it before either hook.
+- `onAuth` runs for every join: each room a connection joins, and each
+  reservation consumed. It doesn't run when a client
+  [resumes a held seat](#reconnection); the reconnection token proves
+  the seat. Every join on one connection sees the same `context.token`.
 - A static method can't see the room's contract type, so declare the
   `options` parameter's type yourself.
 

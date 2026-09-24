@@ -1,11 +1,11 @@
 import { err, ok, type Result } from "@bungohan/result"
 import type { Clock, Reservation, TimerId } from "@bungohan/types"
-import type { ClusterNode } from "./cluster/node"
+import type { ClusterNode, PoolMatch } from "./cluster/node"
 import type { RoomInfo } from "./cluster/protocol"
 import { RoomProxy } from "./cluster/proxy"
 import { BungohanError, type ErrorCode } from "./errors"
 import type { Logger } from "./logger"
-import type { Room } from "./room"
+import { Room, type RoomPlacement } from "./room"
 import type { RoomManager } from "./room-manager"
 import {
   createRoomType,
@@ -17,6 +17,8 @@ import type {
   CreateRoomArgs,
   DefineRoomOptions,
   MatchMakerQueryOptions,
+  MetadataValue,
+  Placement,
   ProcessInfo,
   ProcessSelector,
   ReserveArgs,
@@ -60,6 +62,19 @@ export function getMatchMaker(): MatchMaker {
     throw new Error("getMatchMaker(): no Bungohan server has been created")
   }
   return current
+}
+
+/**
+ * A class that checks joins into an existing room (instance `onAuth`) but
+ * inherits the default static `onAuth`, which admits every creating join.
+ */
+function checksOnlyExistingRooms(ctor: RoomConstructor): boolean {
+  const instanceHook: unknown = Reflect.get(ctor.prototype, "onAuth")
+  const staticHook: unknown = Reflect.get(ctor, "onAuth")
+  return (
+    instanceHook !== Reflect.get(Room.prototype, "onAuth") &&
+    staticHook === Reflect.get(Room, "onAuth")
+  )
 }
 
 /** @internal */
@@ -115,6 +130,15 @@ export class MatchMaker {
     }
     const ctor: RoomConstructor = RoomClass
     this._types.set(name, createRoomType(name, ctor, options))
+    if (checksOnlyExistingRooms(ctor)) {
+      this._deps.logger.warn(
+        `room type "${name}": ${ctor.name} overrides the instance onAuth ` +
+          "but not the static one, so the join that creates a room is " +
+          "admitted unchecked. Override the static onAuth too (return true " +
+          "if creating is open to anyone), or check identity once in " +
+          "ServerOptions.authenticate.",
+      )
+    }
   }
 
   /** @internal */
@@ -137,15 +161,59 @@ export class MatchMaker {
   public createRoom(
     roomType: string,
     options?: unknown,
-    processSelector?: ProcessSelector,
+    placement?: ProcessSelector | Placement,
   ): Promise<Result<Room, BungohanError>>
   public async createRoom(
     roomType: string | RoomConstructor,
     options?: unknown,
-    processSelector?: ProcessSelector,
+    placement?: ProcessSelector | Placement,
   ): Promise<Result<Room, BungohanError>> {
     const name = this._nameOf(roomType)
     if (name.isErr()) return name
+    const place = resolvePlacement(placement)
+    const bad = this._badKey(place.key)
+    if (bad !== undefined) return err(bad)
+    const key = place.key
+    if (key === undefined) return this._createPlaced(name.value, options, place)
+    // One room per key: checked and created under the key's lock, after
+    // any creation of it in progress here.
+    const pool = poolOf(name.value, place)
+    for (
+      let creating = this._creating.get(pool);
+      creating !== undefined;
+      creating = this._creating.get(pool)
+    ) {
+      await creating
+    }
+    const claim = this._claimCreation(pool)
+    try {
+      await claim.granted
+      const existing = await this._lookupKeyed(name.value, key)
+      if (existing !== undefined) {
+        return err(
+          this._error(
+            "ROOM_EXISTS",
+            `a room of type "${name.value}" with key "${key}" exists`,
+          ),
+        )
+      }
+      return await this._createPlaced(name.value, options, place)
+    } finally {
+      claim.release()
+    }
+  }
+
+  /** `createRoom` without the key check: creates, wherever it's placed. */
+  private async _createPlaced(
+    name: string,
+    options: unknown,
+    place: ResolvedPlacement,
+  ): Promise<Result<Room, BungohanError>> {
+    const processSelector = place.selector
+    const created: RoomPlacement = {
+      ...(place.key === undefined ? {} : { key: place.key }),
+      ...(place.where === undefined ? {} : { where: place.where }),
+    }
     const cluster = this._deps.cluster()
     if (
       cluster !== undefined &&
@@ -153,9 +221,10 @@ export class MatchMaker {
     ) {
       const placed = await this._place(
         cluster,
-        name.value,
+        name,
         options,
         processSelector,
+        created,
       )
       if (placed.isErr()) return placed
       // A room elsewhere, or `undefined`: this process was chosen.
@@ -165,13 +234,13 @@ export class MatchMaker {
       const local = this._selectLocal(processSelector)
       if (local.isErr()) return local
     }
-    const type = this._type(name.value)
+    const type = this._type(name)
     if (type.isErr()) return type
     const read = readServerOptions(type.value, "create", options)
     if (read.isErr()) {
       return err(this._error("INVALID_OPTIONS", read.error.message))
     }
-    return this._deps.manager._createReady(type.value, read.value)
+    return this._deps.manager._createReady(type.value, read.value, created)
   }
 
   /**
@@ -182,13 +251,23 @@ export class MatchMaker {
   public async joinRoom(
     roomType: string,
     _options?: unknown,
+    placement?: Pick<Placement, "where" | "key">,
   ): Promise<Result<Room, BungohanError>> {
     const known = this._types.has(roomType)
-    const room = known ? this._findAvailable(roomType) : undefined
+    const { where, key } = placement ?? {}
+    const room = !known
+      ? undefined
+      : key !== undefined
+        ? this._findKeyed(roomType, key)
+        : this._findAvailable(roomType, [], where)
     if (room !== undefined) return this._whenReady(room)
     const cluster = this._deps.cluster()
     if (cluster !== undefined) {
-      const found = await cluster.findAvailable(roomType)
+      const found = await cluster.findAvailable(
+        roomType,
+        [],
+        key !== undefined ? { key } : where !== undefined ? { where } : {},
+      )
       if (found !== undefined) {
         return this._proxyFor(cluster, found.processId, found.roomId)
       }
@@ -217,17 +296,20 @@ export class MatchMaker {
   public joinOrCreate(
     roomType: string,
     options?: unknown,
-    processSelector?: ProcessSelector,
+    placement?: ProcessSelector | Placement,
   ): Promise<Result<Room, BungohanError>>
   public async joinOrCreate(
     roomType: string | RoomConstructor,
     options?: unknown,
-    processSelector?: ProcessSelector,
+    placement?: ProcessSelector | Placement,
   ): Promise<Result<Room, BungohanError>> {
     const name = this._nameOf(roomType)
     if (name.isErr()) return name
-    return this._findOrCreate(name.value, options, processSelector, (room) =>
-      Promise.resolve(ok(room)),
+    return this._findOrCreate(
+      name.value,
+      options,
+      resolvePlacement(placement),
+      (room) => Promise.resolve(ok(room)),
     )
   }
 
@@ -307,13 +389,13 @@ export class MatchMaker {
   public reserve(
     roomType: string,
     options?: unknown,
-    processSelector?: ProcessSelector,
+    placement?: ProcessSelector | Placement,
     createOptions?: unknown,
   ): Promise<Result<Reservation, BungohanError>>
   public async reserve(
     roomType: string | RoomConstructor,
     options?: unknown,
-    processSelector?: ProcessSelector,
+    placement?: ProcessSelector | Placement,
     createOptions?: unknown,
   ): Promise<Result<Reservation, BungohanError>> {
     const name = this._nameOf(roomType)
@@ -331,23 +413,52 @@ export class MatchMaker {
       createOptions !== undefined || type?.createOptions !== undefined
         ? createOptions
         : options
-    return this._findOrCreate(
-      name.value,
-      roomOptions,
-      processSelector,
-      async (room) => {
-        if (!(room instanceof RoomProxy)) return this._reserveIn(room, options)
-        const cluster = this._deps.cluster()
-        if (cluster === undefined) {
-          return err(
-            this._error("INVALID_STATE", "cluster mode is not running"),
-          )
-        }
-        const packed = this._pack(name.value, "join", options)
-        if (packed.isErr()) return packed
-        return cluster.reserve(room.processId, room.id, packed.value)
-      },
-    )
+    const place = resolvePlacement(placement)
+    // A keyed room is the room: its seat is taken by joinById's rules.
+    const byId = place.key !== undefined
+    return this._findOrCreate(name.value, roomOptions, place, async (room) => {
+      if (!(room instanceof RoomProxy)) {
+        return this._reserveIn(room, options, byId)
+      }
+      const cluster = this._deps.cluster()
+      if (cluster === undefined) {
+        return err(this._error("INVALID_STATE", "cluster mode is not running"))
+      }
+      const packed = this._pack(name.value, "join", options)
+      if (packed.isErr()) return packed
+      return cluster.reserve(room.processId, room.id, packed.value, byId)
+    })
+  }
+
+  /**
+   * Holds a seat in **this** room, for a lobby that picked it (with
+   * `query`, say) and must not lose it to a race with other players, as
+   * a `joinById` sent to the client could. The seat, its `expiresAt` and
+   * how the client consumes it are as for `reserve`.
+   *
+   * The room is found as `joinById` finds it, here or on any process:
+   * private rooms are fine, and so is a room on a draining process. A
+   * locked room is `ROOM_LOCKED`, a full one `ROOM_FULL`, and a missing
+   * or disposing one `ROOM_NOT_FOUND`. `options` are the seat's join
+   * options, checked against the room type's declaration where the room
+   * runs.
+   */
+  public async reserveById(
+    roomId: string,
+    options?: unknown,
+  ): Promise<Result<Reservation, BungohanError>> {
+    const found = await this.joinById(roomId)
+    if (found.isErr()) return found
+    const room = found.value
+    if (!(room instanceof RoomProxy))
+      return this._reserveIn(room, options, true)
+    const cluster = this._deps.cluster()
+    if (cluster === undefined) {
+      return err(this._error("INVALID_STATE", "cluster mode is not running"))
+    }
+    const packed = this._pack(room.roomType, "join", options)
+    if (packed.isErr()) return packed
+    return cluster.reserve(room.processId, room.id, packed.value, true)
   }
 
   /**
@@ -399,8 +510,12 @@ export class MatchMaker {
   public _reserveIn(
     room: Room,
     raw: unknown,
+    byId = false,
   ): Result<Reservation, BungohanError> {
-    if (!room.isAvailable()) {
+    if (byId) {
+      const open = room._acceptsNewSeat()
+      if (open.isErr()) return open
+    } else if (!room.isAvailable()) {
       return err(this._error("ROOM_FULL", "the room filled up"))
     }
     const type = this._types.get(room.roomType)
@@ -502,19 +617,29 @@ export class MatchMaker {
   }
 
   /**
-   * @internal Registers a find-or-create of this type as creating. Call it
-   * synchronously after `_creation` returned nothing and the local look
-   * found no room, with no await in between, and release once the room is
-   * ready or won't be created. Releasing twice is harmless.
+   * @internal Registers a find-or-create of this pool (a type, or a type
+   * with `where` or a key) as creating. Call it synchronously after
+   * `_creation` returned nothing and the local look found no room, with
+   * no await in between; await `granted` (the cluster-wide lock) before
+   * looking across the cluster; release once the room is ready or won't
+   * be created. Releasing twice is harmless.
    */
-  public _claimCreation(roomType: string): () => void {
+  public _claimCreation(pool: string): CreationClaim {
     const { promise, resolve } = Promise.withResolvers<void>()
-    this._creating.set(roomType, promise)
-    return () => {
-      if (this._creating.get(roomType) === promise) {
-        this._creating.delete(roomType)
-      }
-      resolve()
+    this._creating.set(pool, promise)
+    // In a cluster, this process's one creator for the pool also takes the
+    // pool's cluster-wide lock (spec §6.4.4).
+    const unlock = this._deps.cluster()?.lock(pool)
+    let released = false
+    return {
+      granted: unlock === undefined ? Promise.resolve() : unlock.then(noop),
+      release: () => {
+        if (released) return
+        released = true
+        if (this._creating.get(pool) === promise) this._creating.delete(pool)
+        resolve()
+        void unlock?.then((give) => give())
+      },
     }
   }
 
@@ -529,31 +654,43 @@ export class MatchMaker {
   private async _findOrCreate<T>(
     name: string,
     options: unknown,
-    selector: ProcessSelector | undefined,
+    place: ResolvedPlacement,
     take: (room: Room) => Promise<Result<T, BungohanError>>,
   ): Promise<Result<T, BungohanError>> {
+    const bad = this._badKey(place.key)
+    if (bad !== undefined) return err(bad)
     const known = this._types.has(name)
+    const pool = poolOf(name, place)
+    const { key, where } = place
+    const match: PoolMatch =
+      key !== undefined ? { key } : where !== undefined ? { where } : {}
     for (;;) {
-      const creating = this._creating.get(name)
+      const creating = this._creating.get(pool)
       if (creating !== undefined) {
         await creating
         continue
       }
-      const room = known ? this._findAvailable(name) : undefined
+      const room = !known
+        ? undefined
+        : key !== undefined
+          ? this._findKeyed(name, key)
+          : this._findAvailable(name, [], where)
       if (room !== undefined) {
         // It failed to create, or filled up meanwhile: look again.
         if ((await this._whenReady(room)).isErr()) continue
         const taken = await take(room)
-        if (taken.isErr() && taken.error.code === "ROOM_FULL") continue
+        // A keyed room is the only one: full is the answer, not a retry.
+        if (isFull(taken) && key === undefined) continue
         return taken
       }
       // Nothing here: from now on this call is the one creating.
-      const release = this._claimCreation(name)
+      const claim = this._claimCreation(pool)
       try {
+        await claim.granted
         const cluster = this._deps.cluster()
-        const found = await cluster?.findAvailable(name)
+        const found = await cluster?.findAvailable(name, [], match)
         if (cluster !== undefined && found !== undefined) {
-          release() // it creates nothing: let the others look too
+          claim.release() // it creates nothing: let the others look too
           const proxy = await this._proxyFor(
             cluster,
             found.processId,
@@ -566,9 +703,9 @@ export class MatchMaker {
           const taken = await take(proxy.value)
           // Filled up, or its process started draining since it answered.
           if (
-            taken.isErr() &&
-            (taken.error.code === "ROOM_FULL" ||
-              taken.error.code === "SERVER_SHUTTING_DOWN")
+            key === undefined &&
+            (isFull(taken) ||
+              (taken.isErr() && taken.error.code === "SERVER_SHUTTING_DOWN"))
           ) {
             continue
           }
@@ -582,14 +719,56 @@ export class MatchMaker {
             ),
           )
         }
-        const created = await this.createRoom(name, options, selector)
+        const created = await this._createPlaced(name, options, place)
         if (created.isErr()) return created
         // Taken before anyone waiting can look, so they can't fill it first.
         return await take(created.value)
       } finally {
-        release()
+        claim.release()
       }
     }
+  }
+
+  /**
+   * @internal This process's room of the type with this key, ready or
+   * still being created, and not being disposed. Draining doesn't hide
+   * it: a key names one room, wherever it is.
+   */
+  public _findKeyed(roomType: string, key: string): Room | undefined {
+    for (const room of this._deps.manager.getRooms()) {
+      if (room.roomType === roomType && room.key === key && !room._closing) {
+        return room
+      }
+    }
+    return undefined
+  }
+
+  /**
+   * A key crosses the backplane, whose serializer would replace a NUL or a
+   * lone surrogate, and another process would then see another key.
+   */
+  private _badKey(key: string | undefined): BungohanError | undefined {
+    if (key === undefined || (key.isWellFormed() && !key.includes("\0"))) {
+      return undefined
+    }
+    return this._error(
+      "INVALID_OPTIONS",
+      "a room key can't contain NUL or a lone surrogate",
+    )
+  }
+
+  /** The room with this key, here or on any process. */
+  private async _lookupKeyed(
+    roomType: string,
+    key: string,
+  ): Promise<Room | undefined> {
+    const local = this._findKeyed(roomType, key)
+    if (local !== undefined) return local
+    const cluster = this._deps.cluster()
+    const found = await cluster?.findAvailable(roomType, [], { key })
+    if (cluster === undefined || found === undefined) return undefined
+    const proxy = await this._proxyFor(cluster, found.processId, found.roomId)
+    return proxy.isOk() ? proxy.value : undefined
   }
 
   /**
@@ -599,11 +778,13 @@ export class MatchMaker {
   public _findAvailable(
     roomType: string,
     exclude: readonly string[] = [],
+    where?: Record<string, unknown>,
   ): Room | undefined {
     if (this._deps.draining()) return undefined
     for (const room of this._deps.manager.getRooms()) {
       if (room.roomType !== roomType || !room.isAvailable()) continue
       if (exclude.includes(room.id)) continue
+      if (where !== undefined && !matches(room.metadata, where)) continue
       return room
     }
     return undefined
@@ -626,12 +807,7 @@ export class MatchMaker {
       if (room.roomType !== roomType || room.isDisposed) continue
       if (!room._isReady) continue
       if (room.visibility !== "public" && !includePrivate) continue
-      if (metadata !== undefined) {
-        const wanted = Object.entries(metadata)
-        if (wanted.some(([key, value]) => room.metadata[key] !== value)) {
-          continue
-        }
-      }
+      if (metadata !== undefined && !matches(room.metadata, metadata)) continue
       out.push(this._listing(room))
     }
     return out
@@ -650,6 +826,7 @@ export class MatchMaker {
       visibility: room.visibility,
       locked: room.locked,
       metadata: { ...room.metadata },
+      ...(room.key === undefined ? {} : { key: room.key }),
       clientCount: room.getClientCount(),
       seatCount: room.getSeatCount(),
       disposed: room.isDisposed,
@@ -800,6 +977,7 @@ export class MatchMaker {
     name: string,
     options: unknown,
     selector: ProcessSelector | undefined,
+    placement: RoomPlacement,
   ): Promise<Result<Room | undefined, BungohanError>> {
     const all = await cluster.processes()
     const refused = new Set<string>()
@@ -821,7 +999,12 @@ export class MatchMaker {
       }
       const packed = this._pack(name, "create", options)
       if (packed.isErr()) return packed
-      const info = await cluster.createRoom(chosen.value, name, packed.value)
+      const info = await cluster.createRoom(
+        chosen.value,
+        name,
+        packed.value,
+        placement,
+      )
       if (info.isOk()) return ok(this._proxy(info.value))
       // Our own choice may land on a process without the type; a
       // selector's choice is the selector's to fix.
@@ -892,11 +1075,77 @@ export class MatchMaker {
       visibility: room.visibility,
       locked: room.locked,
       metadata: { ...room.metadata },
+      ...(room.key === undefined ? {} : { key: room.key }),
       processId: this._deps.processId,
       draining: this._deps.draining(),
     }
   }
 }
+
+/** @internal A find-or-create's claim on creating a pool's room. */
+export interface CreationClaim {
+  /** Resolves once the cluster-wide lock is held (at once without one). */
+  readonly granted: Promise<void>
+  /** Ends the claim and gives the lock back; harmless twice. */
+  readonly release: () => void
+}
+
+interface ResolvedPlacement {
+  readonly selector?: ProcessSelector
+  readonly where?: Record<string, MetadataValue>
+  readonly key?: string
+}
+
+function resolvePlacement(
+  placement: ProcessSelector | Placement | undefined,
+): ResolvedPlacement {
+  if (placement === undefined) return {}
+  if (typeof placement === "function") return { selector: placement }
+  return {
+    ...(placement.process === undefined ? {} : { selector: placement.process }),
+    ...(placement.where === undefined ? {} : { where: placement.where }),
+    ...(placement.key === undefined ? {} : { key: placement.key }),
+  }
+}
+
+/**
+ * What a find-or-create creates for: the room type alone (shared with a
+ * client's `JOIN_OR_CREATE`), a type plus a key, or a type plus `where`
+ * values, in a form every process computes the same way. It crosses the
+ * backplane in lock requests, so it's JSON: the serializer would replace
+ * a NUL or a lone surrogate in a raw string, and the coordinator would
+ * then file the request under another pool.
+ */
+export function poolOf(
+  roomType: string,
+  placement: { readonly where?: object; readonly key?: string },
+): string {
+  if (placement.key !== undefined) {
+    return JSON.stringify([roomType, "key", placement.key])
+  }
+  if (placement.where === undefined) return roomType
+  const entries = Object.entries(placement.where).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  )
+  return JSON.stringify([roomType, "where", entries])
+}
+
+/** True if `metadata` has every entry of `wanted` (`===`). */
+function matches(
+  metadata: Record<string, unknown>,
+  wanted: Record<string, unknown>,
+): boolean {
+  for (const [key, value] of Object.entries(wanted)) {
+    if (metadata[key] !== value) return false
+  }
+  return true
+}
+
+function isFull<T>(taken: Result<T, BungohanError>): boolean {
+  return taken.isErr() && taken.error.code === "ROOM_FULL"
+}
+
+function noop(): void {}
 
 /** Fewest rooms, then fewest seats; the first on a tie. */
 function leastLoaded(processes: ProcessInfo[]): ProcessInfo {

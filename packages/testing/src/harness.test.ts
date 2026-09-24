@@ -241,7 +241,7 @@ test("snapshotFor shows what one client would receive", () => {
   party.heroes.set("alice", hero)
 
   const alice = snapshotFor(party, "alice")
-  const bob = snapshotFor(party, { id: "bob" })
+  const bob = snapshotFor(party, { sessionId: "bob", id: "bob" })
   expect(alice).not.toBe(party)
   expect(alice.heroes.get("alice")?.quest.get()).toBe("find the lost map")
   expect(bob.heroes.get("alice")?.quest.get()).toBe("")

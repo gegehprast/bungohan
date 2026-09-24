@@ -50,14 +50,14 @@ import { BungohanError, type ErrorCode } from "./errors"
 import { HttpServer } from "./http"
 import { ConnectionLimiter } from "./limits"
 import { Logger } from "./logger"
-import { MatchMaker, setMatchMaker } from "./matchmaker"
+import { type CreationClaim, MatchMaker, setMatchMaker } from "./matchmaker"
 import {
   type ClientMetrics,
   MetricsCollector,
   type RoomMetrics,
   type ServerMetrics,
 } from "./metrics"
-import { admission, Room, type RoomHost } from "./room"
+import { admission, Room, type RoomHost, type RoomPlacement } from "./room"
 import { RoomManager } from "./room-manager"
 import {
   type RoomTypeDef,
@@ -82,6 +82,8 @@ const DEFAULT_PORT = 6060
  * process, it doesn't carry data.
  */
 export const MAX_PROCESS_METADATA_BYTES = 1024
+
+type AppHandler = (message: unknown, from: string) => unknown
 
 type Callback<A extends unknown[]> = (...args: A) => void
 
@@ -267,6 +269,8 @@ export class BungohanServer {
   private readonly _onJoin = new Set<Callback<[Client, Room]>>()
   private readonly _onLeave = new Set<Callback<[Client, Room, boolean]>>()
   private readonly _onError = new Set<Callback<[Error, ErrorContext]>>()
+  /** `subscribe` handlers, by channel. */
+  private readonly _subscribers = new Map<string, Set<AppHandler>>()
   private _http: HttpServer | undefined
   /** `JOIN` frames being handled (hooks included), and finished. */
   private _joinsRunning = 0
@@ -723,8 +727,17 @@ export class BungohanServer {
    * harness watches them to let join hooks finish real I/O before it moves
    * its clock.
    */
-  public _joinActivity(): { running: number; settled: number } {
-    return { running: this._joinsRunning, settled: this._joinsSettled }
+  public _joinActivity(): {
+    running: number
+    settled: number
+    clockBound: boolean
+  } {
+    return {
+      running: this._joinsRunning,
+      settled: this._joinsSettled,
+      // Waiting on a cluster broadcast's window: only the clock ends it.
+      clockBound: (this._cluster?._openWindows() ?? 0) > 0,
+    }
   }
 
   /** The built-in HTTP server while it runs (`ServerOptions.http`). */
@@ -765,6 +778,91 @@ export class BungohanServer {
   ): () => void {
     this._onError.add(cb)
     return () => this._onError.delete(cb)
+  }
+
+  // ==========================================================================
+  // Application pub/sub
+  // ==========================================================================
+
+  /**
+   * Sends `message` to every `subscribe(channel, …)` handler on **every
+   * process** of the cluster, this one included: to fan an event that
+   * reached one process (a webhook, an admin action) out to all of them.
+   * Without cluster mode, only this process's handlers get it, so the
+   * same code works on one process.
+   *
+   * It travels over the backplane, encoded with `ServerOptions.serializer`
+   * (MessagePack by default: a `Map` or `Set` arrives as a plain object),
+   * and every handler, this process's too, gets a decoded copy. Delivery
+   * is best effort, like the backplane's pub/sub: a process that is down
+   * or not yet started misses it, and nothing is stored or retried.
+   * Messages from one process arrive in the order it sent them. Handlers
+   * run later, never inside this call. `INVALID_OPTIONS` if the message
+   * can't be encoded, `INVALID_STATE` in cluster mode before `start()`.
+   * See docs/guides/scaling.md#events-for-every-process.
+   */
+  public publish(
+    channel: string,
+    message: unknown,
+  ): Result<void, BungohanError> {
+    const encoded = this._serializer.encode(message)
+    if (encoded.isErr()) {
+      return err(this._error("INVALID_OPTIONS", encoded.error.message))
+    }
+    const clustered = this._options.cluster?.enabled === true
+    const cluster = this._cluster
+    if (clustered && cluster === undefined) {
+      return err(
+        this._error("INVALID_STATE", "cluster mode starts with start()"),
+      )
+    }
+    cluster?.publishApp(channel, message)
+    const copy = this._serializer.decode(encoded.value)
+    if (copy.isOk()) {
+      queueMicrotask(() =>
+        this._deliverApp(channel, copy.value, this._processId),
+      )
+    }
+    return ok(undefined)
+  }
+
+  /**
+   * Calls `handler` for every message `publish`ed on `channel`, by any
+   * process, this one included. `from` is the publishing process's id.
+   * A handler that throws or rejects is reported to `onError` with
+   * `source: "callback"`. Returns an unsubscribe function.
+   */
+  public subscribe(
+    channel: string,
+    handler: (message: unknown, from: string) => unknown,
+  ): () => void {
+    let handlers = this._subscribers.get(channel)
+    if (handlers === undefined) {
+      handlers = new Set()
+      this._subscribers.set(channel, handlers)
+    }
+    handlers.add(handler)
+    return () => {
+      handlers.delete(handler)
+      if (handlers.size === 0) this._subscribers.delete(channel)
+    }
+  }
+
+  private _deliverApp(channel: string, message: unknown, from: string): void {
+    const handlers = this._subscribers.get(channel)
+    if (handlers === undefined) return
+    for (const handler of [...handlers]) {
+      try {
+        const result = handler(message, from)
+        if (result instanceof Promise) {
+          result.catch((error: unknown) =>
+            this._report(error, { source: "callback" }),
+          )
+        }
+      } catch (error) {
+        this._report(error, { source: "callback" })
+      }
+    }
   }
 
   // ==========================================================================
@@ -1365,7 +1463,7 @@ export class BungohanServer {
     const matchMaker = this._matchMaker
     let askCluster = true
     for (;;) {
-      let release: (() => void) | undefined
+      let claim: CreationClaim | undefined
       if (mode !== JoinMode.CREATE) {
         const creating =
           mode === JoinMode.JOIN_OR_CREATE
@@ -1400,7 +1498,9 @@ export class BungohanServer {
           )
         }
         if (mode === JoinMode.JOIN_OR_CREATE && type !== undefined) {
-          release = matchMaker._claimCreation(typeName)
+          claim = matchMaker._claimCreation(typeName)
+          // Cluster-wide: no other process creates one meanwhile.
+          await claim.granted
         }
         const found = askCluster
           ? await this._cluster?.findAvailable(
@@ -1409,7 +1509,7 @@ export class BungohanServer {
             )
           : undefined
         if (found !== undefined) {
-          release?.() // it creates nothing: let the others look too
+          claim?.release() // it creates nothing: let the others look too
           const forwarded = await this._forwardJoin(
             connection,
             requestId,
@@ -1467,11 +1567,11 @@ export class BungohanServer {
             type,
             joinOptions,
             createOptions,
-            release,
+            claim?.release,
           ),
         )
       } finally {
-        release?.()
+        claim?.release()
       }
     }
   }
@@ -1726,16 +1826,23 @@ export class BungohanServer {
 
   private _clusterHandlers(): ClusterHandlers {
     return {
+      appMessage: (channel, message, from) =>
+        this._deliverApp(channel, message, from),
       localProcessInfo: () => this._matchMaker._localProcess(),
       hasRoom: (roomId) => {
         const room = this._manager.getRoom(roomId)
         return room !== undefined && !room.isDisposed
       },
       hasReservation: (id) => this._matchMaker._hasReservation(id),
-      findAvailable: (roomType, exclude) =>
-        this._shuttingDown
-          ? undefined
-          : this._matchMaker._findAvailable(roomType, exclude)?.id,
+      findAvailable: (roomType, exclude, match) => {
+        if (this._shuttingDown) return undefined
+        // A key names one room, draining process or not.
+        if (match.key !== undefined) {
+          return this._matchMaker._findKeyed(roomType, match.key)?.id
+        }
+        return this._matchMaker._findAvailable(roomType, exclude, match.where)
+          ?.id
+      },
       listRooms: (roomType, metadata, includePrivate, includeDraining) =>
         this._matchMaker._listLocal(
           roomType,
@@ -1743,11 +1850,19 @@ export class BungohanServer {
           includePrivate,
           includeDraining,
         ),
-      createRoom: (roomType, options) =>
-        this._clusterCreateRoom(roomType, options),
-      reserve: (roomId, options) => this._clusterReserve(roomId, options),
+      createRoom: (roomType, options, placement) =>
+        this._clusterCreateRoom(roomType, options, placement),
+      reserve: (roomId, options, byId) =>
+        this._clusterReserve(roomId, options, byId),
       roomOp: (roomId, call) => this._clusterRoomOp(roomId, call),
-      remoteJoin: (request) => this._clusterJoin(request),
+      remoteJoin: (request) => {
+        // Counted like a local JOIN: its hooks run here (see _joinActivity).
+        this._joinsRunning++
+        return this._clusterJoin(request).finally(() => {
+          this._joinsRunning--
+          this._joinsSettled++
+        })
+      },
       remoteMessage: (edge, roomId, sessionId, connectionId, raw, id, body) =>
         this._clusterMessage(
           edge,
@@ -1784,6 +1899,7 @@ export class BungohanServer {
   private async _clusterCreateRoom(
     roomType: string,
     options: unknown,
+    placement: RoomPlacement,
   ): Promise<Result<RoomInfo, BungohanError>> {
     if (this._shuttingDown || !this._running) {
       return err(
@@ -1816,7 +1932,11 @@ export class BungohanServer {
     if (read.isErr()) {
       return err(this._error("INVALID_OPTIONS", read.error.message))
     }
-    const created = await this._manager._createReady(type, read.value)
+    const created = await this._manager._createReady(
+      type,
+      read.value,
+      placement,
+    )
     return created.isErr()
       ? created
       : ok(this._matchMaker._roomInfo(created.value))
@@ -1825,14 +1945,16 @@ export class BungohanServer {
   private async _clusterReserve(
     roomId: string,
     options: unknown,
+    byId: boolean,
   ): Promise<Result<Reservation, BungohanError>> {
     const room = this._manager.getRoom(roomId)
     if (room === undefined || room.isDisposed) {
       return err(this._error("ROOM_NOT_FOUND", `room "${roomId}" not found`))
     }
     // A new reservation is matchmaking: found here before the drain began,
-    // it is refused, and the requester looks again.
-    if (this._draining) {
+    // it is refused, and the requester looks again. A room chosen by id
+    // isn't matchmaking, and works while draining, as joinById does.
+    if (this._draining && !byId) {
       return err(
         this._error(
           "SERVER_SHUTTING_DOWN",
@@ -1842,7 +1964,7 @@ export class BungohanServer {
     }
     const ready = await room._readyPromise
     if (ready?.isErr()) return err(ready.error)
-    return this._matchMaker._reserveIn(room, options)
+    return this._matchMaker._reserveIn(room, options, byId)
   }
 
   private _clusterRoomOp(

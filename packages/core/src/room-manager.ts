@@ -1,6 +1,6 @@
 import { err, ok, type Result } from "@bungohan/result"
 import type { BungohanError } from "./errors"
-import type { Room, RoomHost } from "./room"
+import type { Room, RoomHost, RoomPlacement } from "./room"
 import type { RoomTypeDef } from "./room-type"
 
 type RoomCallback = (room: Room) => void
@@ -66,11 +66,15 @@ export class RoomManager {
    * `onCreate` in the background. The returned room is findable at once;
    * await `room._readyPromise` before using it.
    */
-  public _create(type: RoomTypeDef, options: unknown): Room {
+  public _create(
+    type: RoomTypeDef,
+    options: unknown,
+    placement?: RoomPlacement,
+  ): Room {
     const room = new type.ctor()
     room._setup(this._host, type, this._host.createId(10))
     this._rooms.set(room.id, room)
-    room._readyPromise = room._create(options).then((created) => {
+    room._readyPromise = room._create(options, placement).then((created) => {
       if (created.isErr()) {
         void room.dispose()
         return created
@@ -88,8 +92,9 @@ export class RoomManager {
   public async _createReady(
     type: RoomTypeDef,
     options: unknown,
+    placement?: RoomPlacement,
   ): Promise<Result<Room, BungohanError>> {
-    const room = this._create(type, options)
+    const room = this._create(type, options, placement)
     const ready = await room._readyPromise
     if (ready === undefined || ready.isOk()) return ok(room)
     return err(ready.error)

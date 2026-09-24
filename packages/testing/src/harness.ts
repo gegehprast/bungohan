@@ -465,17 +465,21 @@ export class TestHarness extends HarnessBase {
   }
 
   /**
-   * Waits up to `joinRealWait` of real time while the server is working on
-   * a join; true once one finished (without the clock moving).
+   * @internal Waits up to `joinRealWait` of real time while the server is
+   * working on a join; true once one finished (without the clock moving).
+   * `ClusterHarness.run` calls it too, before it moves the shared clock.
    */
-  private async _serverJoinFinished(): Promise<boolean> {
+  public async _serverJoinFinished(): Promise<boolean> {
     if (this._joinRealWait <= 0) return false
     const before = this.server._joinActivity()
-    if (before.running === 0) return false
+    // A join waiting on a cluster broadcast needs the clock, not real time.
+    if (before.running === 0 || before.clockBound) return false
     const deadline = performance.now() + this._joinRealWait
     while (performance.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 1))
-      if (this.server._joinActivity().settled !== before.settled) return true
+      const now = this.server._joinActivity()
+      if (now.settled !== before.settled) return true
+      if (now.clockBound) return false
     }
     return false
   }

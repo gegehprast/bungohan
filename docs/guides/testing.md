@@ -232,7 +232,7 @@ test("each player receives only their own hero's quest", () => {
 ```
 <!-- /snippet -->
 
-`client` is the `sessionId` your filters compare `client.id` to, or the
+`client` is the `sessionId` your filters compare `client.sessionId` to, or the
 object they receive if they read more than the id. Pass a state the
 test built: the call treats its pending changes as synced, which would
 cost a running room's clients those changes. For a room's state, read
@@ -394,6 +394,14 @@ rejects `advance`, so a failed `expect` inside one fails the test.
 `createClusterHarness({ size, rooms })` runs several servers in one
 process, sharing one clock and an in-memory backplane.
 [Scaling](scaling.md) has an example.
+
+`joinRealWait` works there too, for every process: pass it to
+`createClusterHarness`. A join awaited directly and one driven through
+`cluster.run(…)` both get the real time their hooks need, including
+hooks that run on the process that owns the room when the client is
+connected to another one. The time the cluster itself spends asking
+the other processes (a collection window on the shared clock) isn't
+counted as real I/O, so it doesn't cost real time.
 
 ## Next
 

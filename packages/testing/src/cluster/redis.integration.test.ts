@@ -228,4 +228,31 @@ describe.skipIf(url === undefined)("cluster over a real Redis", () => {
     const refused = await c.run(mm(c, 0).createRoom("game"))
     expect(refused.isErr() && refused.error.code).toBe("SERVER_SHUTTING_DOWN")
   })
+
+  test("server.publish reaches every process over Redis", async () => {
+    const c = await cluster(2)
+    const got: unknown[][] = [[], []]
+    for (const [index, node] of c.nodes.entries()) {
+      node.server.subscribe("app", (message) => got[index]?.push(message))
+    }
+    c.node(0).server.publish("app", { n: 1 }).unwrap()
+    await until(c, () => got.every((list) => list.length === 1), "publish")
+    expect(got).toEqual([[{ n: 1 }], [{ n: 1 }]])
+  })
+
+  test("concurrent joinOrCreate on two processes makes one room", async () => {
+    const c = await cluster(2)
+    const mm = (i: number) => c.node(i).server.getMatchMaker()
+    const [a, b, keyedA, keyedB] = await c.run(
+      Promise.all([
+        mm(0).joinOrCreate("game"),
+        mm(1).joinOrCreate("game"),
+        mm(0).joinOrCreate("game", {}, { key: "m1" }),
+        mm(1).joinOrCreate("game", {}, { key: "m1" }),
+      ]),
+    )
+    expect(b.unwrap().id).toBe(a.unwrap().id)
+    expect(keyedB.unwrap().id).toBe(keyedA.unwrap().id)
+    expect(mm(0).getRoomCount() + mm(1).getRoomCount()).toBe(2)
+  })
 })
