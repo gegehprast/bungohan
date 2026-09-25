@@ -1,6 +1,6 @@
 {
   "name": "@bungohan/client-js",
-  "version": "0.1.0-alpha.4",
+  "version": "0.1.0-alpha.5",
   "description": "Browser client for Bungohan game servers, with optional React hooks",
   "keywords": [
     "bungohan",
@@ -65,7 +65,7 @@
   },
   "peerDependencies": {
     "react": ">=18",
-    "@bungohan/state": "0.1.0-alpha.4"
+    "@bungohan/state": "0.1.0-alpha.5"
   },
   "peerDependenciesMeta": {
     "react": {

@@ -1,6 +1,6 @@
 {
   "name": "@bungohan/testing",
-  "version": "0.1.0-alpha.4",
+  "version": "0.1.0-alpha.5",
   "description": "In-process test harness for Bungohan: a real server and real clients on one manual clock",
   "keywords": [
     "bungohan",

@@ -1,6 +1,6 @@
 {
   "name": "@bungohan/types",
-  "version": "0.1.0-alpha.4",
+  "version": "0.1.0-alpha.5",
   "description": "Bungohan's wire protocol types: numeric field kinds, state ops and typed message contracts",
   "keywords": [
     "bungohan",

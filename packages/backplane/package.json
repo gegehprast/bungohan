@@ -1,6 +1,6 @@
 {
   "name": "@bungohan/backplane",
-  "version": "0.1.0-alpha.4",
+  "version": "0.1.0-alpha.5",
   "description": "Pub/sub backplane for Bungohan clusters, with in-memory and Redis implementations",
   "keywords": [
     "bungohan",

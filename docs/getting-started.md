@@ -50,7 +50,7 @@ the client can never disagree about their shapes.
 
 ## Install
 
-> Bungohan is at `0.1.0-alpha.4`, published on the `alpha` tag.
+> Bungohan is at `0.1.0-alpha.5`, published on the `alpha` tag.
 > The API can still change between alpha releases.
 
 The server needs Bun 1.3.3 or newer.

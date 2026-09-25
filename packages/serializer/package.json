@@ -1,6 +1,6 @@
 {
   "name": "@bungohan/serializer",
-  "version": "0.1.0-alpha.4",
+  "version": "0.1.0-alpha.5",
   "description": "MessagePack and JSON codecs for Bungohan's frames, messages and state deltas",
   "keywords": [
     "bungohan",
