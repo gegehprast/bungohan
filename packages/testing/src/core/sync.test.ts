@@ -9,7 +9,8 @@ import {
   SchemaCodec,
 } from "@bungohan/serializer"
 import { type MessageDef, ServerFrameType } from "@bungohan/types"
-import { calls, GameState, gameContract, Player } from "./fixtures"
+import { createServerHarness } from "../harness"
+import { calls, GameRoom, GameState, gameContract, Player } from "./fixtures"
 import { serverRoom, setup } from "./helpers"
 
 /** Counts `encodeOps` calls, to prove frames are encoded once. */
@@ -172,6 +173,53 @@ describe("bandwidth", () => {
     expect(room.state?.turn.get()).toBe(42)
     expect(room.state?.players.get(room.sessionId)?.secret.get()).toBe("kept")
     expect(room.stateErrors).toEqual([])
+    await h.stop()
+  })
+})
+
+describe("syncNow", () => {
+  /** Syncs once a second, and right away after each turn. */
+  class TurnRoom extends GameRoom {
+    public beforeSync = 0
+    protected override async onCreate(): Promise<void> {
+      await super.onCreate()
+      this.setStateSyncTickRate(1)
+    }
+    protected override onBeforeSync(): void {
+      this.beforeSync++
+      this.syncNow() // already syncing: does nothing
+    }
+    public play(): void {
+      this.state.turn.set(this.state.turn.get() + 1)
+      this.syncNow()
+    }
+    public idle(): void {
+      this.syncNow()
+    }
+  }
+
+  test("a change reaches clients without waiting for the sync tick", async () => {
+    const h = await createServerHarness({
+      define: (s) => s.defineRoomType("turn", TurnRoom),
+    })
+    const view = (
+      await h
+        .connect()
+        .joinOrCreate("turn", {}, { state: GameState, contract: gameContract })
+    ).unwrap()
+    const room = h.server.getMatchMaker().getRoom(view.roomId)
+    if (!(room instanceof TurnRoom)) throw new Error("no room")
+    await h.tick(1000) // the snapshot, at the first tick
+    const syncs = room.beforeSync
+    room.play()
+    await h.flush()
+    expect(view.state?.turn.get()).toBe(1)
+    expect(room.beforeSync).toBe(syncs + 1)
+    // Nothing changed: no bytes.
+    const sent = h.bytesSent()
+    room.idle()
+    await h.flush()
+    expect(h.bytesSent()).toBe(sent)
     await h.stop()
   })
 })

@@ -2,7 +2,13 @@ import { afterEach, expect, spyOn, test } from "bun:test"
 import { createBungohanClient } from "@bungohan/client-js"
 import type { BungohanServer } from "@bungohan/core"
 import { ArenaState, arenaContract } from "@bungohan/tutorial-shared"
-import { busiestRoom, createGameServer, report } from "./production"
+import {
+  busiestRoom,
+  createGameServer,
+  opsOnly,
+  report,
+  signupRoute,
+} from "./production"
 
 let server: BungohanServer | undefined
 
@@ -55,3 +61,30 @@ test("the production server starts, serves HTTP and stops cleanly", async () => 
   server = undefined
   log.mockRestore()
 }, 20_000)
+
+test("opsOnly lets probes through and wants the token for the rest", () => {
+  const ask = (endpoint: "health" | "rooms", auth?: string) =>
+    opsOnly(
+      new Request("http://game/x", {
+        headers: auth === undefined ? {} : { authorization: auth },
+      }),
+      { endpoint, ip: "10.0.0.1" },
+    )
+  process.env["OPS_TOKEN"] = "ops"
+  expect(ask("health")).toBe(true)
+  expect(ask("rooms")).toBe(false)
+  expect(ask("rooms", "Bearer ops")).toBe(true)
+  delete process.env["OPS_TOKEN"]
+  expect(ask("rooms", "Bearer ops")).toBe(false)
+})
+
+test("signupRoute limits each address on its own", () => {
+  const signup = (ip: string) =>
+    signupRoute(new Request("http://game/signup"), { ip })?.status
+  for (let i = 0; i < 10; i++) expect(signup("10.0.0.1")).toBe(200)
+  expect(signup("10.0.0.1")).toBe(429)
+  expect(signup("10.0.0.2")).toBe(200)
+  expect(signupRoute(new Request("http://game/other"), { ip: "x" })).toBe(
+    undefined,
+  )
+})

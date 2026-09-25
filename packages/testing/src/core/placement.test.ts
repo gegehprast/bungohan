@@ -60,6 +60,70 @@ describe("where", () => {
   })
 })
 
+describe("where on a private room type", () => {
+  test("reserve and joinOrCreate share one private room per pool", async () => {
+    const { h } = await setup({ autoDispose: false, visibility: "private" })
+    const mm = h.server.getMatchMaker()
+    const first = (
+      await mm.reserve("game", {}, { where: { region: "eu" } })
+    ).unwrap()
+    const second = (
+      await mm.reserve("game", {}, { where: { region: "eu" } })
+    ).unwrap()
+    expect(second.roomId).toBe(first.roomId)
+    const room = (
+      await mm.joinOrCreate("game", {}, { where: { region: "eu" } })
+    ).unwrap()
+    expect(room.id).toBe(first.roomId)
+    expect(room.visibility).toBe("private")
+    const other = (
+      await mm.reserve("game", {}, { where: { region: "us" } })
+    ).unwrap()
+    expect(other.roomId).not.toBe(first.roomId)
+    expect(mm.getRoomCount()).toBe(2)
+    const found = (
+      await mm.joinRoom("game", {}, { where: { region: "eu" } })
+    ).unwrap()
+    expect(found.id).toBe(first.roomId)
+    // Still hidden from clients' matchmaking, and from query by default.
+    expect((await mm.query({ type: "game" })).unwrap()).toEqual([])
+    const view = await h.connect().join("game", {}, { contract: gameContract })
+    expect(view.isErr() && view.error.code).toBe("ROOM_NOT_FOUND")
+    const seated = (
+      await h.connect().consumeReservation(first.id, { contract: gameContract })
+    ).unwrap()
+    expect(seated.roomId).toBe(first.roomId)
+    await h.stop()
+  })
+
+  test("a full private pool room makes a new one, not a failure", async () => {
+    const { h } = await setup({
+      autoDispose: false,
+      visibility: "private",
+      maxClients: 1,
+    })
+    const mm = h.server.getMatchMaker()
+    const where = { region: "eu" }
+    const a = (await mm.reserve("game", {}, { where })).unwrap()
+    const b = (await mm.reserve("game", {}, { where })).unwrap()
+    expect(b.roomId).not.toBe(a.roomId)
+    expect(mm.getRoomCount()).toBe(2)
+    await h.stop()
+  })
+
+  test("reserve without where seats in the private room it created", async () => {
+    const { h } = await setup({ autoDispose: false, visibility: "private" })
+    const mm = h.server.getMatchMaker()
+    // The type alone is the pool clients' joinOrCreate uses, which never
+    // sees a private room: each call creates one, and holds a seat in it.
+    const a = (await mm.reserve("game", {})).unwrap()
+    const b = (await mm.reserve("game", {})).unwrap()
+    expect(b.roomId).not.toBe(a.roomId)
+    for (const room of mm.getAllRooms()) expect(room.getSeatCount()).toBe(1)
+    await h.stop()
+  })
+})
+
 describe("key", () => {
   test("joinOrCreate returns the keyed room whether or not it's available", async () => {
     const { h } = await setup({ autoDispose: false, maxClients: 1 })

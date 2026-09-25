@@ -24,9 +24,11 @@ whether they come from clients or from the server's `matchMaker`
 or fails to create, they look again and create their own.
 
 A private room (`makePrivate()`, or `visibility: "private"` in
-`defineRoomType`) is reachable only by id. That makes it the basis for
-invite codes: share the id, or publish a short code in the room's
-metadata and look it up with `query`.
+`defineRoomType`) is reachable by clients only by id. That makes it the
+basis for invite codes: share the id, or publish a short code in the
+room's metadata and look it up with `query`. Private hides a room from
+clients' matchmaking, not from the server's: a lobby can still place
+players in private rooms through [`where` pools and keys](#pools-and-keys).
 
 `joinById` fails with `ROOM_LOCKED`, `ROOM_FULL` or `ROOM_NOT_FOUND` as
 the case may be. The other failures a join can return (`AUTH_FAILED`,
@@ -92,8 +94,9 @@ query directly: a lobby room that sends them the list is the usual way.
 
 Metadata is read when a query runs: change `this.metadata` any time
 (a seat count, a phase) and the next `query` sees it, on this process
-and on the others, which answer from their rooms as they are then. Two
-limits: a process that doesn't answer within the collection window
+and on the others, which answer from their rooms as they are then. A
+query returns as soon as every live process has answered. Two limits: a
+process that doesn't answer within the collection window
 (`cluster.gatherTimeout`, 200 ms by default) is missing from that
 result, and a `RoomProxy` you hold keeps the metadata it was created
 with until `refresh()`.
@@ -272,6 +275,12 @@ export function reserveInBand(band: "bronze" | "silver", rating: number) {
   pool.
 - Concurrent calls for the same pool create one room between them, on
   any process (see [scaling](scaling.md#one-room-per-pool)).
+- Private rooms are in their pool too. A room type registered with
+  `visibility: "private"` can serve `where` pools, so a lobby that
+  reserves every seat keeps its rooms out of `query` and `GET /rooms`
+  while still sharing them. Without a `where` (or a key), the pool is the
+  one clients' `joinOrCreate` uses, which never picks a private room:
+  each call creates a new one and takes its seat there.
 
 **`key`** names one room of the type, for rooms that stand for
 something outside the server (a record in your database, a scheduled

@@ -212,6 +212,74 @@ export async function adminRoutes(
 - A throw (or rejected promise) answers 500 and goes to `server.onError`
   with `source: "http"`.
 
+The second argument says who is calling: `info.ip` is the peer's
+address, as `ConnectionContext.ip` is for a WebSocket, so a route the
+public calls can be limited per client:
+
+<!-- snippet: docs/examples/src/production.ts#http-ip -->
+[`docs/examples/src/production.ts`](../examples/src/production.ts)
+
+```ts
+const signups = new Map<string, { since: number; count: number }>()
+
+/** A public route, limited to 10 calls a minute per caller address. */
+export function signupRoute(
+  request: Request,
+  info: HttpRequestInfo,
+): Response | undefined {
+  if (new URL(request.url).pathname !== "/signup") return undefined
+  // The socket's peer. Behind a proxy that's the proxy: read
+  // X-Forwarded-For instead, set by a proxy you trust.
+  const now = Date.now()
+  const seen = signups.get(info.ip)
+  const current =
+    seen !== undefined && now - seen.since < 60_000
+      ? seen
+      : { since: now, count: 0 }
+  current.count++
+  signups.set(info.ip, current)
+  if (current.count > 10) return new Response("slow down", { status: 429 })
+  return Response.json({ signedUp: true })
+}
+```
+<!-- /snippet -->
+
+### Guarding the built-in endpoints
+
+The built-in endpoints are open to anyone who reaches the port. Once
+`fetch` serves routes the outside world calls (a webhook, a sign-up
+page), the port is public, and so are `/rooms` (every public room's id
+and metadata) and `/metrics` (your load). Either switch them off, put
+them behind a proxy that only lets your network reach them, or gate them
+with `http.authorize`:
+
+<!-- snippet: docs/examples/src/production.ts#http-authorize -->
+[`docs/examples/src/production.ts`](../examples/src/production.ts)
+
+```ts
+/**
+ * For `http.authorize`: load balancer probes get through, but room
+ * listings and load figures need the operations token.
+ */
+export function opsOnly(request: Request, info: HttpAuthorizeInfo): boolean {
+  if (info.endpoint === "health" || info.endpoint === "ready") return true
+  const token = process.env["OPS_TOKEN"]
+  const auth = request.headers.get("authorization")
+  return token !== undefined && auth === `Bearer ${token}`
+}
+```
+<!-- /snippet -->
+
+Pass it as `http: { enabled: true, authorize: opsOnly, fetch: signupRoute }`.
+
+- It runs before each enabled built-in endpoint answers; `false` answers
+  403. `info.endpoint` is `"health"`, `"ready"`, `"metrics"` or
+  `"rooms"`, so your load balancer's probes can stay open.
+- Your `fetch` routes don't go through it: they check the caller
+  themselves.
+- A throw answers 500 and goes to `server.onError` with
+  `source: "http"`.
+
 ## Health and readiness
 
 The two endpoints answer different questions, so give each its own

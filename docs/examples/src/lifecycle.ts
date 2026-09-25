@@ -4,6 +4,8 @@ import {
   createInt,
   createSchemaMap,
   createString,
+  defineContract,
+  defineMessage,
   f,
   Room,
   type RoomOnCreateOptions,
@@ -125,3 +127,33 @@ export class GuildRoom extends Room<GuildState> {
   }
   // #endregion pause
 }
+
+export class BoardState extends Schema {
+  public static override readonly schemaName = "BoardState"
+  public turn = createInt(f.uint16)
+  public lastMove = createString("")
+}
+
+export const boardContract = defineContract({
+  client: { play: defineMessage("play", { cell: f.uint8 }) },
+  server: {},
+})
+
+// #region turn-based
+/**
+ * Turn-based: the state changes only when someone plays. There is no
+ * `onTick`, so no simulation loop runs, and each move is synced at once.
+ */
+export class BoardRoom extends Room<BoardState, typeof boardContract> {
+  public static override contract = boardContract
+  protected override state = new BoardState()
+
+  protected override async onCreate(): Promise<void> {
+    this.onMessage("play", (client, { cell }) => {
+      this.state.turn.set(this.state.turn.get() + 1)
+      this.state.lastMove.set(`${client.sessionId}:${cell}`)
+      this.syncNow() // not at the next sync tick
+    })
+  }
+}
+// #endregion turn-based

@@ -70,6 +70,25 @@ describe("one room, whichever processes ask at once", () => {
     expect(roomCount(c)).toBe(1)
     await c.stop()
   })
+
+  test("a private where pool is found and reserved from another process", async () => {
+    const c = await createClusterHarness({
+      size: 2,
+      rooms: {
+        game: [GameRoom, { autoDispose: false, visibility: "private" }],
+      },
+    })
+    const where = { region: "eu" }
+    const first = (
+      await c.run(mm(c, 0).reserve("game", {}, { where }))
+    ).unwrap()
+    const second = (
+      await c.run(mm(c, 1).reserve("game", {}, { where }))
+    ).unwrap()
+    expect(second.roomId).toBe(first.roomId)
+    expect(roomCount(c)).toBe(1)
+    await c.stop()
+  })
 })
 
 describe("keys across processes", () => {

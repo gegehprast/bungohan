@@ -253,6 +253,58 @@ describe("tick rates", () => {
     expect(counts).toEqual({ ticks: 20, syncs: 10 })
     await h.stop()
   })
+
+  test("a room without onTick runs no simulation loop, and still syncs", async () => {
+    class TurnRoom extends Room<Counted> {
+      public override state = new Counted()
+      public act(): void {
+        this.state.n.set(this.state.n.get() + 1)
+      }
+    }
+    const h = await createServerHarness({
+      server: { metrics: { enabled: true } },
+      define: (s) => s.defineRoomType("turn", TurnRoom),
+    })
+    const view = (
+      await h.connect().joinOrCreate("turn", {}, { state: Counted })
+    ).unwrap()
+    const room = h.server.getMatchMaker().getRoom(view.roomId)
+    if (!(room instanceof TurnRoom)) throw new Error("no room")
+    await h.tick(1000)
+    room.act()
+    await h.flushSync()
+    expect(view.state?.n.get()).toBe(1)
+    const [metrics] = h.server.getAllRoomMetrics().unwrap()
+    expect(metrics?.simulationTicks).toBe(0)
+    expect(metrics?.stateSyncCount).toBeGreaterThan(0)
+    await h.stop()
+  })
+
+  test("setSimulationTickRate(0) stops onTick until a positive rate", async () => {
+    class Stopped extends SlowRoom {
+      protected override async onCreate(): Promise<void> {
+        await super.onCreate()
+        this.setSimulationTickRate(0)
+      }
+      public restart(): void {
+        this.setSimulationTickRate(5)
+      }
+    }
+    const h = await createServerHarness({
+      define: (s) => s.defineRoomType("stopped", Stopped),
+    })
+    const view = (await h.connect().joinOrCreate("stopped")).unwrap()
+    const room = h.server.getMatchMaker().getRoom(view.roomId)
+    if (!(room instanceof Stopped)) throw new Error("no room")
+    counts.ticks = 0
+    counts.syncs = 0
+    await h.tick(1000)
+    expect(counts).toEqual({ ticks: 0, syncs: 4 })
+    room.restart()
+    await h.tick(1000)
+    expect(counts.ticks).toBe(5)
+    await h.stop()
+  })
 })
 
 describe("persistence", () => {

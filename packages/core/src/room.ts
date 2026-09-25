@@ -223,6 +223,8 @@ export abstract class Room<
   private _disposing: Promise<void> | undefined
   private _disposed = false
   private _paused = false
+  /** A sync is running: `syncNow` from `onBeforeSync` must not recurse. */
+  private _syncing = false
   private _ready = false
   /** @internal Resolves once `onCreate` finished (or failed). */
   public _readyPromise: Promise<Result<void, BungohanError>> | undefined
@@ -361,7 +363,11 @@ export abstract class Room<
     _consented: boolean,
   ): Promise<void> {}
 
-  /** Every simulation step; `deltaTime` is the fixed step in ms. */
+  /**
+   * Every simulation step; `deltaTime` is the fixed step in ms. A room that
+   * doesn't override it runs no simulation loop at all, so a turn-based
+   * room driven by messages and timers costs no idle wake-ups.
+   */
   protected onTick(_deltaTime: number): void {}
 
   /** Right before every sync tick. */
@@ -685,12 +691,15 @@ export abstract class Room<
   /**
    * Steps per second of this room's simulation (default: the server's
    * `simulation.tickRate`). Works from `onCreate`: the rate is kept and
-   * applied when the loop starts. Ignored unless finite and positive.
+   * applied when the loop starts. `0` stops the loop (`onTick` stops
+   * running) until a positive rate starts it again. Ignored unless finite
+   * and not negative. A room that doesn't override `onTick` never runs the
+   * loop, whatever the rate.
    */
   public setSimulationTickRate(fps: number): void {
-    if (!(Number.isFinite(fps) && fps > 0)) return
+    if (!(Number.isFinite(fps) && fps >= 0)) return
     this._simulationRate = fps
-    this._simulation?.setTickRate(fps)
+    if (this._ready && this._disposing === undefined) this._applySimulation()
   }
 
   /**
@@ -701,6 +710,23 @@ export abstract class Room<
     if (!(Number.isFinite(hz) && hz > 0)) return
     this._syncRate = hz
     this._sync?.setRate(hz)
+  }
+
+  /**
+   * Sends the state changes made so far now, rather than at the next sync
+   * tick. For a room whose state changes only in message handlers and
+   * timers (a turn-based game), call it at the end of the handler that
+   * changed it: the change reaches clients without waiting up to a sync
+   * period. It is a sync like any other: `onBeforeSync` runs, clients
+   * waiting for a snapshot get one, and nothing is sent if nothing
+   * changed. The sync loop keeps its schedule.
+   *
+   * Every call can send each client a patch, so a busy room that calls it
+   * on every message sends more, smaller frames than its tick would.
+   * Before `onCreate` finished, and from `onBeforeSync`, it does nothing.
+   */
+  protected syncNow(): void {
+    this._syncNow()
   }
 
   /**
@@ -832,12 +858,24 @@ export abstract class Room<
     return this.clients.size + this._reservations.size
   }
 
-  /** True if a matchmaking join could take a seat right now. */
+  /**
+   * True if a client's matchmaking join (`joinOrCreate`, `join`) could take
+   * a seat right now: public, unlocked, not full and not being disposed.
+   * Server-side `where` pools also take private rooms.
+   */
   public isAvailable(): boolean {
+    return this._visibility === "public" && this._hasFreeSeat()
+  }
+
+  /**
+   * @internal Unlocked, not full and not being disposed, whatever the
+   * visibility: what server-side placement needs, since private only hides
+   * a room from clients' matchmaking.
+   */
+  public _hasFreeSeat(): boolean {
     return (
       this._disposing === undefined &&
       !this._locked &&
-      this._visibility === "public" &&
       this.getSeatCount() < this.maxClients
     )
   }
@@ -955,12 +993,6 @@ export abstract class Room<
       this._root = this.state
     }
     this._session = host.stateCodec.createSession()
-    this._simulation = new SimulationLoop(
-      host.clock,
-      this._simulationRate ?? host.simulationTickRate,
-      (dt) => this._simulate(dt),
-      host.maxCatchUpSteps,
-    )
     this._sync = new IntervalLoop(
       host.clock,
       this._syncRate ?? host.syncTickRate,
@@ -968,10 +1000,37 @@ export abstract class Room<
     )
     this._ready = true
     if (this._disposing === undefined) {
-      this._simulation.start()
+      this._applySimulation()
       this._sync.start()
     }
     return ok(undefined)
+  }
+
+  /**
+   * Makes the simulation loop match the rate: none at `0`, or when the
+   * room has no `onTick` to run; otherwise one at that rate, running
+   * unless the room is paused.
+   */
+  private _applySimulation(): void {
+    const host = this._requireHost()
+    const rate = this._simulationRate ?? host.simulationTickRate
+    const ticks = Reflect.get(this, "onTick") !== Room.prototype.onTick
+    if (!(rate > 0 && ticks)) {
+      this._simulation?.stop()
+      this._simulation = undefined
+      return
+    }
+    if (this._simulation !== undefined) {
+      this._simulation.setTickRate(rate)
+      return
+    }
+    this._simulation = new SimulationLoop(
+      host.clock,
+      rate,
+      (dt) => this._simulate(dt),
+      host.maxCatchUpSteps,
+    )
+    if (!this._paused) this._simulation.start()
   }
 
   /** @internal The sync loop's period in ms while it runs (the test harness). */
@@ -1414,7 +1473,16 @@ export abstract class Room<
    * waiting for one. Sends nothing on an idle tick.
    */
   public _syncNow(): void {
-    if (this._disposing !== undefined || !this._ready) return
+    if (this._disposing !== undefined || !this._ready || this._syncing) return
+    this._syncing = true
+    try {
+      this._syncOnce()
+    } finally {
+      this._syncing = false
+    }
+  }
+
+  private _syncOnce(): void {
     const host = this._requireHost()
     const stats = this._stats
     const start = stats === undefined ? 0 : host.clock.now()

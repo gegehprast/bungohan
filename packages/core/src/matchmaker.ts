@@ -244,9 +244,9 @@ export class MatchMaker {
   }
 
   /**
-   * An available room of the type (public, unlocked, not full); doesn't
-   * seat anyone. Looks on this process first, then across the cluster,
-   * skipping draining processes.
+   * An available room of the type (public, unlocked, not full; with
+   * `where`, private rooms count too); doesn't seat anyone. Looks on this
+   * process first, then across the cluster, skipping draining processes.
    */
   public async joinRoom(
     roomType: string,
@@ -515,7 +515,10 @@ export class MatchMaker {
     if (byId) {
       const open = room._acceptsNewSeat()
       if (open.isErr()) return open
-    } else if (!room.isAvailable()) {
+    } else if (!room._hasFreeSeat()) {
+      // Visibility was the finder's to check (a `where` pool takes private
+      // rooms, and so does a room just created for the call): this only
+      // catches a room that filled up, locked or closed since.
       return err(this._error("ROOM_FULL", "the room filled up"))
     }
     const type = this._types.get(room.roomType)
@@ -773,7 +776,10 @@ export class MatchMaker {
 
   /**
    * @internal An available room of the type, ready or still being created.
-   * None while this process drains: matchmaking must stop feeding it.
+   * None while this process drains: matchmaking must stop feeding it. With
+   * `where`, a private room counts too: `where` pools are server-side only,
+   * and private hides a room from clients' matchmaking, not from the
+   * server's (spec §6.8.5).
    */
   public _findAvailable(
     roomType: string,
@@ -782,9 +788,12 @@ export class MatchMaker {
   ): Room | undefined {
     if (this._deps.draining()) return undefined
     for (const room of this._deps.manager.getRooms()) {
-      if (room.roomType !== roomType || !room.isAvailable()) continue
-      if (exclude.includes(room.id)) continue
-      if (where !== undefined && !matches(room.metadata, where)) continue
+      if (room.roomType !== roomType || exclude.includes(room.id)) continue
+      if (where === undefined) {
+        if (!room.isAvailable()) continue
+      } else if (!room._hasFreeSeat() || !matches(room.metadata, where)) {
+        continue
+      }
       return room
     }
     return undefined

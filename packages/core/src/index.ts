@@ -41,7 +41,11 @@ export { RemoteConnection } from "./cluster/remote"
 export { BungohanError, type ErrorCode } from "./errors"
 export {
   type HealthResponse,
+  type HttpAuthorize,
+  type HttpAuthorizeInfo,
+  type HttpEndpoint,
   type HttpFallback,
+  type HttpRequestInfo,
   HttpServer,
   type HttpServerOptions,
   type MetricsResponse,

@@ -1,6 +1,8 @@
 import {
   type BungohanServer,
   createBungohanServer,
+  type HttpAuthorizeInfo,
+  type HttpRequestInfo,
   type MetricsResponse,
 } from "@bungohan/core"
 import { ArenaRoom } from "@bungohan/tutorial-server/ArenaRoom"
@@ -90,3 +92,40 @@ export async function busiestRoom(base: string): Promise<string | undefined> {
   return top?.roomId // absent for a private room
 }
 // #endregion metrics-response
+
+// #region http-authorize
+/**
+ * For `http.authorize`: load balancer probes get through, but room
+ * listings and load figures need the operations token.
+ */
+export function opsOnly(request: Request, info: HttpAuthorizeInfo): boolean {
+  if (info.endpoint === "health" || info.endpoint === "ready") return true
+  const token = process.env["OPS_TOKEN"]
+  const auth = request.headers.get("authorization")
+  return token !== undefined && auth === `Bearer ${token}`
+}
+// #endregion http-authorize
+
+// #region http-ip
+const signups = new Map<string, { since: number; count: number }>()
+
+/** A public route, limited to 10 calls a minute per caller address. */
+export function signupRoute(
+  request: Request,
+  info: HttpRequestInfo,
+): Response | undefined {
+  if (new URL(request.url).pathname !== "/signup") return undefined
+  // The socket's peer. Behind a proxy that's the proxy: read
+  // X-Forwarded-For instead, set by a proxy you trust.
+  const now = Date.now()
+  const seen = signups.get(info.ip)
+  const current =
+    seen !== undefined && now - seen.since < 60_000
+      ? seen
+      : { since: now, count: 0 }
+  current.count++
+  signups.set(info.ip, current)
+  if (current.count > 10) return new Response("slow down", { status: 429 })
+  return Response.json({ signedUp: true })
+}
+// #endregion http-ip

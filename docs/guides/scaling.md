@@ -64,6 +64,13 @@ export function createClusterServer(env: {
 - Timings (`heartbeatInterval` 2 s, `peerTimeout` 6 s,
   `requestTimeout` 5 s, `gatherTimeout` 200 ms) are in the
   [reference](../reference.md#serveroptions).
+- A lookup across the cluster (a `query`, the search before a room is
+  created, `getAllProcesses()`) asks every process and returns once each
+  live one has answered, at once in a cluster of one. `gatherTimeout` is
+  only how long it waits for a process that stays silent (one that died
+  and isn't yet past `peerTimeout`, say). In its first
+  `heartbeatInterval`, a process may not know every peer yet, so its
+  lookups wait the whole `gatherTimeout`.
 
 A process needs to define only the room types it should host. A join for
 a type it doesn't define is routed to a process that has a room of that

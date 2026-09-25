@@ -2,14 +2,45 @@ import { err, ok, type Result } from "@bungohan/result"
 import type { Server } from "bun"
 import type { RoomMetrics, ServerMetrics } from "./metrics"
 
+/** What the HTTP server knows about a request beyond the `Request`. */
+export interface HttpRequestInfo {
+  /**
+   * The peer's address as the socket sees it (`"unknown"` if Bun can't
+   * tell), as `ConnectionContext.ip` is for a WebSocket. Behind a proxy
+   * it is the proxy's: read `X-Forwarded-For` only from a proxy you trust.
+   */
+  ip: string
+}
+
 /**
  * A handler for requests the built-in endpoints don't answer
  * (`ServerOptions.http.fetch`). Return `undefined` to fall through to the
- * built-in answer: a CORS preflight, or a 404.
+ * built-in answer: a CORS preflight, or a 404. `info.ip` is the caller's
+ * address, for per-client rate limits.
  */
 export type HttpFallback = (
   request: Request,
+  info: HttpRequestInfo,
 ) => Response | undefined | Promise<Response | undefined>
+
+/** A built-in endpoint: `GET /health`, `/ready`, `/metrics` or `/rooms`. */
+export type HttpEndpoint = "health" | "ready" | "metrics" | "rooms"
+
+/** What `ServerOptions.http.authorize` is told about a request. */
+export interface HttpAuthorizeInfo extends HttpRequestInfo {
+  /** The built-in endpoint the request is for. */
+  endpoint: HttpEndpoint
+}
+
+/**
+ * Decides whether a request may read a built-in endpoint
+ * (`ServerOptions.http.authorize`). `false` answers 403; a throw answers
+ * 500 and goes to `server.onError`.
+ */
+export type HttpAuthorize = (
+  request: Request,
+  info: HttpAuthorizeInfo,
+) => boolean | Promise<boolean>
 
 /** `GET /health`'s body. */
 export interface HealthResponse {
@@ -93,6 +124,8 @@ export interface HttpServerOptions {
   enableRoomsList: boolean
   /** Answers what the built-in endpoints don't; `undefined` for none. */
   fetch: HttpFallback | undefined
+  /** Gates the built-in endpoints; `undefined` lets every request in. */
+  authorize: HttpAuthorize | undefined
 }
 
 /** What the HTTP endpoints read from the game server. */
@@ -103,7 +136,7 @@ export interface HttpSource {
   /** `undefined` when metrics are disabled (the endpoint answers 404). */
   metrics(): MetricsResponse | undefined
   rooms(): RoomsResponseEntry[]
-  /** The `fetch` fallback threw or rejected (it answers 500). */
+  /** `fetch` or `authorize` threw or rejected (it answers 500). */
   reportError(error: unknown): void
 }
 
@@ -134,7 +167,10 @@ export class HttpServer {
       this._server = Bun.serve({
         port: this._options.port,
         hostname: this._options.hostname,
-        fetch: (request) => this._handle(request),
+        fetch: (request, server) =>
+          this._handle(request, {
+            ip: server.requestIP(request)?.address ?? "unknown",
+          }),
       })
       return ok(undefined)
     } catch (error) {
@@ -154,13 +190,29 @@ export class HttpServer {
     return this._server?.port
   }
 
-  private async _handle(request: Request): Promise<Response> {
-    const builtIn = this._builtIn(request)
-    if (builtIn !== undefined) return builtIn
+  private async _handle(
+    request: Request,
+    info: HttpRequestInfo,
+  ): Promise<Response> {
+    const endpoint = this._endpoint(request)
+    if (endpoint !== undefined) {
+      const authorize = this._options.authorize
+      if (authorize !== undefined) {
+        try {
+          if (!(await authorize(request, { ...info, endpoint }))) {
+            return this._json({ error: "forbidden" }, 403)
+          }
+        } catch (error) {
+          this._source.reportError(error)
+          return this._json({ error: "internal error" }, 500)
+        }
+      }
+      return this._answer(endpoint)
+    }
     const fallback = this._options.fetch
     if (fallback !== undefined) {
       try {
-        const response = await fallback(request)
+        const response = await fallback(request, info)
         if (response !== undefined) return response
       } catch (error) {
         this._source.reportError(error)
@@ -173,28 +225,35 @@ export class HttpServer {
     return this._json({ error: "not found" }, 404)
   }
 
-  /** The answer of an enabled built-in endpoint, or undefined. */
-  private _builtIn(request: Request): Response | undefined {
+  /** The enabled built-in endpoint a request is for, or undefined. */
+  private _endpoint(request: Request): HttpEndpoint | undefined {
     if (request.method !== "GET") return undefined
     const path = new URL(request.url).pathname
     const o = this._options
-    if (path === "/health" && o.enableHealthCheck) {
-      return this._json(this._source.health())
-    }
-    if (path === "/ready" && o.enableReadiness) {
-      const { ready, body } = this._source.ready()
-      return this._json(body, ready ? 200 : 503)
-    }
-    if (path === "/metrics" && o.enableMetrics) {
-      const metrics = this._source.metrics()
-      return metrics === undefined
-        ? this._json({ error: "metrics are disabled" }, 404)
-        : this._json(metrics)
-    }
-    if (path === "/rooms" && o.enableRoomsList) {
-      return this._json(this._source.rooms())
-    }
+    if (path === "/health" && o.enableHealthCheck) return "health"
+    if (path === "/ready" && o.enableReadiness) return "ready"
+    if (path === "/metrics" && o.enableMetrics) return "metrics"
+    if (path === "/rooms" && o.enableRoomsList) return "rooms"
     return undefined
+  }
+
+  private _answer(endpoint: HttpEndpoint): Response {
+    switch (endpoint) {
+      case "health":
+        return this._json(this._source.health())
+      case "ready": {
+        const { ready, body } = this._source.ready()
+        return this._json(body, ready ? 200 : 503)
+      }
+      case "metrics": {
+        const metrics = this._source.metrics()
+        return metrics === undefined
+          ? this._json({ error: "metrics are disabled" }, 404)
+          : this._json(metrics)
+      }
+      case "rooms":
+        return this._json(this._source.rooms())
+    }
   }
 
   private _headers(): Record<string, string> {

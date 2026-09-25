@@ -12,7 +12,7 @@ import type {
   InferJoinOptions,
 } from "@bungohan/types"
 import type { Client, Connection } from "./client"
-import type { HttpFallback } from "./http"
+import type { HttpAuthorize, HttpFallback } from "./http"
 import type { LoggerOptions } from "./logger"
 import type { AuthResult, Room } from "./room"
 
@@ -121,14 +121,25 @@ export interface ServerOptions {
     /**
      * Your own routes (an admin API) on the same port: called for every
      * request an enabled built-in endpoint doesn't answer, including
-     * `OPTIONS`. Return `undefined` to fall through to the built-in
-     * answer (a CORS preflight, or 404). Its responses are sent as they
-     * are, without the CORS headers, and nothing here checks who is
-     * asking. A throw answers 500 and goes to `server.onError`.
+     * `OPTIONS`, with the caller's address as `info.ip`. Return
+     * `undefined` to fall through to the built-in answer (a CORS
+     * preflight, or 404). Its responses are sent as they are, without the
+     * CORS headers, and nothing here checks who is asking. A throw
+     * answers 500 and goes to `server.onError`.
      */
     fetch?: HttpFallback
+    /**
+     * Runs before each built-in endpoint answers: return `false` to answer
+     * 403 instead. Without it they are open to anyone who reaches the
+     * port, which matters once `fetch` serves public routes on it: gate
+     * `/metrics` and `/rooms` here (a token, an internal network), and let
+     * your load balancer's `/health` and `/ready` probes through.
+     * `info.endpoint` says which one is asked for. A throw answers 500 and
+     * goes to `server.onError`. `fetch` routes don't pass through it.
+     */
+    authorize?: HttpAuthorize
   }
-  /** Default 60 steps per second. */
+  /** Default 60 steps per second; a room without `onTick` runs no loop. */
   simulation?: { tickRate?: number; maxCatchUpSteps?: number }
   /** Default 20 Hz. */
   sync?: { tickRate?: number }

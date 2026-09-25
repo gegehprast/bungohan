@@ -44,8 +44,12 @@ export interface ClusterTimings {
   /** How long a directed request waits for its reply. Default 5,000 ms. */
   requestTimeout: number
   /**
-   * How long a broadcast (process list, room lookup, query) collects
-   * answers. Default 200 ms.
+   * The longest a broadcast (process list, room lookup, query) waits for
+   * answers. It ends sooner once every live peer has answered, and at
+   * once with no peers; the whole window is waited out only for a peer
+   * that stays silent, and during this process's first
+   * `heartbeatInterval`, while it may not know every peer yet. Default
+   * 200 ms.
    */
   gatherTimeout: number
 }
@@ -166,6 +170,8 @@ export class ClusterNode {
   private readonly _pending: PendingRequests
   private readonly _registry: PeerRegistry
   private _running = false
+  /** Clock time at `start()`, for {@link _expected}. */
+  private _startedAt = 0
   /** The creation locks this process coordinates (spec §6.4.4). */
   private readonly _locks: LockTable
 
@@ -272,6 +278,7 @@ export class ClusterNode {
       return err(this._error("CONNECTION_FAILED", all.error))
     }
     this._running = true
+    this._startedAt = this._options.clock.now()
     this._registry.start()
     // Announce ourselves and ask everyone else to do the same, so the
     // first matchmaking call doesn't wait for a heartbeat interval.
@@ -306,9 +313,11 @@ export class ClusterNode {
    */
   public async processes(): Promise<ProcessInfo[]> {
     const local = this._options.handlers.localProcessInfo()
-    if (!this._running) return [local]
+    const expected = this._expected()
+    if (!this._running || expected?.length === 0) return [local]
     const { rid, answer } = this._pending.gather<ProcessInfo>(
       this._options.timings.gatherTimeout,
+      expected,
     )
     this._publish(this._all, { t: "pi?", rid })
     const replies = await answer
@@ -327,9 +336,11 @@ export class ClusterNode {
     kind: "room" | "reservation",
     key: string,
   ): Promise<string | undefined> {
-    if (!this._running) return undefined
+    const expected = this._expected()
+    if (!this._running || expected?.length === 0) return undefined
     const { rid, answer } = this._pending.first<string>(
       this._options.timings.gatherTimeout,
+      expected,
     )
     this._publish(this._all, { t: "loc?", rid, kind, key })
     const found = await answer
@@ -342,11 +353,12 @@ export class ClusterNode {
     exclude: string[] = [],
     match: PoolMatch = {},
   ): Promise<{ processId: string; roomId: string } | undefined> {
-    if (!this._running) return undefined
+    const expected = this._expected()
+    if (!this._running || expected?.length === 0) return undefined
     const { rid, answer } = this._pending.first<{
       processId: string
       roomId: string
-    }>(this._options.timings.gatherTimeout)
+    }>(this._options.timings.gatherTimeout, expected)
     this._publish(this._all, {
       t: "find?",
       rid,
@@ -366,9 +378,11 @@ export class ClusterNode {
     includePrivate: boolean,
     includeDraining: boolean,
   ): Promise<RoomListingInfo[]> {
-    if (!this._running) return []
+    const expected = this._expected()
+    if (!this._running || expected?.length === 0) return []
     const { rid, answer } = this._pending.gather<RoomListingInfo[]>(
       this._options.timings.gatherTimeout,
+      expected,
     )
     this._publish(this._all, {
       t: "q?",
@@ -683,7 +697,7 @@ export class ClusterNode {
           message.kind === "room"
             ? handlers.hasRoom(message.key)
             : handlers.hasReservation(message.key)
-        if (found) this._publish(back, { t: "loc!", rid: message.rid })
+        this._publish(back, { t: found ? "loc!" : "miss", rid: message.rid })
         return
       }
       case "find?": {
@@ -695,9 +709,12 @@ export class ClusterNode {
             ...(message.key === undefined ? {} : { key: message.key }),
           },
         )
-        if (roomId !== undefined) {
-          this._publish(back, { t: "find!", rid: message.rid, roomId })
-        }
+        this._publish(
+          back,
+          roomId === undefined
+            ? { t: "miss", rid: message.rid }
+            : { t: "find!", rid: message.rid, roomId },
+        )
         return
       }
       case "q?":
@@ -733,7 +750,7 @@ export class ClusterNode {
           })
           return
         }
-        this._pending.deliver(message.rid, true)
+        this._pending.deliver(message.rid, true, message.from)
         return
       case "unlock":
         this._locks.release(message.pool, message.lease)
@@ -802,27 +819,46 @@ export class ClusterNode {
         return
 
       case "pi!":
-        this._pending.deliver(message.rid, message.info)
+        this._pending.deliver(message.rid, message.info, message.from)
         return
       case "loc!":
-        this._pending.deliver(message.rid, message.from)
+        this._pending.deliver(message.rid, message.from, message.from)
         return
       case "find!":
-        this._pending.deliver(message.rid, {
-          processId: message.from,
-          roomId: message.roomId,
-        })
+        this._pending.deliver(
+          message.rid,
+          { processId: message.from, roomId: message.roomId },
+          message.from,
+        )
+        return
+      case "miss":
+        this._pending.miss(message.rid, message.from)
         return
       case "q!":
-        this._pending.deliver(message.rid, message.rooms)
+        this._pending.deliver(message.rid, message.rooms, message.from)
         return
       case "create!":
       case "reserve!":
       case "op!":
       case "join!":
-        this._pending.deliver(message.rid, message)
+        this._pending.deliver(message.rid, message, message.from)
         return
     }
+  }
+
+  /**
+   * The peers a broadcast waits for, or `undefined` to wait out the whole
+   * window. Every live peer answers `hello` and beats once per
+   * `heartbeatInterval`, so after that long this process knows them all;
+   * before it, a peer it hasn't heard from yet would be missed (a room it
+   * owns not found, a second one created).
+   */
+  private _expected(): string[] | undefined {
+    const { clock, timings } = this._options
+    if (clock.now() - this._startedAt < timings.heartbeatInterval) {
+      return undefined
+    }
+    return this.peers()
   }
 
   private _peerLost(processId: string): void {

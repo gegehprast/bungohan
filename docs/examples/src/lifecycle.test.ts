@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test"
 import { MemoryStore } from "@bungohan/core"
 import { createTestHarness, type TestHarness } from "@bungohan/testing"
-import { GuildRoom, GuildState } from "./lifecycle"
+import {
+  BoardRoom,
+  BoardState,
+  boardContract,
+  GuildRoom,
+  GuildState,
+} from "./lifecycle"
 
 let h: TestHarness | undefined
 let log: ReturnType<typeof spyOn>
@@ -65,4 +71,23 @@ test("state saved on dispose is loaded by the next room", async () => {
   const again = (await ada.joinOrCreate("guild", {}, guild)).unwrap()
   expect(again.id).not.toBe(first.id)
   expect(again.state.treasury.get()).toBe(250)
+})
+
+test("a move reaches the other player without a sync tick", async () => {
+  h = await createTestHarness({
+    rooms: { board: BoardRoom },
+    client: { pingInterval: 0 },
+  })
+  const board = { state: BoardState, contract: boardContract }
+  const a = (
+    await (await h.connect()).joinOrCreate("board", {}, board)
+  ).unwrap()
+  const b = (
+    await (await h.connect()).joinOrCreate("board", {}, board)
+  ).unwrap()
+  await h.tick(50) // both snapshots
+  a.send("play", { cell: 4 })
+  await h.flush() // delivers frames; the clock doesn't move
+  expect(b.state.turn.get()).toBe(1)
+  expect(b.state.lastMove.get()).toBe(`${a.sessionId}:4`)
 })

@@ -230,6 +230,18 @@ export interface FindReply extends Envelope {
   roomId: string
 }
 
+/**
+ * "I have nothing for this": the answer to a `loc?` or `find?` from a
+ * process without a match, so the asker can stop waiting once every live
+ * peer has answered instead of waiting out `gatherTimeout`. A process that
+ * predates it ignores the unknown type, and one that never sends it is
+ * waited for until the window passes, as before.
+ */
+export interface Miss extends Envelope {
+  t: "miss"
+  rid: string
+}
+
 export interface QueryRequest extends Envelope {
   t: "q?"
   rid: string
@@ -462,6 +474,7 @@ export type ClusterMessage =
   | LocateReply
   | FindRequest
   | FindReply
+  | Miss
   | QueryRequest
   | QueryReply
   | CreateRoomRequest

@@ -16,7 +16,7 @@ and carries on. One bad hook doesn't crash a room.
 |---|---|
 | a join creates the room | static `onAuth` → `onCreate` → `onJoin` |
 | a join enters an existing room | `onAuth` → `onJoin` |
-| every simulation step (60/s) | `onTick(deltaTime)` |
+| every simulation step (60/s), if the room has an `onTick` | `onTick(deltaTime)` |
 | before every state sync (20/s) | `onBeforeSync()` |
 | a client leaves, is kicked, or its held seat expires | `onLeave(client, consented)` |
 | a client's connection drops and its seat is held | `onDisconnect(client)` |
@@ -237,6 +237,47 @@ the client leaves this room, its connection stays open), `dispose()`, and
 `setSimulationTickRate(fps)` / `setStateSyncTickRate(hz)`, which work
 from `onCreate`. A room disposes itself when its last seat is released,
 unless its type was registered with `autoDispose: false`.
+
+## Turn-based rooms
+
+A room whose state changes only in message handlers and timers (a board
+game, a lobby) needs neither loop running at full speed:
+
+<!-- snippet: docs/examples/src/lifecycle.ts#turn-based -->
+[`docs/examples/src/lifecycle.ts`](../examples/src/lifecycle.ts)
+
+```ts
+/**
+ * Turn-based: the state changes only when someone plays. There is no
+ * `onTick`, so no simulation loop runs, and each move is synced at once.
+ */
+export class BoardRoom extends Room<BoardState, typeof boardContract> {
+  public static override contract = boardContract
+  protected override state = new BoardState()
+
+  protected override async onCreate(): Promise<void> {
+    this.onMessage("play", (client, { cell }) => {
+      this.state.turn.set(this.state.turn.get() + 1)
+      this.state.lastMove.set(`${client.sessionId}:${cell}`)
+      this.syncNow() // not at the next sync tick
+    })
+  }
+}
+```
+<!-- /snippet -->
+
+- **No `onTick`, no simulation loop.** A room that doesn't override
+  `onTick` runs none, so a quiet room costs no wake-ups.
+  `setSimulationTickRate(0)` stops the loop of a room that does have one
+  (a positive rate starts it again).
+- **`this.syncNow()`** sends the changes made so far at once, instead of
+  at the next sync tick, so a move isn't held back by up to a sync period
+  (50 ms at the default 20/s). It is an ordinary sync: `onBeforeSync`
+  runs, and nothing is sent if nothing changed. The sync loop keeps
+  running, for changes made anywhere else.
+- Each call can send every client a patch. In a room that gets many
+  messages a second, calling it on each one sends more, smaller frames
+  than the tick would; let the tick batch them there.
 
 ## Reconnection
 

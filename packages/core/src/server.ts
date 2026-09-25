@@ -430,6 +430,7 @@ export class BungohanServer {
           enableReadiness: http.enableReadiness ?? true,
           enableRoomsList: http.enableRoomsList ?? true,
           fetch: http.fetch,
+          authorize: http.authorize,
         },
         {
           health: () => ({

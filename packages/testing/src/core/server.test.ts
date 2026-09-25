@@ -248,6 +248,67 @@ describe("HTTP server", () => {
     expect(errors[0]?.[1]).toBe("http")
     await h.stop()
   })
+
+  test("fetch is told the caller's address", async () => {
+    const h = await createServerHarness({
+      server: {
+        http: {
+          enabled: true,
+          port: 0,
+          hostname: "127.0.0.1",
+          fetch: (_request, { ip }) => Response.json({ ip }),
+        },
+      },
+    })
+    const base = `http://127.0.0.1:${h.server.getHttpServer()?.getPort()}`
+    expect(await (await fetch(`${base}/whoami`)).json()).toEqual({
+      ip: "127.0.0.1",
+    })
+    await h.stop()
+  })
+
+  test("authorize gates the built-in endpoints, not the app's routes", async () => {
+    const errors: string[] = []
+    const asked: string[] = []
+    const h = await createServerHarness({
+      server: {
+        metrics: { enabled: true },
+        http: {
+          enabled: true,
+          port: 0,
+          hostname: "127.0.0.1",
+          authorize: async (request, { endpoint, ip }) => {
+            asked.push(`${endpoint} ${ip}`)
+            if (request.headers.has("x-boom")) throw new Error("broke")
+            // Probes are open; listings and load need the token.
+            if (endpoint === "health" || endpoint === "ready") return true
+            return request.headers.get("authorization") === "Bearer ops"
+          },
+          fetch: () => new Response("app"),
+        },
+      },
+      define: (s) => s.defineRoomType("game", GameRoom),
+    })
+    h.server.onError((_error, context) => errors.push(context.source))
+    const base = `http://127.0.0.1:${h.server.getHttpServer()?.getPort()}`
+    const ops = { headers: { authorization: "Bearer ops" } }
+    expect((await fetch(`${base}/health`)).status).toBe(200)
+    expect((await fetch(`${base}/ready`)).status).toBe(200)
+    const refused = await fetch(`${base}/rooms`)
+    expect(refused.status).toBe(403)
+    expect(await refused.json()).toEqual({ error: "forbidden" })
+    expect((await fetch(`${base}/metrics`)).status).toBe(403)
+    expect((await fetch(`${base}/rooms`, ops)).status).toBe(200)
+    expect((await fetch(`${base}/metrics`, ops)).status).toBe(200)
+    expect(await (await fetch(`${base}/admin`)).text()).toBe("app")
+    const boom = await fetch(`${base}/rooms`, { headers: { "x-boom": "1" } })
+    expect(boom.status).toBe(500)
+    expect(errors).toEqual(["http"])
+    expect(asked).toContain("rooms 127.0.0.1")
+    expect(asked).not.toContain(expect.stringMatching(/^admin/))
+    expect(asked).toHaveLength(7)
+    await h.stop()
+  })
 })
 
 describe("without cluster mode", () => {
